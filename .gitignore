@@ -16,6 +16,13 @@ tools/.phase0-old-baseline.json
 .env.local
 .env.prod
 
+# 部署证书与私钥（修复轮 1，F7）：deploy/README.md 让运维把 fullchain.pem/privkey.pem 放进 deploy/certs/，
+# 而本仓工作流是 `git add -A` —— 不加这几条，**私钥会被直接提交**。
+# deploy/certs/ 只是仓库内的暂存位置；正式部署建议直接放 /etc/nginx/certs/。
+deploy/certs/
+*.pem
+*.key
+
 # 运行时数据（保留 data/skills、data/modelPrompt、data/vendor）
 apps/api/data/oss/
 apps/api/data/serve/

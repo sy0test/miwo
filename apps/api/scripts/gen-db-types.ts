@@ -64,7 +64,11 @@ async function main() {
   let ready = dbMod.genDbTypesReady;
   while (!ready) {
     if (Date.now() > deadline) {
-      console.error(`等待 db.ts 启动类型生成超时（${TIMEOUT_MS} ms）：检查 MIWO_ENV=dev（config.ts 会先于本脚本加载 .env）。`);
+      // ⚠ 口径澄清（修复轮 1，F12）：`.env` **不是** config.ts 加载的 —— 本脚本所在的 npm script
+      //   （apps/api/package.json 的 db:types = `node --env-file-if-exists=.env --import=tsx ...`）
+      //   把它交给 Node 的 `--env-file-if-exists` 加载；config.ts 只读 process.env。
+      //   所以直接从命令行裸跑 `tsx scripts/gen-db-types.ts` 是没有 .env 的（缺变量时 config.ts 抛 ConfigError）。
+      console.error(`等待 db.ts 启动类型生成超时（${TIMEOUT_MS} ms）：请确认 MIWO_ENV=dev，且 .env 是通过 package.json 的 db:types 脚本（node --env-file-if-exists=.env）加载的。`);
       process.exit(1);
     }
     await new Promise((r) => setTimeout(r, READY_POLL_MS));
@@ -94,10 +98,15 @@ async function main() {
    * （实测 1791750833595 / 1791750861242 两次读数就是反序的），
    * 用"mtime 是否晚于启动时刻"判"本次有没有写"会**误报失败** —— 这正是"不要用时间猜同步"的又一个例证。
    *
-   * 判据只有两条（都由**内容**给出）：
+   * 判据只有两条（都由**内容**给出，且**不重算**数据库 hash）：
    *   A) hash 变了（startHash → endHash） → 本次运行确实写盘了；
-   *   B) hash 没变，但文件头**合法**且等于当前库算出的 hash → 产物本来已是最新，`initKnexType`
+   *   B) hash 没变，且文件头**格式合法**（`^[a-zA-Z0-9]{32}$`） → 产物本来已是最新，`initKnexType`
    *      按 `needWrite=false` 正确跳过写盘（此时"没写"是正确的，不是假成功）。
+   *
+   * ⚠ 口径澄清（修复轮 1，F12）：本脚本**只校验 hash 头的格式**，不会去重算"当前库算出的 hash"再比对 ——
+   *   重算需要复刻 db.ts 的建表/自省逻辑，代价与风险都远大于收益。因此"格式合法"**不等于**"内容已最新"：
+   *   "这次到底写没写"只由 A（hash 变了）给出；想确认内容最新请再跑一次 db:types（幂等，会打印 needWrite=false）。
+   *
    * 由于写盘完成已由 `genDbTypesReady` 保证，B 与"根本没跑"不可能混淆；真正的假成功
    * （加固前固定 `setTimeout(2000)` 后 `exit(0)`）会表现为**拿不到 `genDbTypesReady` 而超时**，
    * 或在文件缺失时落到下面的 "非法 hash 头" 分支。

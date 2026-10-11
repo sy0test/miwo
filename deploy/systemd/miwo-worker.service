@@ -1,5 +1,9 @@
+# 谜沃 worker（**Phase 1d 占位**：worker 入口与产物 data/serve/worker.js 都尚未实现）
+# 现在启动本单元会立刻失败（ExecStart 指向的文件不存在）—— 这是刻意的：
+# Phase 0 只落地单元文件与路径口径，真正的 worker 在 Phase 1d 产出，届时把 ExecStart 对齐即可。
+# ⚠ 产物路径口径与 api 一致：data/serve/*.js（绝不是 dist/*.js，仓库里没有任何 dist 为 outfile 的构建）。
 [Unit]
-Description=miwo worker
+Description=miwo worker (Phase 1d placeholder)
 After=network.target mysql.service
 
 [Service]
@@ -7,7 +11,7 @@ Type=simple
 User=miwo
 WorkingDirectory=/opt/miwo/apps/api
 EnvironmentFile=/etc/miwo/env
-ExecStart=/usr/bin/node dist/worker.js
+ExecStart=/usr/bin/node data/serve/worker.js
 Restart=always
 RestartSec=3
 LimitNOFILE=65535

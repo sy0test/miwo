@@ -1,3 +1,6 @@
+# 谜沃 api（宿主机/non-container 部署；Phase 0 主推路径，见 deploy/README.md）
+# 前置：在仓库根跑 `pnpm install` 与 `pnpm --filter @miwo/api build`
+#       → 产物是 apps/api/data/serve/app.js（不是 dist/app.js）。
 [Unit]
 Description=miwo api
 After=network.target mysql.service
@@ -7,7 +10,7 @@ Type=simple
 User=miwo
 WorkingDirectory=/opt/miwo/apps/api
 EnvironmentFile=/etc/miwo/env
-ExecStart=/usr/bin/node dist/app.js
+ExecStart=/usr/bin/node data/serve/app.js
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
