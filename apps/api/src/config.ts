@@ -104,6 +104,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   const trustProxy = trustProxyRaw === undefined ? (rawEnv === "prod" ? 1 : 0) : Number(trustProxyRaw);
   if (!Number.isInteger(trustProxy) || trustProxy < 0) throw new ConfigError(`MIWO_TRUST_PROXY 必须是非负整数，实际 "${trustProxyRaw}"`);
 
+  // ⚠ 与 M1 同口径：用 optional()（把 undefined 与纯空白统一视为"未设置"），
+  //    不用 `env.MIWO_MEDIA_DIR ? ...` —— 后者会把 "   " 当成有效值，resolve 成 cwd 本身。
+  const mediaDirRaw = optional(env, "MIWO_MEDIA_DIR");
+
   const dbDriver = optional(env, "MIWO_DB_DRIVER") ?? "sqlite";
   let db: MiwoConfig["db"];
   if (dbDriver === "sqlite") {
@@ -135,7 +139,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     port,
     host,
     dataDir,
-    mediaDir: env.MIWO_MEDIA_DIR ? path.resolve(env.MIWO_MEDIA_DIR) : path.join(dataDir, "oss"),
+    mediaDir: mediaDirRaw ? path.resolve(mediaDirRaw) : path.join(dataDir, "oss"),
     storageDriver,
     publicBaseUrl,
     trustProxy,

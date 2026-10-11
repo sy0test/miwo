@@ -94,6 +94,9 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n", MIWO_DB_POOL_MAX: "0" })).toThrow(/MIWO_DB_POOL_MAX/);
     expect(() => loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n", MIWO_DB_POOL_MIN: "10", MIWO_DB_POOL_MAX: "5" })).toThrow(/不能小于/);
     const cfg = loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n" });
+    // ⚠ 前置断言：不先锁住"确实进了 mysql 分支"，后面的 poolMin/poolMax 在 sqlite 分支下会因
+    //    `cfg.db.driver === "mysql"` 为假而**整块静默跳过**，看着通过其实什么都没测。
+    expect(cfg.db.driver).toBe("mysql");
     if (cfg.db.driver === "mysql") {
       expect(cfg.db.poolMin).toBe(2);
       expect(cfg.db.poolMax).toBe(20);
@@ -104,11 +107,23 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, MIWO_STORAGE_DRIVER: "ftp" })).toThrow(/MIWO_STORAGE_DRIVER/);
   });
 
-  it("非法 MIWO_TRUST_PROXY 抛错，空串视为未设置", () => {
+  it("非法 MIWO_TRUST_PROXY 抛错", () => {
     expect(() => loadConfig({ ...base, MIWO_TRUST_PROXY: "-1" })).toThrow(/MIWO_TRUST_PROXY/);
     expect(() => loadConfig({ ...base, MIWO_TRUST_PROXY: "abc" })).toThrow(/MIWO_TRUST_PROXY/);
-    // 空串统一按"未设置"处理 → dev 默认 0，不应被 Number("") 静默吃成 0 以外的值
+  });
+
+  it("空串 MIWO_TRUST_PROXY 视为未设置（prod 下取默认 1，而不是 Number(\"\")→0）", () => {
+    // ⚠ 必须用 prod 才**有判别力**：dev 下"空串按未设置 → 默认 0"与"Number("") → 0"结果相同，
+    //    旧断言（dev + 空串 → 0）改前改后都通过，等于没锁住 Task 7 审查的 M1 修复。
+    expect(
+      loadConfig({
+        ...base, MIWO_ENV: "prod", MIWO_HOST: "127.0.0.1",
+        MIWO_PUBLIC_BASE_URL: "https://example.test", MIWO_TRUST_PROXY: "",
+      }).trustProxy,
+    ).toBe(1);
+    // 配对的另一侧：dev 下空串同样按未设置 → 默认 0（含纯空白，走 optional() 的 trim 判定）
     expect(loadConfig({ ...base, MIWO_TRUST_PROXY: "" }).trustProxy).toBe(0);
+    expect(loadConfig({ ...base, MIWO_TRUST_PROXY: "   " }).trustProxy).toBe(0);
   });
 
   it("非法 MIWO_DB_DRIVER 抛错", () => {
@@ -122,5 +137,7 @@ describe("loadConfig", () => {
   it("MIWO_MEDIA_DIR 覆盖默认媒体目录", () => {
     const cfg = loadConfig({ ...base, MIWO_MEDIA_DIR: "D:\\tmp\\custom-media" });
     expect(cfg.mediaDir.replace(/\\/g, "/")).toBe("D:/tmp/custom-media");
+    // 纯空白同样按"未设置"处理（与 MIWO_TRUST_PROXY 的 M1 修复口径一致，锁住 Task 8 Step 0 第 3 项）
+    expect(loadConfig({ ...base, MIWO_MEDIA_DIR: "   " }).mediaDir.replace(/\\/g, "/")).toBe("D:/tmp/miwo-data/oss");
   });
 });
