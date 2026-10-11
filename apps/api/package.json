@@ -8,7 +8,7 @@
     "node": ">=22 <25"
   },
   "scripts": {
-    "dev": "nodemon --inspect --exec tsx src/app.ts",
+    "dev": "nodemon --inspect src/app.ts",
     "start": "cross-env NODE_ENV=prod node data/serve/app.js",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",

@@ -1,4 +1,5 @@
 {
+  "exec": "node --env-file-if-exists=.env --import=tsx",
   "ignore": [
     "node_modules",
     "data/*",

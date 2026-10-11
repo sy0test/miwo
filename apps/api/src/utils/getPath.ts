@@ -1,22 +1,19 @@
 import path from "path";
 import isPathInside from "is-path-inside";
+import { config } from "@/config";
 
+/**
+ * 解析数据目录下的路径（spec §4.3）。
+ *
+ * Phase 0 变更：基准目录由 `process.cwd()/data` 改为 `config.dataDir`（MIWO_DATA_DIR）。
+ * 路径逃逸防护（is-path-inside）保持不变。
+ * Electron 分支保留到 Phase 1c 清理；导出名 isEletron 保持不变以免破坏既有 import。
+ */
 export default (fileName?: string[] | string) => {
-  let basePath: string;
-  if (typeof process.versions?.electron !== "undefined") {
-    const { app } = require("electron");
-    const userDataDir: string = app.getPath("userData");
-    basePath = path.join(userDataDir, "data");
-  } else {
-    basePath = path.join(process.cwd(), "data");
-  }
+  const basePath = config.dataDir;
+
   if (fileName) {
-    let dbPath: string;
-    if (Array.isArray(fileName)) {
-      dbPath = path.resolve(basePath, ...fileName);
-    } else {
-      dbPath = path.resolve(basePath, fileName);
-    }
+    const dbPath = Array.isArray(fileName) ? path.resolve(basePath, ...fileName) : path.resolve(basePath, fileName);
     if (!isPathInside(dbPath, basePath) && dbPath !== basePath) {
       throw new Error("路径逃逸错误，路径必须在数据目录内");
     }
@@ -26,10 +23,5 @@ export default (fileName?: string[] | string) => {
 };
 
 export function isEletron() {
-  if (typeof process.versions?.electron !== "undefined") {
-    const { app } = require("electron");
-    return true;
-  } else {
-    return false;
-  }
+  return typeof process.versions?.electron !== "undefined";
 }
