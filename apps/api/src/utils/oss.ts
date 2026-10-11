@@ -74,7 +74,7 @@ class OSS {
     // dev（纯 Node，可能被局域网浏览器访问）用对外基地址 —— 唯一真相是 config.publicBaseUrl
     // （= MIWO_PUBLIC_BASE_URL，dev 缺省 http://<MIWO_HOST>:<MIWO_PORT>），不再自己探测局域网 IP：
     // 探测出来的网卡可能与浏览器实际走的那张不同（本机就有 192.168.1.12 与虚拟网卡两个非回环地址）。
-    if (process.env.NODE_ENV === "development") url = `${config.publicBaseUrl}/${prefix}/`;
+    if (config.env === "dev") url = `${config.publicBaseUrl}/${prefix}/`;
     // Electron（打包版）页面是 file:///自定义协议，必须绝对地址；属 Phase 1c，端口不再读环境变量 `PORT`。
     if (isEletron()) url = `http://localhost:${config.port}/${prefix}/`;
     return `${url}${safePath.split(path.sep).join("/")}`;

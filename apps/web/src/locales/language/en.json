@@ -512,9 +512,9 @@
       "warning": "The following are developer tools, please operate with caution!",
       "openDevtool": "Open",
       "devtoolsDoc": "Document address",
-      "devtoolsDesc": "After being turned on, a .devtools folder will be created in the Toonflow installation directory. Please ensure that Toonflow has write permissions (run as administrator).",
+      "devtoolsDesc": "After being turned on, a .devtools folder will be created in the MirrorWorld installation directory. Please ensure that MirrorWorld has write permissions (run as administrator).",
       "devtoolsDesc2": "Run npx {'@'}ai-sdk/devtools in this directory to enable telemetry debugging",
-      "openDevtoolFailed": "Failed to open developer tools, please make sure Toonflow desktop is installed",
+      "openDevtoolFailed": "Failed to open developer tools, please make sure MirrorWorld desktop is installed",
       "notInElectron": "For WEB environment, please open the browser console manually",
       "msg": {
         "localStorageKeyRequired": "Please enter a localStorage key",
@@ -828,7 +828,7 @@
       "selectAssets": "Select Assets",
       "noAssets": "No related assets",
       "selectAssetsTitle": "Select Related Assets",
-      "welcomeMsg": "Hello! I am the Toonflow AI Assistant. Would you like me to start generating a script?",
+      "welcomeMsg": "Hello! I am the MirrorWorld AI Assistant. Would you like me to start generating a script?",
       "start": "Start",
       "memoryType": {
         "message": "Message Memory",

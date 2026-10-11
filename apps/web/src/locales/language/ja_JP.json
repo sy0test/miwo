@@ -408,9 +408,9 @@
       "warning": "以下は開発者ツールです。注意して操作してください。",
       "openDevtool": "開ける",
       "devtoolsDoc": "書類のアドレス",
-      "devtoolsDesc": "オンにすると、Toonflow のインストール ディレクトリに .devtools フォルダーが作成されます。 Toonflow に書き込み権限があることを確認してください (管理者として実行)。",
+      "devtoolsDesc": "オンにすると、MirrorWorld のインストール ディレクトリに .devtools フォルダーが作成されます。 MirrorWorld に書き込み権限があることを確認してください (管理者として実行)。",
       "devtoolsDesc2": "このディレクトリで npx {'@'}ai-sdk/devtools を実行して、テレメトリのデバッグを有効にします",
-      "openDevtoolFailed": "開発者ツールを開けませんでした。Toonflow デスクトップがインストールされていることを確認してください",
+      "openDevtoolFailed": "開発者ツールを開けませんでした。MirrorWorld デスクトップがインストールされていることを確認してください",
       "notInElectron": "WEB環境の場合はブラウザコンソールを手動で開いてください"
     }
   },
@@ -674,7 +674,7 @@
       "selectAssets": "アセットを選択",
       "noAssets": "関連アセットがありません",
       "selectAssetsTitle": "関連アセットの選択",
-      "welcomeMsg": "こんにちは！Toonflow アシスタントです。シナリオの生成を開始しましょうか？",
+      "welcomeMsg": "こんにちは！MirrorWorld アシスタントです。シナリオの生成を開始しましょうか？",
       "start": "開始",
       "memoryType": {
         "message": "メッセージメモリ",

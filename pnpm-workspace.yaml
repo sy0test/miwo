@@ -1,3 +1,6 @@
 packages:
   - "apps/*"
+  # ⚠ Phase 1 计划新增（前后端共享类型 packages/shared）；**当前仓库里没有 packages/ 目录**，
+  #    所以这条 glob 现在匹配不到任何包。保留它是为了让 Phase 1 加包时不必再改这里 ——
+  #    但请以"当前匹配为空"为事实，不要据此认为仓库里已有 packages/shared。
   - "packages/*"

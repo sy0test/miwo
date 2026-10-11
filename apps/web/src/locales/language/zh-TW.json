@@ -413,8 +413,8 @@
       "warning": "以下為開發者工具，謹慎操作！",
       "openDevtool": "打開",
       "devtoolsDoc": "文件地址",
-      "devtoolsDesc": "開啟後會在Toonflow安裝目錄建立.devtools資料夾，請確保Toonflow有寫入權限（管理員身分執行）。",
-      "openDevtoolFailed": "開啟開發者工具失敗，請確保已安裝Toonflow桌面端",
+      "devtoolsDesc": "開啟後會在MirrorWorld安裝目錄建立.devtools資料夾，請確保MirrorWorld有寫入權限（管理員身分執行）。",
+      "openDevtoolFailed": "開啟開發者工具失敗，請確保已安裝MirrorWorld桌面端",
       "notInElectron": "WEB環境請手動開啟瀏覽器控制台"
     }
   },
@@ -678,7 +678,7 @@
       "selectAssets": "選擇資產",
       "noAssets": "暫未關聯資產",
       "selectAssetsTitle": "選擇關聯資產",
-      "welcomeMsg": "你好！我是 Toonflow 智慧助手，需要我開始為您生成劇本嗎？",
+      "welcomeMsg": "你好！我是 MirrorWorld 智慧助手，需要我開始為您生成劇本嗎？",
       "start": "開始",
       "memoryType": {
         "message": "訊息記憶",

@@ -22,6 +22,7 @@
     "verify:brand": "node tools/check-brand.cjs",
     "verify:deploy": "node tools/check-deploy-config.cjs",
     "verify:phase0": "node apps/api/scripts/verify-phase0.cjs",
+    "verify:legacy-freeze": "node tools/record-legacy-freeze.cjs --check",
     "verify:exceptions": "node tools/check-tenant-exceptions.cjs",
     "verify:exceptions:record": "node tools/check-tenant-exceptions.cjs --record"
   },

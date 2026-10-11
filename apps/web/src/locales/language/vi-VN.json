@@ -399,9 +399,9 @@
       "warning": "Sau đây là các công cụ dành cho nhà phát triển, vui lòng sử dụng thận trọng!",
       "openDevtool": "Mở",
       "devtoolsDoc": "Địa chỉ tài liệu",
-      "devtoolsDesc": "Sau khi bật lên sẽ tạo một thư mục .devtools trong thư mục cài đặt Toonflow. Hãy đảm bảo rằng Toonflow có quyền ghi (chạy với tư cách quản trị viên).",
+      "devtoolsDesc": "Sau khi bật lên sẽ tạo một thư mục .devtools trong thư mục cài đặt MirrorWorld. Hãy đảm bảo rằng MirrorWorld có quyền ghi (chạy với tư cách quản trị viên).",
       "devtoolsDesc2": "Chạy npx {'@'}ai-sdk/devtools trong thư mục này để bật gỡ lỗi đo từ xa",
-      "openDevtoolFailed": "Không mở được công cụ dành cho nhà phát triển, vui lòng đảm bảo đã cài đặt Toonflow desktop",
+      "openDevtoolFailed": "Không mở được công cụ dành cho nhà phát triển, vui lòng đảm bảo đã cài đặt MirrorWorld desktop",
       "notInElectron": "Đối với môi trường WEB, vui lòng mở bảng điều khiển trình duyệt theo cách thủ công"
     }
   },
@@ -665,7 +665,7 @@
       "selectAssets": "Chọn tài nguyên",
       "noAssets": "Chưa liên kết tài nguyên",
       "selectAssetsTitle": "Chọn tài nguyên liên kết",
-      "welcomeMsg": "Xin chào! Tôi là trợ lý thông minh Toonflow, bạn có muốn tôi bắt đầu tạo kịch bản cho bạn không?",
+      "welcomeMsg": "Xin chào! Tôi là trợ lý thông minh MirrorWorld, bạn có muốn tôi bắt đầu tạo kịch bản cho bạn không?",
       "start": "Bắt đầu",
       "memoryType": {
         "message": "Bộ nhớ tin nhắn",

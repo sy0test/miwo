@@ -276,7 +276,7 @@
         </t-radio-group>
         <div class="linkAdd" v-if="addMode == 'linkAdd'">
           <t-alert theme="warning" style="margin-bottom: 20px">
-            请填写 TypeScript 代码文件的链接（.ts 文件），不要填 API 地址或其他无关链接。 确认后 Toonflow 会自动加载该代码，请确保链接来源可信。
+            请填写 TypeScript 代码文件的链接（.ts 文件），不要填 API 地址或其他无关链接。 确认后 MirrorWorld 会自动加载该代码，请确保链接来源可信。
           </t-alert>
           <t-input v-model="link" :placeholder="$t('settings.vendor.linkAddPlaceholder')"></t-input>
           <div style="margin-top: 10px; text-align: right; width: 100%">

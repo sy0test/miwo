@@ -604,9 +604,9 @@
       "warning": "以下为开发者工具，谨慎操作！",
       "openDevtool": "打开",
       "devtoolsDoc": "文档地址",
-      "devtoolsDesc": "开启后会在Toonflow安装目录创建.devtools文件夹，请确保Toonflow有写入权限（管理员身份运行）。",
+      "devtoolsDesc": "开启后会在谜沃安装目录创建.devtools文件夹，请确保谜沃有写入权限（管理员身份运行）。",
       "devtoolsDesc2": "在该目录运行 npx {'@'}ai-sdk/devtools 开启遥测调试",
-      "openDevtoolFailed": "打开开发者工具失败，请确保已安装Toonflow桌面端",
+      "openDevtoolFailed": "打开开发者工具失败，请确保已安装谜沃桌面端",
       "notInElectron": "WEB环境请手动打开浏览器控制台",
       "msg": {
         "localStorageKeyRequired": "请输入 localStorage 的 key",
@@ -923,7 +923,7 @@
       "selectAssets": "选择资产",
       "noAssets": "暂未关联资产",
       "selectAssetsTitle": "选择关联资产",
-      "welcomeMsg": "你好！我是 Toonflow 智能助手，需要我开始为您生成剧本吗？",
+      "welcomeMsg": "你好！我是 谜沃 智能助手，需要我开始为您生成剧本吗？",
       "start": "开始",
       "memoryType": {
         "message": "消息记忆",
