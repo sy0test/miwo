@@ -84,4 +84,4 @@ if (failures.length) {
   for (const f of failures) console.error("  - " + f);
   process.exit(1);
 }
-console.log(`check-brand 通过（保留 toonflow:// ${protocolHits.length} 处，供应商 id 未动）`);
+console.log(`check-brand 通过（保留 toonflow:// ${protocolHits.length} 处，供应商 id 三方一致）`);

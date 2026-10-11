@@ -132,7 +132,7 @@ declare const exports: {
 // ============================================================
 
 const vendor: VendorConfig = {
-  id: "toonflow",
+  id: "miwo",
   version: "3.2",
   author: "Toonflow",
   name: "Toonflow官方中转平台",
