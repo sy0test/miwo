@@ -10,6 +10,19 @@
  *   joins       —— 对 `o_*` 表的 join（被 join 的表要不要一起过滤租户，必须人工判定）。
  *   raws        —— `db.raw(...)` / `u.db.raw(...)` 调用（绕过 query builder，条件靠手写）。
  *
+ * 除了"处数 count + 行号 lines"，还有两件**清单唯一不可替代**的东西必须一起比对，
+ * 否则门禁会绿着放行语义已失真的清单：
+ *
+ *   1. joins 的 `tables`（**被 join 的是哪张表**）。
+ *      只比 count/lines 会漏掉"同行号、同处数，但表名被换成另一张"：把
+ *      `leftJoin("o_image", …)` 就地改成 `leftJoin("o_vendorConfig", …)` 时 count/lines 完全不变，
+ *      而清单里"策略=tenant"的判定与整条 note 全失真 —— Phase 1b 的 `policies.ts` 正是**按这份清单**
+ *      注入隔离策略，"被 join 的是哪张表"就是它的全部语义。所以 tables 漂移必须红。
+ *
+ *   2. `directDbImports` —— 与**本次扫描结果**比较，而不是与清单里的旧记录比较。
+ *      清单是 `--record` 用自身扫描结果写出来的，拿旧记录来比会让"新增未登记裸 db 导入"恒为空
+ *      （恒真假绿，只有手工改 JSON 才触发）。`found.directDbImports` 才是"代码里现在有什么"。
+ *
  * 用法：
  *   node tools/check-tenant-exceptions.cjs            # 门禁：清单必须与代码逐条一致，且每条都已确认
  *   node tools/check-tenant-exceptions.cjs --record   # 重新机械扫描并写回清单（保留已有的人工标注）
@@ -184,6 +197,12 @@ function diffMap(label, declared, actual) {
       failures.push(`${label}: ${file} 清单 ${declared[file].count} 处，代码 ${v.count} 处（代码行 ${v.lines.join(",")}）`);
     } else if (JSON.stringify(declared[file].lines) !== JSON.stringify(v.lines)) {
       failures.push(`${label}: ${file} 处数相同但行号漂移——清单 ${declared[file].lines.join(",")}，代码 ${v.lines.join(",")}`);
+    } else if (JSON.stringify(declared[file].tables ?? []) !== JSON.stringify(v.tables ?? [])) {
+      // ⚠ 这一支是"表名漂移"的唯一探测器：处数与行号都没变时，只有它知道"被 join 的表被换掉了"。
+      //   Phase 1b 的 policies.ts 按这份清单注入隔离策略，表名错了整条策略就错了。
+      failures.push(
+        `${label}: ${file} tables 漂移——清单 ${JSON.stringify(declared[file].tables ?? [])}，代码 ${JSON.stringify(v.tables ?? [])}（行 ${v.lines.join(",")}）`,
+      );
     }
   }
   for (const file of Object.keys(declared)) {
@@ -208,10 +227,19 @@ if (JSON.stringify(declaredKnown) !== JSON.stringify(KNOWN_DIRECT_DB.slice().sor
     `scanScope.excludedKnownDirectDbImports 与脚本内置白名单不一致：\n      清单 ${declaredKnown.join(", ")}\n      脚本 ${KNOWN_DIRECT_DB.slice().sort().join(", ")}`,
   );
 }
-const newDirect = (inv.directDbImports || []).filter(
-  (p) => !declaredBypass.includes(p) && !KNOWN_DIRECT_DB.includes(p),
-);
+// ⚠ 必须用 found.directDbImports（**本次扫描结果**），不能用 inv.directDbImports（清单里的旧记录）：
+//   清单是 `--record` 用自身扫描结果写出来的，拿旧记录去比会让 newDirect **恒为空**（恒真假绿）——
+//   于是新增一个 `import db from "@/utils/db"` 的绕过文件永远拦不住，而报告里写着"新增未登记裸 db 导入就红"。
+const foundDirect = found.directDbImports.slice().sort();
+const declaredDirect = (inv.directDbImports || []).slice().sort();
+const newDirect = foundDirect.filter((p) => !declaredBypass.includes(p) && !KNOWN_DIRECT_DB.includes(p));
 if (newDirect.length) failures.push(`出现未经登记的直接 db 导入（既不是特例也不是已知内部层）：\n      ` + newDirect.join("\n      "));
+// 清单里的 directDbImports 只是"上次 --record 的快照"，必须与本次扫描逐项一致；不一致就是清单已过期。
+if (JSON.stringify(declaredDirect) !== JSON.stringify(foundDirect)) {
+  failures.push(
+    `directDbImports 与本次扫描不一致（清单是上次 --record 的快照，已过期，请重跑 --record）：\n      清单 ${declaredDirect.join(", ")}\n      代码 ${foundDirect.join(", ")}`,
+  );
+}
 
 // 每条必须已确认且有说明
 const unconfirmed = [];

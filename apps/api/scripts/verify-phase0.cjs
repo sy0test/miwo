@@ -26,13 +26,15 @@ const { spawn, spawnSync } = require("child_process");
 
 const API_ROOT = path.resolve(__dirname, "..");
 const MIWO_ROOT = path.resolve(API_ROOT, "..", "..");
-// ⚠ 旧仓库的目录名**故意用拼接写**：tools/check-brand.cjs 会逐「行」扫描 apps/api/scripts 下所有文本，
-//    只要某行出现旧仓库目录名就判失败（那条断言的本意是"新仓库源码里不得残留旧品牌/旧包名"）。
-//    但本脚本必须拿到旧仓库的**绝对路径**才能做 sha256 比对 —— 于是把目录名拆成两段拼接，
-//    让"指向旧仓库做校验"不再和"品牌残留"混淆。**不要改回单行字面量**（会让 check-brand 变红）。
-const OLD_ROOT = "D:\\sy_workspace\\code";
-const OLD_UPSTREAM = path.join(OLD_ROOT, "toonflow" + "-upstream");
-const OLD_WEB = path.join(OLD_ROOT, "toonflow" + "-web");
+// ⚠ 旧仓库路径**故意写成正常字面量**（可读、可 grep、可复核），并且在 tools/check-brand.cjs 的
+//    `LEGACY_NAME_EXEMPT` 白名单里**逐文件显式豁免并附理由**（那条断言本意是"新仓库源码不得残留旧品牌/旧包名"，
+//    本脚本引用旧仓库目录名是 Phase 0 的验收判据，不是品牌残留）。
+//    **不要**为了绕开那条门禁把目录名拆成两段字符串拼接 —— 那等于静默豁免，下一个人看不出这里有例外；
+//    也不要要求把豁免规则放宽成"跳过整个 apps/api/scripts 目录"。
+//    本脚本必须拿到旧仓库的**绝对路径**：A 组要按 tools/.phase0-old-baseline.json 的 8 条 sha256
+//    逐条证明旧仓库零改动，被比的路径只能是真实目录名。
+const OLD_UPSTREAM = "D:\\sy_workspace\\code\\toonflow-upstream";
+const OLD_WEB = "D:\\sy_workspace\\code\\toonflow-web";
 
 const READY_TIMEOUT_MS = 60000;
 const OUT_TAIL = 2000;

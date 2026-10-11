@@ -61,3 +61,16 @@ pnpm.cmd dev
 必须存在 `build-only`、不得出现 `vue-tsc`）。
 ⇒ **Phase 3 前端重绘的前置清单项之一：上表 47 条清零，并把 CI web job 的 `build-only` 换回 `vue-tsc`，类型门禁才算恢复。**
 
+## Phase 0 验收的执行边界（两条必须知道的口径）
+
+1. **`pnpm run verify:phase0` 是「本机门禁」，CI 跑不了它。**
+   它的 **A 组**（旧仓库 8 条 sha256 冻结）依赖 `tools/.phase0-old-baseline.json`，而该文件被 `.gitignore` 忽略
+   （里面记的是本机旧仓库的**绝对路径**，属机器特定凭证）⇒ 无此文件的机器（含 CI，全新克隆）A 组必然失败（EXIT 1）。
+   这是设计而非缺陷：验收脚本对基线**只读、绝不重记**。所以请在**本机**（有旧仓库与基线文件的机器）运行它；
+   CI 只跑 `.github/workflows/ci.yml` 里的那些门禁（`check-copy` / `check-brand` / `check-eol` / `check-natives` / `verify:deploy` / typecheck / test / build）。
+2. **「旧系统仍能在 10588 启动」是人工/独立确认项，不由本脚本断言。**
+   Phase 0 计划的 Step 4 要求起旧仓库 10588（需 `NODE_ENV=prod`，否则 dev 模式会向旧仓库写 `src/router.ts`）来确认旧系统仍可用；
+   `verify-phase0.cjs` **刻意不执行也不断言**它 —— 执行它会向旧仓库写 `version.txt`、留下进程与监听端口，
+   与 Phase 0 的硬约束（绝不修改旧仓库、不留残留进程）直接冲突。
+   ⇒ 这一条由人按 Step 4 手工确认，脚本不代劳。
+
