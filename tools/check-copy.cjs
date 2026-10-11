@@ -86,13 +86,23 @@ for (const p of [
   "apps/web/node_modules",
   "apps/web/.git",
   "apps/web/dist",
+  // 旧仓库工具链遗留：新仓库用 pnpm workspaces，yarn 锁不再被任何东西读取
+  "apps/web/yarn.lock",
+  "apps/api/yarn.lock",
+  // ⚠ 致命：vite.config.js 在 DEFAULT_CONFIG_FILES 里排在 vite.config.ts 之前，会**遮蔽** .ts
+  //    （实测上游 vite/dist/node/constants.js 的 DEFAULT_CONFIG_FILES 顺序为 js → mjs → ts → …）
+  "apps/web/vite.config.js",
+  "apps/web/vite.config.d.ts",
+  // 旧仓库 CI（release.yml 是 electron-builder 发布链路，spec §5.4 已废弃）
+  "apps/api/.github",
 ]) mustNotExist(p);
 
 // ---- 数量断言（spec §3.1 实测：236 个 .ts）----
 // 上游 src 有 236 个 .ts；本 Task 删掉死文件 src/socket/resTool copy.ts 后为 235。
 // Task 7 新增 src/config.ts 后回到 236。这里断言 235（复制完整性另有 sha256 保真核对兜底）。
 mustAtLeast("apps/api/src 下 .ts 文件数", countFiles(path.join(ROOT, "apps/api/src"), (p) => p.endsWith(".ts")), 235);
-mustAtLeast("apps/web/src 下文件数", countFiles(path.join(ROOT, "apps/web/src")), 124);
+// 上游 apps/web/src 实测 434 个文件；门槛要贴着实测值，太松（如 124）等于没有完整性保护。
+mustAtLeast("apps/web/src 下文件数", countFiles(path.join(ROOT, "apps/web/src")), 434);
 mustEqual("apps/api/data/vendor 下 .ts 适配器数", countFiles(path.join(ROOT, "apps/api/data/vendor"), (p) => p.endsWith(".ts")), 13);
 
 // ---- 体积断言：只做上界泄漏检测 ----
