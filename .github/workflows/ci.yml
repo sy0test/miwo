@@ -1,0 +1,76 @@
+# miwo CI 骨架（Phase 0 / Task 11）
+#
+# 两个 job 的命令顺序都是**硬约束**，改动前先读这里：
+#
+#   api：仓库检查 → 路由生成（幂等）→ 类型检查 → 单测 → 后端打包
+#     · `tools/check-copy.cjs` 断言 `apps/web/dist` **不存在**（存在性断言），所以任何前端构建
+#       都必须排在它之后；本 job 不构建前端，故安全。它另有 `apps/api` 体积上界 40 MB 断言，
+#       放在打包之前执行更严格。
+#     · 本 job **不启动应用**（不跑 `dev` / `start`）：端到端启动验证属 Task 13。
+#     · `pnpm install --frozen-lockfile` 是硬依赖：锁文件已入库（Task 5 实测可 frozen 安装）。
+#
+#   web：build → vue-tsc --build → check-no-shadow
+#     · `apps/web/src/types/{auto-imports,components}.d.ts` 被 `.gitignore` 忽略、全新克隆里**不存在**，
+#       它们由 vite 插件在构建时生成 ⇒ 必须先 `build` 再类型检查，否则 `vue-tsc` 必失败。
+#     · `vue-tsc --build` 会把 `vite.config.*` 的 tsc 产物写回源码树（历史上就此复活过
+#       `vite.config.js`，它会**遮蔽** `vite.config.ts`）。`tsconfig.node.json` 已把 emit 重定向到
+#       `node_modules/.tmp`，`check-no-shadow.cjs` 就是构建后对这一点做断言。
+#     · 这里**不能**重跑 `check-copy` —— 它断言 `apps/web/dist` 不存在，而上面刚构建出了 dist。
+#
+# `pnpm/action-setup` 刻意**不传** `version` 输入：根 `package.json` 已有
+# `packageManager: pnpm@10.33.0`，而 action 在两者不一致时会直接抛
+# "Multiple versions of pnpm specified"（见 action-setup src/install-pnpm/run.ts）。
+#
+# ⚠ 根 `package.json` 的 `typecheck` / `test` 脚本内部写的是 `pnpm.cmd`（Windows 专用），
+#   所以 CI 里必须用 `pnpm --filter <pkg> run <script>` 调 package 级脚本，不能用 `pnpm run typecheck`。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 仓库检查（复制完整性 / 改名 / 行尾 / 原生模块 / 部署配置一致性）
+        run: |
+          node tools/check-copy.cjs
+          node tools/check-brand.cjs
+          node tools/check-eol.cjs
+          node tools/check-natives.cjs
+          pnpm run verify:deploy
+      - name: 路由生成（幂等）
+        working-directory: apps/api
+        run: node --import=tsx scripts/generate-router.ts
+      - name: 类型检查
+        run: pnpm --filter @miwo/api run typecheck
+      - name: 单测
+        run: pnpm --filter @miwo/api test
+      - name: 后端打包（产物 data/serve/app.js 已被 .gitignore 忽略）
+        run: pnpm --filter @miwo/api run build
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 前端构建（vue-tsc --build --force && vite build）
+        run: pnpm --filter @miwo/web run build
+      - name: 前端类型检查（必须在 build 之后）
+        run: pnpm --filter @miwo/web exec vue-tsc --build
+      - name: 构建后守卫：源码树不得出现会遮蔽 vite.config.ts 的文件
+        run: node tools/check-no-shadow.cjs
