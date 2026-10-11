@@ -21,6 +21,21 @@ function countFiles(dir, filter) {
   return n;
 }
 
+/**
+ * 按 **git 跟踪** 的文件计数（不是磁盘计数）。
+ *
+ * 为什么必须用跟踪计数：`apps/web/src/types/{auto-imports,components}.d.ts` 由 vite 插件生成、
+ * 被 .gitignore 忽略 —— 本地磁盘存在，但全新克隆不存在（实测 434 vs 跟踪 432）。
+ * 用磁盘计数会在 CI 上**假失败**。同时跟踪计数还能顺带发现"该提交的文件没进索引"。
+ */
+function countTrackedFiles(prefix, filter) {
+  const out = require("child_process").execFileSync("git", ["ls-files", "-z", "--", prefix], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  return out.split("\0").filter(Boolean).filter((rel) => !filter || filter(rel)).length;
+}
+
 function dirSizeMB(dir) {
   if (!fs.existsSync(dir)) return -1;
   let sum = 0;
@@ -99,10 +114,11 @@ for (const p of [
 
 // ---- 数量断言（spec §3.1 实测：236 个 .ts）----
 // 上游 src 有 236 个 .ts；本 Task 删掉死文件 src/socket/resTool copy.ts 后为 235。
-// Task 7 新增 src/config.ts 后回到 236。这里断言 235（复制完整性另有 sha256 保真核对兜底）。
-mustAtLeast("apps/api/src 下 .ts 文件数", countFiles(path.join(ROOT, "apps/api/src"), (p) => p.endsWith(".ts")), 235);
-// 上游 apps/web/src 实测 434 个文件；门槛要贴着实测值，太松（如 124）等于没有完整性保护。
-mustAtLeast("apps/web/src 下文件数", countFiles(path.join(ROOT, "apps/web/src")), 434);
+// Task 7 新增 src/config.ts 后回到 236。用 git 跟踪计数（clone 不变异性）。
+mustAtLeast("apps/api/src 下 .ts 文件数（git 跟踪）", countTrackedFiles("apps/api/src", (p) => p.endsWith(".ts")), 235);
+// ⚠ 必须用 git 跟踪计数：磁盘上是 434，但那 2 个多出来的是 vite 插件生成、被 .gitignore 忽略的
+//    src/types/{auto-imports,components}.d.ts，全新克隆只有 432 个 → 用磁盘计数会在 CI 上假失败。
+mustAtLeast("apps/web/src 下文件数（git 跟踪）", countTrackedFiles("apps/web/src"), 432);
 mustEqual("apps/api/data/vendor 下 .ts 适配器数", countFiles(path.join(ROOT, "apps/api/data/vendor"), (p) => p.endsWith(".ts")), 13);
 
 // ---- 体积断言：只做上界泄漏检测 ----
