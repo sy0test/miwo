@@ -1,0 +1,14 @@
+# 统一 LF 行尾，避免 Windows autocrlf 造成的全仓换行抖动
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.mp4 binary
+*.onnx binary
+*.sqlite binary
+*.woff binary
+*.woff2 binary
