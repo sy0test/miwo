@@ -30,6 +30,11 @@ describe("getPath", () => {
     expect(() => getPath("../../etc/passwd")).toThrow(/路径逃逸/);
   });
 
+  it("数组形式的路径逃逸同样抛错", async () => {
+    const { default: getPath } = await import("../src/utils/getPath");
+    expect(() => getPath(["..", "..", "etc", "passwd"])).toThrow(/路径逃逸/);
+  });
+
   it("isEletron 在纯 Node 下为 false", async () => {
     const { isEletron } = await import("../src/utils/getPath");
     expect(isEletron()).toBe(false);

@@ -7,7 +7,9 @@ import { config } from "@/config";
  *
  * Phase 0 变更：基准目录由 `process.cwd()/data` 改为 `config.dataDir`（MIWO_DATA_DIR）。
  * 路径逃逸防护（is-path-inside）保持不变。
- * Electron 分支保留到 Phase 1c 清理；导出名 isEletron 保持不变以免破坏既有 import。
+ * Electron 的数据根分支已在 Task 8 整块删除（不再有 `require("electron")` + `app.getPath("userData")`）：
+ * 打包态同样走 MIWO_DATA_DIR，只剩下面的 `isEletron()` 判定供调用方区分打包/纯 Node 行为，
+ * 导出名 `isEletron` 保持不变以免破坏既有 import。
  */
 export default (fileName?: string[] | string) => {
   const basePath = config.dataDir;

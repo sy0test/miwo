@@ -1,4 +1,3 @@
-import * as ONNX_WEB from "onnxruntime-web";
 import { pipeline, env as transformersEnv, FeatureExtractionPipeline } from "@huggingface/transformers";
 import path from "path";
 import fs from "fs";

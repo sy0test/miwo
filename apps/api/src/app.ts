@@ -8,7 +8,6 @@ import http from "node:http";
 import expressWs from "express-ws";
 import logger from "morgan";
 import cors from "cors";
-import buildRoute from "@/core";
 import path from "path";
 import fs from "fs";
 import u from "@/utils";
@@ -16,6 +15,7 @@ import jwt from "jsonwebtoken";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
+import { config } from "@/config";
 
 const app = express();
 const server = http.createServer(app);
@@ -53,8 +53,6 @@ export default async function startServe(randomPort: Boolean = false) {
   await u.writeVersion();
   const io = new Server(server, { cors: { origin: "*" } });
   socketInit(io);
-
-  if (process.env.NODE_ENV == "dev") await buildRoute();
 
   expressWs(app);
 
@@ -193,12 +191,13 @@ export default async function startServe(randomPort: Boolean = false) {
     res.status(err.status || 500).send(err);
   });
 
-  // 非 Electron（纯 Node：dev / 服务器模式）默认 10588；`PORT` 可覆盖 —— 这样
-  // "本机当服务器给局域网用"可以跑在别的端口上，不和本机开发（10588）撞。
-  // Electron 走 randomPort=true（端口由主进程分配），不受此影响。
-  const port = randomPort ? 0 : Number(process.env.PORT || 10588);
+  // 非 Electron（纯 Node：dev / 服务器模式）的端口与监听地址一律来自 config（MIWO_PORT / MIWO_HOST）。
+  // ⚠ `PORT` 自 Task 9 起**不再被读取**：dev 的 10588 与服务器的 18080 都由 MIWO_PORT 决定。
+  // Electron 走 randomPort=true（端口由主进程分配），不受此影响 —— 此时固定绑回环。
+  const port = randomPort ? 0 : config.port;
+  const bindHost = randomPort ? "127.0.0.1" : config.host;
   return await new Promise((resolve) => {
-    server.listen(port, async () => {
+    server.listen(port, bindHost, async () => {
       const address = server.address();
       const realPort = typeof address === "string" ? address : address?.port;
       console.log(`[服务启动成功]: http://localhost:${realPort}`);

@@ -8,6 +8,7 @@ import initDB from "@/lib/initDB";
 import type { DB } from "@/types/database";
 import crypto from "crypto";
 import fixDB from "@/lib/fixDB";
+import { config } from "@/config";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
@@ -37,7 +38,9 @@ const db = knex({
 (async () => {
   await initDB(db);
   await fixDB(db);
-  if (process.env.NODE_ENV == "dev") initKnexType(db);
+  // 类型生成不再是启动期的隐式副作用：dev 且显式要求（scripts/gen-db-types.ts 会置位）才生成，
+  // 否则每次 `pnpm dev` 都会重写 src/types/database.d.ts。
+  if (config.env === "dev" && process.env.MIWO_GEN_DB_TYPES === "1") initKnexType(db);
 })();
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);

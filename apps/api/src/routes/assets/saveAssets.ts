@@ -4,7 +4,6 @@ import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { stat } from "original-fs";
 const router = express.Router();
 
 // 保存资产图片

@@ -1,34 +1,12 @@
 import isPathInside from "is-path-inside";
 import getPath, { isEletron } from "@/utils/getPath";
+import { config } from "@/config";
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import sharp from "sharp";
-
-/**
- * 「把本机当服务器、用户机用浏览器访问」时用的媒体地址前缀。
- *
- * 为什么需要：媒体 URL 原本在 dev 下写死 `http://localhost:10588/…`，
- * 用户机浏览器会把 `localhost` 解析成**他自己那台机器** → 图片/视频全挂。
- *
- * 优先级：`PUBLIC_BASE_URL`（显式配置，最稳）→ 本机第一个非回环 IPv4 → localhost 兜底。
- * 只在**非 Electron** 时生效（打包版继续用 localhost，行为不变）。
- */
-function lanMediaBase(): string {
-  const explicit = (process.env.PUBLIC_BASE_URL || "").trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
-  const port = process.env.PORT || "10588";
-  const nets = os.networkInterfaces();
-  for (const list of Object.values(nets)) {
-    for (const n of list ?? []) {
-      if (n.family === "IPv4" && !n.internal) return `http://${n.address}:${port}`;
-    }
-  }
-  return `http://localhost:${port}`;
-}
 
 // 规范化路径：去除前导斜杠，并将路径分隔符统一转换为系统分隔符
 function normalizeUserPath(userPath: string): string {
@@ -93,9 +71,12 @@ class OSS {
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
     let url = `/${prefix}/`;
     if (process.env.ossURL && process.env.ossURL !== "") url = process.env.ossURL + `/${prefix}/`;
-    // dev（纯 Node，可能被局域网浏览器访问）用局域网地址；Electron 保持 localhost（页面是 file:///自定义协议，必须绝对地址）
-    if (process.env.NODE_ENV == "dev") url = `${lanMediaBase()}/${prefix}/`;
-    if (isEletron()) url = `http://localhost:${process.env.PORT}/${prefix}/`;
+    // dev（纯 Node，可能被局域网浏览器访问）用对外基地址 —— 唯一真相是 config.publicBaseUrl
+    // （= MIWO_PUBLIC_BASE_URL，dev 缺省 http://<MIWO_HOST>:<MIWO_PORT>），不再自己探测局域网 IP：
+    // 探测出来的网卡可能与浏览器实际走的那张不同（本机就有 192.168.1.12 与虚拟网卡两个非回环地址）。
+    if (process.env.NODE_ENV === "development") url = `${config.publicBaseUrl}/${prefix}/`;
+    // Electron（打包版）页面是 file:///自定义协议，必须绝对地址；属 Phase 1c，端口不再读环境变量 `PORT`。
+    if (isEletron()) url = `http://localhost:${config.port}/${prefix}/`;
     return `${url}${safePath.split(path.sep).join("/")}`;
   }
 
