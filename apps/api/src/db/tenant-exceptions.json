@@ -1,0 +1,362 @@
+{
+  "generatedAt": "2026-10-11T21:19:07.866Z",
+  "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
+  "scanScope": {
+    "srcRoot": "apps/api/src",
+    "tsFilesScanned": 234,
+    "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
+    "raws": "db.raw(...) / u.db.raw(...)",
+    "bypassFiles": "直接命名导入裸 db：import { db } from \"@/utils/db\"（spec 附录 B.1 的判据）",
+    "excludedKnownDirectDbImports": [
+      "apps/api/src/lib/fixDB.ts",
+      "apps/api/src/lib/initDB.ts",
+      "apps/api/src/utils.ts",
+      "apps/api/src/utils/agent/embedding.ts",
+      "apps/api/src/utils/db.ts",
+      "apps/api/src/utils/taskRecord.ts"
+    ],
+    "excludedReason": "包装层自身（utils.ts / utils/db.ts）、启动期改库（lib/fixDB.ts、lib/initDB.ts 的 Knex 只是类型）、非请求上下文（utils/taskRecord.ts、utils/agent/embedding.ts）用的是默认导出的 dbClient，不受请求上下文隔离约束；它们是内部层，不记为特例。"
+  },
+  "joins": {
+    "apps/api/src/lib/fixDB.ts": {
+      "count": 1,
+      "lines": [
+        145
+      ],
+      "tables": [
+        "o_vendorConfig"
+      ],
+      "confirmed": true,
+      "note": "[145 leftJoin o_vendorConfig] 被 join 表策略=platform（供应商配置是平台级，管理员专用）。此处是启动期 fixDB 的 o_agentDeploy 模型回填，没有请求上下文。现状：启动期单次执行，不涉及任何用户；Phase 1b：把这段回填移出请求路径（改成显式的非请求扫描或迁移脚本的 SQL），policies.ts 不为它注入租户条件，并注明这是无 ctx 的允许路径——若留在包装层里就必须显式声明 allowNoContext，不能靠默认放行。"
+    },
+    "apps/api/src/routes/assets/getAssetsApi.ts": {
+      "count": 2,
+      "lines": [
+        23,
+        36
+      ],
+      "tables": [
+        "o_image",
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[23][36 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表 o_assets 两处都带 .where(\"o_assets.projectId\", projectId)，而 projectId 由前端传入、当前无归属校验。Phase 1b：主表条件改为经 o_assets.userId=ctx.userId 的租户条件（projectId 归属由服务端校验），同一条 SQL 上补 o_image.userId=ctx.userId。"
+    },
+    "apps/api/src/routes/assets/getMaterialData.ts": {
+      "count": 1,
+      "lines": [
+        19
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[19 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表 o_assets 带 projectId 条件（前端传入、未校验归属）。Phase 1b：加 o_assets.userId 与 o_image.userId 双条件，projectId 改为服务端校验归属后使用。"
+    },
+    "apps/api/src/routes/assets/pollingImageAssets.ts": {
+      "count": 1,
+      "lines": [
+        17
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[17 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：只有 whereIn(o_assets.id, ids)——ids 由前端传入，是**越权面**（可传他人资产 id）。Phase 1b：必须补 o_assets.userId 与 o_image.userId 条件，并对 ids 做归属校验，不能只靠 ids 过滤。"
+    },
+    "apps/api/src/routes/cornerScape/getAllAssets.ts": {
+      "count": 2,
+      "lines": [
+        18,
+        38
+      ],
+      "tables": [
+        "o_image",
+        "o_assets"
+      ],
+      "confirmed": true,
+      "note": "[18 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表带 projectId 条件（前端传入、未校验归属）。Phase 1b：加 o_assets.userId 与 o_image.userId。[38 leftJoin o_assets（主表 o_assetsRole2Audio）] 被 join 表 o_assets 策略=tenant；现状：只按 assetsRoleId 白名单过滤，而该白名单 id 来自上面那条已按 projectId 过滤的结果，属于间接约束。Phase 1b：在该 SQL 上补 o_assets.userId=ctx.userId（o_assetsRole2Audio 本身也需回填 userId），不依赖「上游已经过滤过」这种隐式保证。"
+    },
+    "apps/api/src/routes/novel/event/getEvent.ts": {
+      "count": 2,
+      "lines": [
+        24,
+        25
+      ],
+      "tables": [
+        "o_eventChapter",
+        "o_novel"
+      ],
+      "confirmed": true,
+      "note": "[24 join o_eventChapter][25 join o_novel] 两张被 join 表策略均为 tenant。现状：靠 .where(\"n.projectId\", projectId) 定位到单个项目（projectId 由前端传入、未校验归属），而 o_event 自身**无任何归属列**（附录 A）。Phase 1b：o_eventChapter/o_novel 补 userId 后，整个查询加 tenant 条件；o_event 的归属经 o_eventChapter→o_novel→o_project 回填 userId 后再纳入租户过滤。另：本接口同时是 bypass 与 raw 条目，三处必须一起改。"
+    },
+    "apps/api/src/routes/production/assets/batchGenerateAssetsImage.ts": {
+      "count": 1,
+      "lines": [
+        28
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[28 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(o_assets.id, parentIds)，parentIds 是**服务端从本次请求内的 assetsDataArr 推导**的，而 assetsDataArr 用 whereIn(\"id\", assetIds)、assetIds 由前端传入且未校验归属。Phase 1b：在 .db(\"o_assets\") 上补 userId 条件，阻断「传入他人 assetId」的越权面。"
+    },
+    "apps/api/src/routes/production/assets/pollingImage.ts": {
+      "count": 1,
+      "lines": [
+        17
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[17 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 pollingImageAssets 同形，只有 whereIn(o_assets.id, ids)，ids 前端传入未经归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId，并在取数前校验 ids 归属。"
+    },
+    "apps/api/src/routes/production/getFlowData.ts": {
+      "count": 2,
+      "lines": [
+        85,
+        94
+      ],
+      "tables": [
+        "o_image",
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[85][94 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：两条查询的主表 o_assets 都带 .where(\"o_assets.projectId\", projectId)（前端传入、未校验归属）。Phase 1b：主表改 userId=ctx.userId，同一 SQL 补 o_image.userId。"
+    },
+    "apps/api/src/routes/production/getStoryboardData.ts": {
+      "count": 2,
+      "lines": [
+        32,
+        33
+      ],
+      "tables": [
+        "o_assets",
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[32 leftJoin o_assets][33 leftJoin o_image] 两张被 join 表策略均为 tenant。现状：whereIn(\"o_assets2Storyboard.storyboardId\", storyboardIds)，storyboardIds 是本请求内先查 o_storyboard 得到的结果——而那次查询的 projectId 过滤决定了它的边界。Phase 1b：不要依赖「上游已过滤」这条隐式保证，直接在 o_assets2Storyboard 上加租户条件并让 o_assets/o_image 一并带 userId。"
+    },
+    "apps/api/src/routes/production/workbench/batchGeneratePrompt.ts": {
+      "count": 1,
+      "lines": [
+        131
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[131 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 且 .first()，item.id 来自前端请求体的素材列表，无归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId 条件，使越权 id 查不到而不是返回数据。"
+    },
+    "apps/api/src/routes/production/workbench/batchGenerateVideo.ts": {
+      "count": 1,
+      "lines": [
+        85
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[85 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 后 .first()，item.id 由前端传入、无归属校验；且 join 在 where 之后书写，可读性差但与语义无关。Phase 1b：加 o_assets.userId 条件（o_image 同补），越权 id 直接落到 undefined 而不是返回路径。"
+    },
+    "apps/api/src/routes/production/workbench/generateVideo.ts": {
+      "count": 1,
+      "lines": [
+        75
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[75 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 batchGenerateVideo 同形（where(\"o_assets.id\", item.id).first()，id 前端传入未校验）。Phase 1b：补 o_assets.userId/o_image.userId；建议顺手把 join 提到 where 之前，统一成「先 join 再筛」的写法。"
+    },
+    "apps/api/src/routes/production/workbench/generateVideoPrompt.ts": {
+      "count": 1,
+      "lines": [
+        60
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[60 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id).first()，id 前端传入未校验归属。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。"
+    },
+    "apps/api/src/routes/production/workbench/getAudioBindAssetsList.ts": {
+      "count": 1,
+      "lines": [
+        21
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[21 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(\"o_assets.assetsId\", assets2AudioData.map(...))，白名单来自上一条按 assetsRoleId 查 o_assetsRole2Audio 的结果（前端传入 assetsIds、未校验归属）。Phase 1b：给 o_assets 加 userId 条件（o_assetsRole2Audio 回填 userId 后一并加），不要依赖上游隐式过滤。"
+    },
+    "apps/api/src/routes/production/workbench/getFileUrl.ts": {
+      "count": 1,
+      "lines": [
+        36
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[36 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(\"o_assets.id\", assetsIds)，assetsIds 是前端 items 里 sources===\"assets\" 的 id，无归属校验——**典型越权读文件路径面**。Phase 1b：补 o_assets.userId 与 o_image.userId；此外该接口返回的是 OSS 路径，Phase 1b 还需确认路径签名/鉴权不会因拿到路径而绕过隔离。"
+    },
+    "apps/api/src/routes/production/workbench/getGenerateData.ts": {
+      "count": 4,
+      "lines": [
+        163,
+        164,
+        172,
+        173
+      ],
+      "tables": [
+        "o_assets",
+        "o_image",
+        "o_assets",
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[163 leftJoin o_assets][164 leftJoin o_image] 被 join 表策略均为 tenant。现状：主表按 isSegments 切 o_shotAssets / o_assets2Storyboard，条件里 storyIds 由服务端从「该集所有镜 id」推导（v2 颗粒度改动的产物），上游 projectId 过滤来自本文件前段。[172 leftJoin o_assets][173 leftJoin o_image] 同两张表；现状：whereIn(\"o_assetsRole2Audio.assetsRoleId\", queryAudioIds)，queryAudioIds 是本请求内从上面结果推导的。Phase 1b：两段都要在主表与两张被 join 表上显式加 userId 条件——本文件是「分镜/素材」主干读路径，越权面最大，必须逐条断言而不是靠推导链。"
+    },
+    "apps/api/src/routes/script/getScrptApi.ts": {
+      "count": 1,
+      "lines": [
+        24
+      ],
+      "tables": [
+        "o_scriptAssets"
+      ],
+      "confirmed": true,
+      "note": "[24 leftJoin o_scriptAssets] 被 join 表 o_scriptAssets 策略=tenant。现状：whereIn(\"o_scriptAssets.scriptId\", data.map(id))，data 来自上一条 u.db(\"o_script\").where(\"projectId\", projectId)（前端传入、未校验归属）。Phase 1b：o_script 与 o_scriptAssets 都补 userId 条件（两张表都需回填 userId）。"
+    },
+    "apps/api/src/routes/setting/agentDeploy/getAgentDeploy.ts": {
+      "count": 1,
+      "lines": [
+        7
+      ],
+      "tables": [
+        "o_vendorConfig"
+      ],
+      "confirmed": true,
+      "note": "[7 leftJoin o_vendorConfig] 被 join 表 o_vendorConfig 策略=platform（附录 A：管理员专用）。现状：**无任何鉴权**，任意登录用户即可读到全表 o_agentDeploy 与 o_vendorConfig 列（供应商 key 明文存储，见附录 C「密钥回传」）。Phase 1b：整个 /api/setting/agentDeploy/* 加 requireAdmin，o_vendorConfig 的 key 加密存储且不回传；不加租户条件（platform 表对所有租户相同），但要防越权读取。"
+    },
+    "apps/api/src/routes/task/getTaskApi.ts": {
+      "count": 1,
+      "lines": [
+        21
+      ],
+      "tables": [
+        "o_project"
+      ],
+      "confirmed": true,
+      "note": "[21 leftJoin o_project] 被 join 表 o_project 策略=tenant（附录 A：已有 userId 列但当前未真写入）。现状：projectId 是**可选**过滤条件——不传时这条查询会返回**全部租户**的任务，是当前最直接的越权读。Phase 1b：o_tasks 补 userId 后强制加 o_tasks.userId=ctx.userId（o_project 同补），projectId 只能在租户条件之内进一步收窄。"
+    }
+  },
+  "raws": {
+    "apps/api/src/routes/novel/event/getEvent.ts": {
+      "count": 1,
+      "lines": [
+        42
+      ],
+      "confirmed": true,
+      "note": "[42 db.raw(\"GROUP_CONCAT(n.chapterIndex)\")] 处置（spec §7.3 / §6.3）：本文件整体改走 u.db 包装层并加租户条件（与 joins 条目同一处改动），raw 要么换成 knex 的聚合写法，要么保留但由包装层显式放行并带上 ctx 条件。跨库注意：目标库换成 MySQL 后 GROUP_CONCAT 受 group_concat_max_len 限制（默认 1024 字节），章节序号多的项目会被**静默截断**，Phase 1b 需在连接级设置或改用应用层聚合。"
+    },
+    "apps/api/src/routes/setting/dbConfig/clearData.ts": {
+      "count": 3,
+      "lines": [
+        11,
+        16,
+        20
+      ],
+      "confirmed": true,
+      "note": "[11 读 sqlite_master][16 PRAGMA foreign_keys=OFF][20 PRAGMA foreign_keys=ON] 处置（spec §7.3）：requireAdmin + **默认关闭**（需显式环境变量开启）+ 审计。现状是无鉴权的「drop 全库并重新 initDB」接口；Phase 1b 起这些 raw 只在显式开启后可达，且 PRAGMA/整库操作不参与租户过滤（它们是实例级运维操作，不是租户数据访问）。"
+    },
+    "apps/api/src/routes/setting/dbConfig/clearTable.ts": {
+      "count": 2,
+      "lines": [
+        15,
+        23
+      ],
+      "confirmed": true,
+      "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。第 23 行用**表名插值**拼 SQL（仅表名走白名单校验，值没有参数化）；Phase 1b 若要保留，改成 knex 的 .del()/.truncate() 并统一走包装层，避免手写 SQL 成为隔离缺口。"
+    },
+    "apps/api/src/routes/setting/dbConfig/dbInfo.ts": {
+      "count": 2,
+      "lines": [
+        9,
+        15
+      ],
+      "confirmed": true,
+      "note": "[9 读 sqlite_master][15 SELECT COUNT(*) FROM \"${table.name}\"] 处置（spec §7.3 / 附录 B.1）：接口**保留但收权 + 脱敏**。第 15 行是**参数化安全**的（表名来自第 9 行枚举，不含用户输入），Phase 1b 只需 requireAdmin；若将来把行数按租户展示，必须改成经包装层带 userId 的计数，不能用全表 COUNT(*)。"
+    },
+    "apps/api/src/routes/setting/dbConfig/exportData.ts": {
+      "count": 2,
+      "lines": [
+        9,
+        15
+      ],
+      "confirmed": true,
+      "note": "[9 读 sqlite_master][15 SELECT * FROM \"${table.name}\"] 处置（spec §7.3）：requireAdmin + **脱敏**（剔除 passwordHash / inputValues / tokenKey）+ 审计。现状是「任意登录用户一条 GET 导出整库」，含 o_user 密码哈希与 o_vendorConfig 明文 key；Phase 1b 必须先把脱敏做进导出行，再谈租户过滤（导出是实例级运维动作，不做租户过滤，所以只能靠收权 + 脱敏兜住）。"
+    },
+    "apps/api/src/routes/setting/dbConfig/importData.ts": {
+      "count": 7,
+      "lines": [
+        16,
+        20,
+        24,
+        30,
+        35,
+        42,
+        49
+      ],
+      "confirmed": true,
+      "note": "[16 读 sqlite_master][20 PRAGMA OFF][24 PRAGMA ON][30 PRAGMA OFF][35 读 sqlite_master][42 DELETE FROM \"${tableName}\"][49 PRAGMA ON] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。现状：任意登录用户 POST 一个 JSON 就能先 drop 所有表再灌入任意数据（第 46 行还用 db(tableName).insert(batch) 直写整库）。Phase 1b 默认关闭该接口；若仍要保留，导入的表名与列必须走白名单，并明确它是「整库恢复」而不是租户级写入。"
+    }
+  },
+  "bypassFiles": [
+    {
+      "path": "apps/api/src/routes/novel/event/getEvent.ts",
+      "confirmed": true,
+      "note": "处置（spec 附录 B.1 / §6.3）：**改走 u.db**。本文件同时是 joins(24,25) 与 raws(42) 条目：把 import { db } from \"@/utils/db\" 去掉，GROUP_CONCAT 走包装层并加租户条件——三处是同一处改动，不能只改 import。"
+    },
+    {
+      "path": "apps/api/src/routes/other/deleteAllData.ts",
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**接口删除**。现状是一句 initDB(db, true) 清空所有表，无鉴权、无环境开关、无审计；服务器版没有保留价值，Phase 1b 直接摘掉路由（连同 router 注册）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/clearTable.ts",
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/dbInfo.ts",
+      "confirmed": true,
+      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/exportData.ts",
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/importData.ts",
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。"
+    }
+  ],
+  "directDbImports": [
+    "apps/api/src/lib/fixDB.ts",
+    "apps/api/src/utils.ts",
+    "apps/api/src/utils/agent/embedding.ts",
+    "apps/api/src/utils/taskRecord.ts"
+  ]
+}
