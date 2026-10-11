@@ -16,8 +16,8 @@
     ]
   },
   "scripts": {
-    "typecheck": "pnpm.cmd -r --if-present typecheck",
-    "test": "pnpm.cmd -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
     "verify:copy": "node tools/check-copy.cjs",
     "verify:brand": "node tools/check-brand.cjs",
     "verify:deploy": "node tools/check-deploy-config.cjs",

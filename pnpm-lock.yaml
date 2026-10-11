@@ -225,6 +225,9 @@ importers:
       js-confetti:
         specifier: ^0.13.1
         version: 0.13.1
+      jszip:
+        specifier: ^3.10.2
+        version: 3.10.2
       lodash:
         specifier: ^4.17.23
         version: 4.18.1
