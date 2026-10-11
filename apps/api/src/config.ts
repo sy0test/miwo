@@ -60,6 +60,21 @@ function toPort(raw: string, key: string): number {
   return n;
 }
 
+/** 可选值：把 `undefined` 与空串**统一**视为"未设置"，避免 `""` 被 `Number("")` 静默吃成 0 或漏过校验。 */
+function optional(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  const v = env[key];
+  return v === undefined || v.trim() === "" ? undefined : v;
+}
+
+/** 可选整数：未设置取默认值；设置了就必须是 >= min 的整数，否则抛错（不允许 NaN 静默流出）。 */
+function toInt(env: NodeJS.ProcessEnv, key: string, dflt: number, min: number): number {
+  const raw = optional(env, key);
+  if (raw === undefined) return dflt;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min) throw new ConfigError(`${key} 必须是 >=${min} 的整数，实际 "${raw}"`);
+  return n;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   const rawEnv = required(env, "MIWO_ENV");
   if (rawEnv !== "dev" && rawEnv !== "prod") throw new ConfigError(`MIWO_ENV 只能是 dev 或 prod，实际 "${rawEnv}"`);
@@ -77,18 +92,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     throw new ConfigError(`MIWO_JWT_SECRET 至少 ${MIN_SECRET_BYTES} 字节（当前 ${Buffer.byteLength(jwtSecret, "utf8")}）`);
   }
 
-  const publicBaseUrl = env.MIWO_PUBLIC_BASE_URL || (rawEnv === "dev" ? `http://${host}:${port}` : "");
+  const publicBaseUrl = optional(env, "MIWO_PUBLIC_BASE_URL") ?? (rawEnv === "dev" ? `http://${host}:${port}` : "");
   if (rawEnv === "prod" && !publicBaseUrl) throw new ConfigError("prod 环境必须设置 MIWO_PUBLIC_BASE_URL");
 
-  const storageDriver = env.MIWO_STORAGE_DRIVER || "local";
+  const storageDriver = optional(env, "MIWO_STORAGE_DRIVER") ?? "local";
   if (storageDriver !== "local" && storageDriver !== "s3") {
     throw new ConfigError(`MIWO_STORAGE_DRIVER 只能是 local 或 s3，实际 "${storageDriver}"`);
   }
 
-  const trustProxy = env.MIWO_TRUST_PROXY === undefined ? (rawEnv === "prod" ? 1 : 0) : Number(env.MIWO_TRUST_PROXY);
-  if (!Number.isInteger(trustProxy) || trustProxy < 0) throw new ConfigError(`MIWO_TRUST_PROXY 必须是非负整数，实际 "${env.MIWO_TRUST_PROXY}"`);
+  const trustProxyRaw = optional(env, "MIWO_TRUST_PROXY");
+  const trustProxy = trustProxyRaw === undefined ? (rawEnv === "prod" ? 1 : 0) : Number(trustProxyRaw);
+  if (!Number.isInteger(trustProxy) || trustProxy < 0) throw new ConfigError(`MIWO_TRUST_PROXY 必须是非负整数，实际 "${trustProxyRaw}"`);
 
-  const dbDriver = env.MIWO_DB_DRIVER || "sqlite";
+  const dbDriver = optional(env, "MIWO_DB_DRIVER") ?? "sqlite";
   let db: MiwoConfig["db"];
   if (dbDriver === "sqlite") {
     db = { driver: "sqlite", file: path.join(dataDir, "db2.sqlite") };
@@ -98,11 +114,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
       host: required(env, "MIWO_DB_HOST"),
       port: toPort(required(env, "MIWO_DB_PORT"), "MIWO_DB_PORT"),
       user: required(env, "MIWO_DB_USER"),
-      password: env.MIWO_DB_PASSWORD ?? "",
+      // password 允许为空（本地 MySQL 常见），但**必须显式**：这里不用 `required`，并在 .env.example 里写明
+      password: optional(env, "MIWO_DB_PASSWORD") ?? "",
       name: required(env, "MIWO_DB_NAME"),
-      poolMin: Number(env.MIWO_DB_POOL_MIN ?? 2),
-      poolMax: Number(env.MIWO_DB_POOL_MAX ?? 20),
+      poolMin: toInt(env, "MIWO_DB_POOL_MIN", 2, 1),
+      poolMax: toInt(env, "MIWO_DB_POOL_MAX", 20, 1),
     };
+    if ((db as MiwoDbConfigMysql).poolMax < (db as MiwoDbConfigMysql).poolMin) {
+      throw new ConfigError(`MIWO_DB_POOL_MAX (${(db as MiwoDbConfigMysql).poolMax}) 不能小于 MIWO_DB_POOL_MIN (${(db as MiwoDbConfigMysql).poolMin})`);
+    }
   } else {
     throw new ConfigError(`MIWO_DB_DRIVER 只能是 sqlite 或 mysql，实际 "${dbDriver}"`);
   }

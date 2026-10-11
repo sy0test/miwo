@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadConfig } from "../src/config";
+// ⚠ 用 `@/config`（而不是 `../src/config`）：这样至少有一个已提交的测试**真的走过 `resolve.alias`**，
+//    否则别名被误删后测试仍会全绿（Task 7 审查发现的覆盖漏洞 M4）。
+import { ConfigError, loadConfig } from "@/config";
 
 const base = {
   MIWO_ENV: "dev",
@@ -36,11 +38,9 @@ describe("loadConfig", () => {
     const dev = { ...base };
     loadConfig(dev);
     expect(dev.NODE_ENV).toBe("development");
+    // 显式标注 NodeJS.ProcessEnv：对象字面量展开会丢索引签名，导致 prod.NODE_ENV 在 tsc 下报 TS2339。
     const prod: NodeJS.ProcessEnv = {
-      ...base, MIWO_ENV: "prod", MIWO_HOST: "127.0.0.1",
-      // ⚠ brief 原文此处缺 MIWO_PUBLIC_BASE_URL，但 brief 自己的 config.ts（prod 必须设公网基址，
-      //   fail-fast 契约）会因此抛错 —— 两处自相矛盾。此处按"prod 契约"补齐 fixture 才自洽。
-      MIWO_PUBLIC_BASE_URL: "https://miwo.example.com",
+      ...base, MIWO_ENV: "prod", MIWO_HOST: "127.0.0.1", MIWO_PUBLIC_BASE_URL: "https://example.test",
     };
     loadConfig(prod);
     expect(prod.NODE_ENV).toBe("production");
@@ -64,5 +64,63 @@ describe("loadConfig", () => {
       MIWO_DB_USER: "miwo", MIWO_DB_PASSWORD: "p", MIWO_DB_NAME: "miwo",
     });
     expect(cfg.db.driver).toBe("mysql");
+  });
+
+  // ---- 以下为 Task 7 审查补出的覆盖缺口（I1/I2/M1/M3）：每个可执行分支都要有用例 ----
+
+  it("mysql 的 4 个 required 分支逐个生效（参数化）", () => {
+    const mysqlBase = {
+      ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "127.0.0.1", MIWO_DB_PORT: "3306",
+      MIWO_DB_USER: "miwo", MIWO_DB_NAME: "miwo",
+    } as NodeJS.ProcessEnv;
+    for (const key of ["MIWO_DB_HOST", "MIWO_DB_PORT", "MIWO_DB_USER", "MIWO_DB_NAME"]) {
+      const env = { ...mysqlBase };
+      delete env[key];
+      expect(() => loadConfig(env), `缺 ${key} 应抛错`).toThrow(new RegExp(key));
+    }
+  });
+
+  it("mysql 的 password 允许为空（显式为可选）", () => {
+    const cfg = loadConfig({
+      ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "127.0.0.1", MIWO_DB_PORT: "3306",
+      MIWO_DB_USER: "miwo", MIWO_DB_NAME: "miwo",
+    });
+    expect(cfg.db.driver).toBe("mysql");
+    if (cfg.db.driver === "mysql") expect(cfg.db.password).toBe("");
+  });
+
+  it("连接池参数非法时抛错、缺省时取默认（不允许 NaN 静默流出）", () => {
+    expect(() => loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n", MIWO_DB_POOL_MIN: "abc" })).toThrow(/MIWO_DB_POOL_MIN/);
+    expect(() => loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n", MIWO_DB_POOL_MAX: "0" })).toThrow(/MIWO_DB_POOL_MAX/);
+    expect(() => loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n", MIWO_DB_POOL_MIN: "10", MIWO_DB_POOL_MAX: "5" })).toThrow(/不能小于/);
+    const cfg = loadConfig({ ...base, MIWO_DB_DRIVER: "mysql", MIWO_DB_HOST: "h", MIWO_DB_PORT: "3306", MIWO_DB_USER: "u", MIWO_DB_NAME: "n" });
+    if (cfg.db.driver === "mysql") {
+      expect(cfg.db.poolMin).toBe(2);
+      expect(cfg.db.poolMax).toBe(20);
+    }
+  });
+
+  it("非法 MIWO_STORAGE_DRIVER 抛错", () => {
+    expect(() => loadConfig({ ...base, MIWO_STORAGE_DRIVER: "ftp" })).toThrow(/MIWO_STORAGE_DRIVER/);
+  });
+
+  it("非法 MIWO_TRUST_PROXY 抛错，空串视为未设置", () => {
+    expect(() => loadConfig({ ...base, MIWO_TRUST_PROXY: "-1" })).toThrow(/MIWO_TRUST_PROXY/);
+    expect(() => loadConfig({ ...base, MIWO_TRUST_PROXY: "abc" })).toThrow(/MIWO_TRUST_PROXY/);
+    // 空串统一按"未设置"处理 → dev 默认 0，不应被 Number("") 静默吃成 0 以外的值
+    expect(loadConfig({ ...base, MIWO_TRUST_PROXY: "" }).trustProxy).toBe(0);
+  });
+
+  it("非法 MIWO_DB_DRIVER 抛错", () => {
+    expect(() => loadConfig({ ...base, MIWO_DB_DRIVER: "oracle" })).toThrow(/MIWO_DB_DRIVER/);
+  });
+
+  it("prod 缺 MIWO_PUBLIC_BASE_URL 抛错", () => {
+    expect(() => loadConfig({ ...base, MIWO_ENV: "prod", MIWO_HOST: "127.0.0.1" })).toThrow(/MIWO_PUBLIC_BASE_URL/);
+  });
+
+  it("MIWO_MEDIA_DIR 覆盖默认媒体目录", () => {
+    const cfg = loadConfig({ ...base, MIWO_MEDIA_DIR: "D:\\tmp\\custom-media" });
+    expect(cfg.mediaDir.replace(/\\/g, "/")).toBe("D:/tmp/custom-media");
   });
 });

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * 断言品牌改名完成，且供应商数据 id 在「适配器文件名 / 三处引用文件 / 数据库」三方保持一致
+ * 断言品牌改名完成，且供应商数据 id 保持一致：适配器文件名 `apps/api/data/vendor/<id>.ts`
+ * ↔ 三个源码引用文件（`agentSetKey.ts` / `fixDB.ts` / `getVendorList.ts`）；
+ * 另校验两个包名（`@miwo/api`、`@miwo/web`）。**脚本只读源码文件，不读数据库。**
  * （Task 6 迁移前为 `toonflow`、迁移后为 `miwo`，两种取值都接受）。
  * 用法：node tools/check-brand.cjs
  */
@@ -50,7 +52,7 @@ if (pkgNameHits.length) failures.push(`仍有 ${pkgNameHits.length} 处 toonflow
 if (protocolHits.length === 0) failures.push(`toonflow:// 共 0 处：Phase 0 不应删除它（Phase 1e 处理），请确认没有被误改`);
 
 // 4) 供应商数据 id 的完整性：Task 5（改名）之后、Task 6（数据 id 迁移）之前必须是 `toonflow`；
-//    Task 6 之后必须是 `miwo`。两条都接受，但必须"文件名、DB 引用文件"三方一致，且不能既无也无。
+//    Task 6 之后必须是 `miwo`。两条都接受，但适配器文件名与上面三个源码引用文件必须一致，且不能既无也无。
 const ID_CANDIDATES = ["toonflow", "miwo"];
 const idRefFiles = [
   "apps/api/src/routes/setting/agentDeploy/agentSetKey.ts",

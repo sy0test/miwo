@@ -9,15 +9,18 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     environment: "node",
-    // ⚠ 必需：src/config.ts 末尾有 `export const config = loadConfig()` —— 模块级 fail-fast，
-    //   任何 import 了 src/config 的模块（Task 8/9 的 getPath.ts 等）在测试里加载时都会执行它。
-    //   这里给出最小合法环境，保证测试运行期 process.env 始终自洽；不改变生产行为。
+    // ⚠ 必须有 test.env：`src/config.ts` 末行是 `export const config = loadConfig()`（模块级 fail-fast），
+    //    vitest 在**收集阶段**就会 import 它；此时 process.env 里没有 MIWO_*，会直接抛
+    //    `ConfigError: 缺少必需环境变量 MIWO_ENV`，**整个测试文件在收集阶段就崩**（实测复现过）。
+    //    Task 8/9 的单测要 `import { config } from "@/config"`，没有这几行会同样整文件崩。
     env: {
       MIWO_ENV: "dev",
       MIWO_PORT: "10599",
       MIWO_HOST: "127.0.0.1",
-      MIWO_DATA_DIR: ".tmp-vitest-data",
-      MIWO_JWT_SECRET: "vitest-only-secret-padding-0123456789abcdef",
+      // ⚠ 必须用**仓库外绝对路径**：相对路径会让数据根随运行目录漂移，且将来若有测试 mkdir mediaDir
+      //    就会在仓库里生成目录（`check-copy` 的 mustNotBeTracked 清单不含这类临时目录，有误提交风险）。
+      MIWO_DATA_DIR: "D:\\tmp\\miwo-test-data",
+      MIWO_JWT_SECRET: "test-secret-at-least-32-bytes-long-000",
     },
   },
 });
