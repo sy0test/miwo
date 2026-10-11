@@ -116,6 +116,13 @@ for (const p of [
   //    （实测上游 vite/dist/node/constants.js 的 DEFAULT_CONFIG_FILES 顺序为 js → mjs → ts → …）
   "apps/web/vite.config.js",
   "apps/web/vite.config.d.ts",
+  // ⚠ 嵌套 .git 必须用"存在性"断言，不能放进 mustNotBeTracked：
+  //    **git 从不索引路径含 `.git` 成分的文件** —— 实测隔离仓库里 `git add -f -- apps/api/.git`
+  //    与 `git add -f -- apps/api/.git/config` 都静默无效，`git ls-files` 仍为空。
+  //    放进 mustNotBeTracked 等于让那两条断言**永远无法触发**（保护消失）；
+  //    嵌套 .git 只在"误把整仓拷进来"时出现，属"放错位置就一定错"，归属必须是存在性断言。
+  "apps/api/.git",
+  "apps/web/.git",
 ]) mustNotExist(p);
 
 // ---- 不得被提交（运行/构建产物；查索引，不查磁盘）----
@@ -125,8 +132,6 @@ for (const p of [
   "apps/api/dist",
   "apps/web/dist",
   "apps/api/build",
-  "apps/api/.git",
-  "apps/web/.git",
   "apps/api/data/oss",
   "apps/api/data/db2.sqlite",
   "apps/api/data/serve",
