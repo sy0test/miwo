@@ -28,12 +28,16 @@ function countFiles(dir, filter) {
  * 被 .gitignore 忽略 —— 本地磁盘存在，但全新克隆不存在（实测 434 vs 跟踪 432）。
  * 用磁盘计数会在 CI 上**假失败**。同时跟踪计数还能顺带发现"该提交的文件没进索引"。
  */
-function countTrackedFiles(prefix, filter) {
+function trackedFiles(prefix) {
   const out = require("child_process").execFileSync("git", ["ls-files", "-z", "--", prefix], {
     cwd: ROOT,
     encoding: "utf8",
   });
-  return out.split("\0").filter(Boolean).filter((rel) => !filter || filter(rel)).length;
+  return out.split("\0").filter(Boolean);
+}
+
+function countTrackedFiles(prefix, filter) {
+  return trackedFiles(prefix).filter((rel) => !filter || filter(rel)).length;
 }
 
 function dirSizeMB(dir) {
@@ -55,6 +59,21 @@ function mustExist(rel) {
 function mustNotExist(rel) {
   const p = path.join(ROOT, rel);
   if (fs.existsSync(p)) failures.push(`不该存在: ${rel}`);
+}
+
+/**
+ * 负向断言（二）：**不得被提交** —— 查 git 索引，不查磁盘存在性。
+ *
+ * 为什么不能再用存在性断言：`node_modules`、`dist`、`build`、`data/oss`、`data/db2.sqlite`
+ * 都是**运行/构建时合法存在**的路径 —— Task 4 拷入 dev 库、Task 6 `pnpm install`、
+ * 应用启动时 mkdir `data/oss`、`vite build` 的产物。用存在性断言会让
+ * "只剩 config.ts" 这条验收点永远不成立，也会让 CI 在 install 之后必然变红。
+ *
+ * 真正要防的是**把产物误提交进仓库**（克隆不变异性被破坏），所以判定方式是索引：
+ * `git ls-files -- <path>` 有输出 = 已被跟踪 = 失败。带 `-f` 强制 add 也被抓得住。
+ */
+function mustNotBeTracked(rel) {
+  if (trackedFiles(rel).length) failures.push(`不得被提交但已跟踪: ${rel}`);
 }
 
 function mustEqual(label, actual, expected) {
@@ -83,34 +102,37 @@ for (const p of [
   "apps/web/index.html",
 ]) mustExist(p);
 
-// ---- 必须不存在（产物/历史/运行时/旧文档）----
+// ---- 必须不存在（遮蔽/遗留：放错位置就一定错）----
 for (const p of [
-  "apps/api/node_modules",
-  "apps/api/dist",
-  "apps/api/build",
-  "apps/api/.git",
-  "apps/api/.codegraph",
-  "apps/api/.superpowers",
-  "apps/api/docs",
-  "apps/api/data/oss",
-  "apps/api/data/db2.sqlite",
-  "apps/api/data/serve",
-  "apps/api/data/web",
   "apps/api/electron-builder.yml",
   "apps/api/scripts/main.ts",
-  "apps/web/node_modules",
-  "apps/web/.git",
-  "apps/web/dist",
-  // 旧仓库工具链遗留：新仓库用 pnpm workspaces，yarn 锁不再被任何东西读取
+  "apps/api/docs",
+  "apps/api/.codegraph",
+  "apps/api/.superpowers",
+  "apps/api/.github",
   "apps/web/yarn.lock",
   "apps/api/yarn.lock",
   // ⚠ 致命：vite.config.js 在 DEFAULT_CONFIG_FILES 里排在 vite.config.ts 之前，会**遮蔽** .ts
   //    （实测上游 vite/dist/node/constants.js 的 DEFAULT_CONFIG_FILES 顺序为 js → mjs → ts → …）
   "apps/web/vite.config.js",
   "apps/web/vite.config.d.ts",
-  // 旧仓库 CI（release.yml 是 electron-builder 发布链路，spec §5.4 已废弃）
-  "apps/api/.github",
 ]) mustNotExist(p);
+
+// ---- 不得被提交（运行/构建产物；查索引，不查磁盘）----
+for (const p of [
+  "apps/api/node_modules",
+  "apps/web/node_modules",
+  "apps/api/dist",
+  "apps/web/dist",
+  "apps/api/build",
+  "apps/api/.git",
+  "apps/web/.git",
+  "apps/api/data/oss",
+  "apps/api/data/db2.sqlite",
+  "apps/api/data/serve",
+  "apps/api/data/web",
+  "apps/api/data/version.txt",
+]) mustNotBeTracked(p);
 
 // ---- 数量断言（spec §3.1 实测：236 个 .ts）----
 // 上游 src 有 236 个 .ts；本 Task 删掉死文件 src/socket/resTool copy.ts 后为 235。
