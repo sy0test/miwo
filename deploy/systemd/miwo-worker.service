@@ -1,0 +1,16 @@
+[Unit]
+Description=miwo worker
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=miwo
+WorkingDirectory=/opt/miwo/apps/api
+EnvironmentFile=/etc/miwo/env
+ExecStart=/usr/bin/node dist/worker.js
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+# 谜沃 / MirrorWorld 单机部署（Phase 0 骨架；worker 于 Phase 1d 启用）
+name: miwo
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MIWO_MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MIWO_DB_NAME}
+      MYSQL_USER: ${MIWO_DB_USER}
+      MYSQL_PASSWORD: ${MIWO_DB_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MIWO_MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  api:
+    image: miwo-api:${MIWO_IMAGE_TAG}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MIWO_ENV: ${MIWO_ENV}
+      MIWO_PORT: ${MIWO_PORT}
+      MIWO_HOST: ${MIWO_HOST}
+      MIWO_DATA_DIR: ${MIWO_DATA_DIR}
+      MIWO_JWT_SECRET: ${MIWO_JWT_SECRET}
+    volumes:
+      - miwo-data:${MIWO_DATA_DIR}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    expose: ["${MIWO_PORT}"]
+    networks: [internal]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../apps/web/dist:/usr/share/nginx/html:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on: [api]
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  mysql-data:
+  miwo-data:

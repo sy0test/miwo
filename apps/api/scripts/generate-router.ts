@@ -9,6 +9,14 @@ import path from "path";
 import { readFile, writeFile } from "fs/promises";
 import crypto from "crypto";
 
+/**
+ * 路径基准一律取脚本自身位置（`apps/api`），**不依赖 cwd**。
+ * 旧实现用裸相对路径（glob 的 `src/routes` 前缀与 `readFile("src/router.ts")`）按 cwd 解析：
+ * 一旦不是从 apps/api 启动，glob 会静默匹配 0 个文件、router.ts 读写会 ENOENT，报错不指向真因。
+ */
+const API_ROOT = path.resolve(__dirname, "..");
+const p = (...segs: string[]): string => path.resolve(API_ROOT, ...segs);
+
 function fileNameToRoutePath(fileName: string): string {
   let routePath = fileName.replace(/\.(ts)$/, "");
   routePath = routePath.split(path.sep).join("/");
@@ -21,18 +29,29 @@ function fileNameToRoutePath(fileName: string): string {
 type RouteModulePair = { routePath: string; varName: string; entry: string };
 
 async function main(): Promise<void> {
-  const entries = (await fg(["src/routes/**/*.ts"])).sort((a, b) => a.localeCompare(b));
+  const srcDir = p("src");
+  const routesDir = p("src", "routes");
+  const routerFile = p("src", "router.ts");
+  const entries = (await fg(["**/*.ts"], { cwd: routesDir })).sort((a, b) => a.localeCompare(b));
+
+  /**
+   * 空清单护栏（Task 10 Step 0a）：
+   * 没有这道闸，`entries` 为空时算出的 hash = md5("[]") 与现有头不同 →
+   * **覆盖写并打印"已生成（0 条路由）"** → 静默清空 router.ts 里全部 177 条挂载，
+   * 而退出码仍是 0（CI/构建全绿）。触发条件（src/routes 改名、glob 失效、目录被清空）概率低但后果严重。
+   */
+  if (entries.length === 0) throw new Error(`未在 ${routesDir} 下匹配到任何 .ts，拒绝覆盖 ${routerFile}`);
 
   const importLines: string[] = [];
   const routeModulePairs: RouteModulePair[] = [];
 
   entries.forEach((entry: string, i: number) => {
     const varName = `route${i + 1}`;
-    let importPath = path.relative("src", entry).replace(/\\/g, "/");
+    let importPath = path.relative(srcDir, path.join(routesDir, entry)).replace(/\\/g, "/");
     if (!importPath.startsWith(".")) importPath = "./" + importPath;
     importPath = importPath.replace(/\.ts$/, "");
     importLines.push(`import ${varName} from "${importPath}";`);
-    const routeKey = path.relative("src/routes", entry).replace(/\\/g, "/");
+    const routeKey = entry.replace(/\\/g, "/");
     routeModulePairs.push({ routePath: fileNameToRoutePath(routeKey), varName, entry });
   });
 
@@ -47,14 +66,14 @@ async function main(): Promise<void> {
 
   let needWrite = true;
   try {
-    const current = await readFile("src/router.ts", "utf8");
+    const current = await readFile(routerFile, "utf8");
     const match = current.match(/^\/\/\s*@routes-hash\s*([a-z0-9]+)\n/);
     if (match && match[1] === hash) needWrite = false;
   } catch {
     needWrite = true;
   }
   if (needWrite) {
-    await writeFile("src/router.ts", content, "utf8");
+    await writeFile(routerFile, content, "utf8");
     console.log(`router.ts 已生成（${routeModulePairs.length} 条路由，hash ${hash}）`);
   } else {
     console.log(`router.ts 已是最新（${routeModulePairs.length} 条路由，hash ${hash}）`);

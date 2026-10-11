@@ -1,5 +1,5 @@
 {
-  "exec": "node --env-file-if-exists=.env --import=tsx",
+  "exec": "node --import=tsx scripts/generate-router.ts && node --env-file-if-exists=.env --import=tsx",
   "ignore": [
     "node_modules",
     "data/*",

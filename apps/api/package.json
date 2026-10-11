@@ -5,7 +5,7 @@
   "description": "谜沃 / MirrorWorld — 多租户 AI 短剧生产平台（后端）",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22 <25"
+    "node": ">=22.12 <25"
   },
   "scripts": {
     "dev": "nodemon --inspect src/app.ts",

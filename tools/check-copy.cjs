@@ -89,7 +89,7 @@ for (const p of [
   "apps/api/package.json",
   "apps/api/tsconfig.json",
   "apps/api/src/app.ts",
-  "apps/api/src/config.ts", // Task 7 产出；本步失败属预期
+  "apps/api/src/config.ts",
   "apps/api/src/router.ts",
   "apps/api/src/lib/initDB.ts",
   "apps/api/src/utils/db.ts",

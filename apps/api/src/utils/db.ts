@@ -35,12 +35,27 @@ const db = knex({
   useNullAsDefault: true,
 });
 
+/**
+ * 类型生成的完成信号（Task 10 Step 0d）。
+ *
+ * ⚠ 为什么必须有这个显式信号：`initKnexType` 的写盘是**异步且无人 await** 的。
+ * 唯一需要等它的是 `scripts/gen-db-types.ts`，而它此前只能靠固定 `setTimeout(2000)` 猜时间 ——
+ * 冷启动（首次建库 + fixDB）超过 2s 就会在写盘前 `exit(0)`，报告成功却什么都没生成。
+ * 这里把同一个 Promise 暴露出去，调用方 await 即可，不必再猜。
+ *
+ * 只在 `MIWO_GEN_DB_TYPES=1` 时非 null；调用方（`gen-db-types.ts`）负责 await 并处理 reject，
+ * 所以失败会以非 0 退出码暴露，而不是变成一个没人看的 unhandled rejection。
+ */
+export let genDbTypesReady: Promise<void> | null = null;
+
+const GENERATE_DB_TYPES = config.env === "dev" && process.env.MIWO_GEN_DB_TYPES === "1";
+
 (async () => {
   await initDB(db);
   await fixDB(db);
   // 类型生成不再是启动期的隐式副作用：dev 且显式要求（scripts/gen-db-types.ts 会置位）才生成，
   // 否则每次 `pnpm dev` 都会重写 src/types/database.d.ts。
-  if (config.env === "dev" && process.env.MIWO_GEN_DB_TYPES === "1") initKnexType(db);
+  if (GENERATE_DB_TYPES) genDbTypesReady = initKnexType(db);
 })();
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
