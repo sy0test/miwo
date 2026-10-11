@@ -42,7 +42,7 @@
     }
   },
   "settings": {
-    "title": "Cài đặt ToonFlow",
+    "title": "Cài đặt MirrorWorld",
     "menu": {
       "language": "Cài đặt ngôn ngữ",
       "vendorConfig": "Dịch vụ mô hình",
@@ -1432,7 +1432,7 @@
     "prompt": "lời nhắc"
   },
   "hello": {
-    "welcomeTitle": "Chào mừng đến với ToonFlow",
+    "welcomeTitle": "Chào mừng đến với MirrorWorld",
     "welcomeDesc": "Nền tảng quy trình tạo truyện tranh do AI điều khiển, chúng ta hãy dành một phút để hoàn thành cấu hình ban đầu.",
     "startConfig": "Bắt đầu cấu hình",
     "skip": "Bỏ qua khởi động",

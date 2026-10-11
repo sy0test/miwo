@@ -51,7 +51,7 @@
     }
   },
   "settings": {
-    "title": "ToonFlow 設定",
+    "title": "MirrorWorld 設定",
     "menu": {
       "language": "語言設定",
       "vendorConfig": "模型服務",
@@ -1424,7 +1424,7 @@
     "prompt": "提示詞"
   },
   "hello": {
-    "welcomeTitle": "歡迎使用 ToonFlow",
+    "welcomeTitle": "歡迎使用 MirrorWorld",
     "welcomeDesc": "AI 驅動的漫畫創作工作流程平台，讓我們花一分鐘完成初始設定。",
     "startConfig": "開始配置",
     "skip": "跳過引導",

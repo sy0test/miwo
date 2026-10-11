@@ -43,7 +43,7 @@
     }
   },
   "settings": {
-    "title": "การตั้งค่า ToonFlow",
+    "title": "การตั้งค่า MirrorWorld",
     "menu": {
       "language": "ตั้งค่าภาษา",
       "vendorConfig": "บริการโมเดล",
@@ -1428,7 +1428,7 @@
     "prompt": "คำพูดที่รวดเร็ว"
   },
   "hello": {
-    "welcomeTitle": "ยินดีต้อนรับสู่ ToonFlow",
+    "welcomeTitle": "ยินดีต้อนรับสู่ MirrorWorld",
     "welcomeDesc": "แพลตฟอร์มเวิร์กโฟลว์การสร้างการ์ตูนที่ขับเคลื่อนด้วย AI ให้เราใช้เวลาสักครู่เพื่อกำหนดค่าเริ่มต้นให้เสร็จสิ้น",
     "startConfig": "เริ่มการกำหนดค่า",
     "skip": "ข้ามการบูต",

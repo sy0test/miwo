@@ -4,7 +4,7 @@
       <!-- 欢迎首页 -->
       <template v-if="currentStep === 0">
         <div class="welcomePage">
-          <img src="@/assets/logo.png" alt="ToonFlow Logo" class="welcomeLogo" />
+          <img src="@/assets/logo.png" alt="MirrorWorld Logo" class="welcomeLogo" />
           <h1 class="welcomeTitle">{{ $t("hello.welcomeTitle") }}</h1>
           <p class="welcomeDesc">{{ $t("hello.welcomeDesc") }}</p>
           <t-button theme="primary" size="large" @click="currentStep = 1">{{ $t("hello.startConfig") }}</t-button>

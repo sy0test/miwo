@@ -2,9 +2,9 @@
   <div class="about">
     <t-card bordered :style="{ width: '100%' }" class="logoCard">
       <div class="f">
-        <img src="@/assets/logo.png" alt="ToonFlow Logo" class="logo" @click="onLogoClick" />
+        <img src="@/assets/logo.png" alt="MirrorWorld Logo" class="logo" @click="onLogoClick" />
         <div class="appName">
-          <div class="name">ToonFlow</div>
+          <div class="name">MirrorWorld</div>
           <div class="data">{{ $t("settings.about.slogan") }}</div>
           <div class="version">
             <t-tag theme="primary" shape="round" size="small" style="padding: 10px">v{{ version }}</t-tag>
@@ -212,7 +212,7 @@ const updateSource = ref<UpdateSource>("toonflow");
 const updateSources = ref([
   {
     value: "toonflow" as UpdateSource,
-    label: "ToonFlow",
+    label: "MirrorWorld",
     iconType: "image" as const,
     iconSrc: toonflowLogo,
     iconClass: "toonflow",
@@ -288,7 +288,7 @@ function checkUpdate() {
 
 function getUpdateSourceLabel(source: UpdateSource) {
   const sourceMap = {
-    toonflow: "ToonFlow",
+    toonflow: "MirrorWorld",
     github: "GitHub",
     atomgit: "AtomGit",
     gitee: "Gitee",

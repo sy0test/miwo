@@ -53,7 +53,7 @@
     }
   },
   "settings": {
-    "title": "ToonFlow设置",
+    "title": "谜沃设置",
     "modelMap": {
       "imageModel": "图像模型",
       "videoModel": "视频模型",
@@ -1728,7 +1728,7 @@
   "workbench.production.node.storyboard.deleteNode": "删除",
   "workbench.production.node.storyboard.confirmDeleteBody": "确认是否删除该分镜",
   "hello": {
-    "welcomeTitle": "欢迎使用 ToonFlow",
+    "welcomeTitle": "欢迎使用 谜沃",
     "welcomeDesc": "AI 驱动的漫画创作工作流平台，让我们花一分钟完成初始配置。",
     "startConfig": "开始配置",
     "skip": "跳过引导",

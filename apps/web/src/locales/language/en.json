@@ -43,7 +43,7 @@
     }
   },
   "settings": {
-    "title": "ToonFlow Settings",
+    "title": "MirrorWorld Settings",
     "menu": {
       "language": "Language",
       "vendorConfig": "Model Providers",
@@ -1609,7 +1609,7 @@
     "prompt": "prompt word"
   },
   "hello": {
-    "welcomeTitle": "Welcome to ToonFlow",
+    "welcomeTitle": "Welcome to MirrorWorld",
     "welcomeDesc": "AI-driven comic creation workflow platform, let us spend a minute to complete the initial configuration.",
     "startConfig": "Start configuration",
     "skip": "Skip boot",

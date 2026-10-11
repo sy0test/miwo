@@ -12,7 +12,7 @@
       <div class="logoBox fc">
         <div class="logoImg"></div>
         <div class="fc c">
-          <span class="logoText">ToonFlow</span>
+          <span class="logoText">MirrorWorld</span>
           <span class="slogan">{{ $t("login.slogan") }}</span>
         </div>
       </div>

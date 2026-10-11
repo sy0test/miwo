@@ -1,5 +1,5 @@
 {
-  "name": "toonflow_web",
+  "name": "@miwo/web",
   "version": "0.0.0",
   "type": "module",
   "scripts": {

@@ -1,7 +1,7 @@
 <template>
   <div class="titleBar">
     <div class="titleBar-title">
-      <span class="titleBar-text">ToonFlow</span>
+      <span class="titleBar-text">MirrorWorld</span>
     </div>
     <div class="titleBar-controls">
       <div class="titleBar-btn" @click="handleMinimize">

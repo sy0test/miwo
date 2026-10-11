@@ -48,36 +48,13 @@ const appBuildConfig: esbuild.BuildOptions = {
   },
 };
 
-// Electron 主进程打包配置
-const mainBuildConfig: esbuild.BuildOptions = {
-  entryPoints: ["scripts/main.ts"],
-  bundle: true,
-  minify: false,
-  format: "cjs",
-  outfile: `build/main.js`,
-  allowOverwrite: true,
-  platform: "node",
-  target: "esnext",
-  tsconfig: "./tsconfig.json",
-  alias: {
-    "@": "./src",
-  },
-  sourcemap: false,
-  external,
-  define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
-  },
-};
-
 (async () => {
   try {
     console.log("🔨 开始构建...\n");
 
-    // 并行构建
-    await Promise.all([esbuild.build(appBuildConfig), esbuild.build(mainBuildConfig)]);
+    await esbuild.build(appBuildConfig);
 
-    console.log("✅ 后端服务构建完成: build/app.js");
-    console.log("✅ Electron主进程构建完成: build/main.js");
+    console.log("✅ 后端服务构建完成: data/serve/app.js");
     console.log("\n🎉 所有构建任务完成!\n");
   } catch (err) {
     console.error("❌ 构建失败:", err);
