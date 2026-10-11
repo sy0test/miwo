@@ -1,6 +1,6 @@
 # 谜沃 / MirrorWorld（miwo）
 
-多租户 AI 短剧生产平台。本仓库由 ToonFlow 复制改造而来（品牌与技术标识符已更名）。
+多租户 AI 短剧生产平台。本仓库由 Toonflow 复制改造而来（品牌与技术标识符已更名）。
 
 **设计文档**：`../../docs/superpowers/specs/2026-10-12-miwo-saas-design.md`
 **Phase 0 计划**：`../../docs/superpowers/plans/2026-10-12-miwo-phase0-repo-bootstrap.md`

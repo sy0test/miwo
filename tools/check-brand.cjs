@@ -8,7 +8,7 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const SCAN_DIRS = ["apps/api/src", "apps/api/scripts", "apps/web/src"];
-const SCAN_FILES = ["apps/api/package.json", "apps/web/package.json", "apps/web/index.html"];
+const SCAN_FILES = ["README.md", "apps/api/package.json", "apps/web/package.json", "apps/web/index.html"];
 const TEXT_EXT = new Set([".ts", ".vue", ".js", ".cjs", ".mjs", ".json", ".html", ".yml", ".yaml", ".md"]);
 const SKIP_DIR = /node_modules|[\\/]dist[\\/]|[\\/]build[\\/]|[\\/]data[\\/]/;
 

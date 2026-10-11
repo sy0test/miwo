@@ -112,6 +112,9 @@ for (const p of [
   "apps/api/.github",
   "apps/web/yarn.lock",
   "apps/api/yarn.lock",
+  // ⚠ 上游产品文档（shields 徽章、GitHub/Gitee/GitCode 链接、yarn 安装步骤），根 README.md 才是本仓库权威说明。
+  "apps/api/README.md",
+  "apps/web/README.md",
   // ⚠ 致命：vite.config.js 在 DEFAULT_CONFIG_FILES 里排在 vite.config.ts 之前，会**遮蔽** .ts
   //    （实测上游 vite/dist/node/constants.js 的 DEFAULT_CONFIG_FILES 顺序为 js → mjs → ts → …）
   "apps/web/vite.config.js",
