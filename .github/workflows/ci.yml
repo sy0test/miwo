@@ -3,9 +3,16 @@
 # 两个 job 的命令顺序都是**硬约束**，改动前先读这里：
 #
 #   api：仓库检查 → 路由生成（幂等）→ 类型检查 → 单测 → 后端打包
-#     · `tools/check-copy.cjs` 断言 `apps/web/dist` **不存在**（存在性断言），所以任何前端构建
-#       都必须排在它之后；本 job 不构建前端，故安全。它另有 `apps/api` 体积上界 40 MB 断言，
-#       放在打包之前执行更严格。
+#     · 仓库检查放在最前面是**快速失败**（fail fast）：它们只读 git 索引与源码、秒级完成，
+#       任何一条红了就没必要再花几分钟跑 generate/typecheck/test/build。
+#     · ⚠ 这个顺序**与 `apps/web/dist` 无关**。`tools/check-copy.cjs` 把 `apps/web/dist` 放进
+#       `mustNotBeTracked`（check-copy.cjs:136），查的是 **git 索引**而不是磁盘存在性 ⇒
+#       构建出来的**未跟踪** dist 不会让它失败，**check-copy 在构建之后跑同样是安全的**。
+#       （Task 12 修正：这里原来写"它断言 dist 不存在，所以不能在其后跑"——那是**事实错误**。）
+#       它另有 `apps/api` 体积上界 40 MB 断言，放在后端打包之前执行更严格。
+#     · **`tools/check-tenant-exceptions.cjs` 必须在这里**：它是 Phase 0 的交付物、
+#       Phase 1b 隔离策略（`src/db/policies.ts`）的**输入表**，不进 CI 就等于在唯一的自动化
+#       环境里零防漂移（谁改了 join/raw/裸 db 导入都不会被发现）。
 #     · 本 job **不启动应用**（不跑 `dev` / `start`）：端到端启动验证属 Task 13。
 #     · `pnpm install --frozen-lockfile` 是硬依赖：锁文件已入库（Task 5 实测可 frozen 安装）。
 #
@@ -29,11 +36,16 @@
 #     · `apps/web/src/types/{auto-imports,components}.d.ts` 被 `.gitignore` 忽略、全新克隆里**不存在**，
 #       由 vite 插件在构建时生成。本 job 不再需要"先 build 再类型检查"的顺序（不跑 vue-tsc 了），
 #       但保留这条说明：将来恢复 `vue-tsc` 时它仍然成立。
-#     · `check-no-shadow.cjs` **保留**：它断言源码树里没有会遮蔽 `vite.config.ts` 的同名候选
-#       （历史上有一份过期的 tsc 产物 `vite.config.js` 复活过）。注意它在本 job 里**不再是**
-#       "构建后 emit 守卫" —— 不跑 `vue-tsc` 就不会 emit；它现在是防"遮蔽文件被提交或被本地工具
-#       写回源码树"的廉价结构守卫，`tsconfig.node.json` 的 emit 重定向仍是它的前提。
-#     · 这里**不能**重跑 `check-copy` —— 它断言 `apps/web/dist` 不存在，而上面刚构建出了 dist。
+#     · `check-no-shadow.cjs` **保留**，理由是**结构性**的（不是"构建后 emit 守卫"这句含糊话）：
+#       `vue-tsc --build` / 历史上的 `tsc` 可能把 `vite.config.ts` 编译出 `vite.config.js` 落回
+#       源码树，而 `vite.config.js` 在 vite 的 `DEFAULT_CONFIG_FILES` 里**排在 `.ts` 之前** ⇒
+#       一旦它存在就会**遮蔽真配置**（Task 3 的历史问题：一份过期的 tsc 产物复活过）。
+#       `tsconfig.node.json` 的 emit 重定向仍然是它成立的前提。本 job 现在不跑 `vue-tsc`，
+#       所以它不再拦"同一次 CI 里刚 emit 出来的影子文件"，而是拦"影子文件被提交进仓库 /
+#       被本地工具写回源码树"。
+#     · 本 job **不重复**跑仓库检查（含 `check-copy`）：那是 api job 的职责序列，两个 job 各写
+#       一份门禁序列迟早会漂移。注意**不是**"dist 存在会让 check-copy 失败"——那条理由是错的
+#       （check-copy 查的是索引，构建后跑同样安全），见本文件 api job 的说明。
 #
 # `pnpm/action-setup` 刻意**不传** `version` 输入：根 `package.json` 已有
 # `packageManager: pnpm@10.33.0`，而 action 在两者不一致时会直接抛
@@ -60,12 +72,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: 仓库检查（复制完整性 / 改名 / 行尾 / 原生模块 / 部署配置一致性）
+      - name: 仓库检查（复制完整性 / 改名 / 行尾 / 原生模块 / 隔离特例清单 / 部署配置一致性）
         run: |
           node tools/check-copy.cjs
           node tools/check-brand.cjs
           node tools/check-eol.cjs
           node tools/check-natives.cjs
+          node tools/check-tenant-exceptions.cjs
           pnpm run verify:deploy
       - name: 路由生成（幂等）
         working-directory: apps/api

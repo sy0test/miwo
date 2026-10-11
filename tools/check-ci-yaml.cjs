@@ -10,12 +10,17 @@
  *   2. job 名为 api / web，且都有 checkout → pnpm/action-setup → setup-node(node 24) → frozen install；
  *   3. `pnpm/action-setup` **不带** `version` 输入（与根 package.json 的 `packageManager` 冲突会抛
  *      "Multiple versions of pnpm specified"）；
- *   4. api job 依次含 5 条仓库检查 + 路由生成 + typecheck + 单测 + 打包；
+ *   4. api job 依次含 6 条仓库检查（copy / brand / eol / natives / **tenant-exceptions** / deploy）
+ *      + 路由生成 + typecheck + 单测 + 打包；仓库检查必须紧跟 `pnpm install` 且排在其余步骤之前
+ *      （**快速失败**；注意这与 `apps/web/dist` 是否存在**无关** —— check-copy 的 dist 断言查的是
+ *      git 索引，构建后跑同样安全，"不能在其后跑"是旧的**事实错误**说法）；
  *   5. web job 是 `build-only`（vite build）→ `check-no-shadow`：**必须有 `build-only`、必须没有 `vue-tsc`**，
- *      且**不含** check-copy。Phase 0 刻意不做 web 类型检查（47 条上游继承类型错误、apps/web 属 Phase 3
- *      前端重绘的替换对象）—— 这个"移除"必须与 README 的留档同时存在，见第 6 条；
- *   6. `README.md` 的「已知问题 / Known issues」小节仍在、且仍写明 `vue-tsc` 与 Phase 3 前置项：
- *      防止"把红的步骤删掉、把原因也一起删掉"这种掩盖式通过。
+ *      且**不含** check-copy（职责划分，不是因为 dist 会让它失败）。Phase 0 刻意不做 web 类型检查
+ *      （47 条上游继承类型错误、apps/web 属 Phase 3 前端重绘的替换对象）—— 这个"移除"必须与
+ *      README 的留档同时存在，见第 6 条；
+ *   6. `README.md` 的「已知问题 / Known issues」小节仍在、且**小节内**写明 `vue-tsc`、**47 条 / 17 个文件**
+ *      的关键数字、以及 `Phase 3` 的**恢复条件**：防止"把红的步骤删掉、把原因也一起删掉"这种掩盖式通过
+ *      （全文匹配的旧断言可以被任意一处无关文字满足，等于没守）。
  *
  * 用法：node tools/check-ci-yaml.cjs
  */
@@ -83,19 +88,34 @@ for (const name of ["api", "web"]) {
   );
 }
 
-// ---- api job：仓库检查的 5 条命令必须都在（且在任何前端构建之前）----
+// ---- api job：仓库检查的 6 条命令必须都在，且必须是"紧跟 install 的第一批步骤"（快速失败）----
 const apiJob = (doc.jobs || {}).api;
 if (apiJob) {
   const apiRuns = stepRuns(apiJob).join("\n");
+  const apiRunArr = stepRuns(apiJob);
   for (const cmd of [
     "node tools/check-copy.cjs",
     "node tools/check-brand.cjs",
     "node tools/check-eol.cjs",
     "node tools/check-natives.cjs",
+    "node tools/check-tenant-exceptions.cjs",
     "pnpm run verify:deploy",
   ]) {
     check(apiRuns.includes(cmd), `api job 缺少仓库检查命令: ${cmd}`);
   }
+  // 顺序：install → 仓库检查 → 路由生成/typecheck/单测/打包。
+  // 这是**快速失败**约束（仓库检查秒级、只读索引与源码），**不是** dist 存在性约束 ——
+  // 见文件头第 4 条：check-copy 把 apps/web/dist 放在 mustNotBeTracked，查的是 git 索引。
+  const iInstall = apiRunArr.findIndex((r) => r.includes("pnpm install --frozen-lockfile"));
+  const iRepoCheck = apiRunArr.findIndex((r) => r.includes("node tools/check-copy.cjs"));
+  const iAfter = apiRunArr.findIndex((r) =>
+    /generate-router\.ts|@miwo\/api run typecheck|@miwo\/api test|@miwo\/api run build/.test(r),
+  );
+  check(iInstall >= 0, "api job 缺少 `pnpm install --frozen-lockfile` 步骤");
+  check(
+    iRepoCheck > iInstall && iAfter > iRepoCheck,
+    "api job 顺序错误：仓库检查必须紧跟 install、并排在 路由生成/typecheck/单测/打包 之前（快速失败；与 apps/web/dist 是否存在无关）",
+  );
   check(apiRuns.includes("node --import=tsx scripts/generate-router.ts"), "api job 缺少路由生成（幂等）步骤");
   check(
     apiRuns.includes("pnpm --filter @miwo/api run typecheck"),
@@ -127,7 +147,9 @@ if (webJob) {
   );
   check(
     !runs.some((r) => r.includes("check-copy.cjs")),
-    "web job 不得跑 check-copy：它断言 apps/web/dist 不存在，而本 job 刚构建出 dist",
+    "web job 不重复跑 check-copy：仓库检查序列由 api job 统一负责。⚠ **不是**因为 `apps/web/dist` 的存在会让它失败 —— " +
+      "check-copy 把 dist 放在 `mustNotBeTracked`（查 git 索引，不是磁盘存在性），构建后跑同样安全；" +
+      "旧版这条断言给的理由是**事实错误**（Task 12 必做 3 已修正）",
   );
 }
 
@@ -139,9 +161,38 @@ try {
 } catch (e) {
   readme = "";
 }
-check(/^##\s+已知问题/m.test(readme), "README.md 缺少「已知问题 / Known issues」小节：Phase 0 不做 web 类型检查的代价必须留档");
-check(/\bvue-tsc\b/.test(readme), "README.md「已知问题」小节必须写明 apps/web 的 vue-tsc 类型错误清单");
-check(/Phase 3/.test(readme), "README.md「已知问题」小节必须把它标为 Phase 3 前端重绘的前置清单项");
+
+/** 取某个二级标题（`## xxx`）的**小节正文**，到下一个 `## ` 标题为止。 */
+function sectionBody(text, headingRe) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((l) => headingRe.test(l));
+  if (start < 0) return "";
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^##\s+/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start + 1, end).join("\n");
+}
+
+// ⚠ 旧版这三条是**全文**匹配（`\bvue-tsc\b`、`/Phase 3/`），等于"整份 README 里出现过这两个词就算过"：
+//   它守的正是 Phase 0 最大的一次范围变更（B2：把 web 类型门禁移除），却可以被任何一处无关文字满足。
+//   现在锚定到小节内，并要求**关键数字**（47 条 / 17 个文件）与**恢复条件**字样都在 —— 那是这份
+//   留档能被独立复核的唯一锚点（数字对不上，下游就不知道该恢复到什么程度）。
+const known = sectionBody(readme, /^##\s+已知问题/);
+check(!!known, "README.md 缺少「已知问题 / Known issues」小节：Phase 0 不做 web 类型检查的代价必须留档");
+check(/\bvue-tsc\b/.test(known), "README.md「已知问题」小节内必须写明 apps/web 的 vue-tsc 类型错误清单");
+check(/Phase 3/.test(known), "README.md「已知问题」小节内必须把它标为 Phase 3 前端重绘的前置清单项");
+check(
+  /47\s*条/.test(known) && /17\s*个文件/.test(known),
+  "README.md「已知问题」小节内必须写明关键数字 **47 条 / 17 个文件**（复测口径与恢复判据都锚在这两个数上）",
+);
+check(
+  /恢复条件/.test(known),
+  "README.md「已知问题」小节内必须写明**恢复条件**（47 条清零 + 把 CI web job 的 build-only 换回 vue-tsc）",
+);
 
 if (failures.length) {
   console.error("check-ci-yaml 失败：");
