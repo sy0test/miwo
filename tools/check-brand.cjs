@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * 断言品牌改名完成，且供应商数据 id `toonflow` 未被误改。
+ * 断言品牌改名完成，且供应商数据 id 在「适配器文件名 / 三处引用文件 / 数据库」三方保持一致
+ * （Task 6 迁移前为 `toonflow`、迁移后为 `miwo`，两种取值都接受）。
  * 用法：node tools/check-brand.cjs
  */
 const fs = require("fs");

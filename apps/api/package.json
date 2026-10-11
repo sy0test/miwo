@@ -11,6 +11,9 @@
     "dev": "nodemon --inspect --exec tsx src/app.ts",
     "start": "cross-env NODE_ENV=prod node data/serve/app.js",
     "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
     "debug:ai": "npx @ai-sdk/devtools",
     "license": "node scripts/license.ts",
@@ -68,10 +71,12 @@
     "@types/lodash": "^4.17.24",
     "@types/morgan": "^1.9.10",
     "cross-env": "^10.1.0",
+    "esbuild": "^0.28.2",
     "license-checker": "^25.0.1",
     "nodemon": "^3.1.11",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   },
   "overrides": {
     "@rmp135/sql-ts": {

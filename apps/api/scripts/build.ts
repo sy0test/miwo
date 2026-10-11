@@ -10,6 +10,11 @@ if (!process.env.NODE_ENV) {
 const pkg = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
 
 const external = [
+  // ⚠ 不是死配置，别删：src/app.ts:32、src/env.ts:5、src/utils/getPath.ts:7 仍有
+  //   `require("electron")`（都在 `process.versions.electron !== undefined` 的运行时分支里，
+  //   纯 Node 下不会执行，但 esbuild 静态解析仍需外部化）。删掉此条 = `pnpm run build`
+  //   立即以 3 个 "Could not resolve \"electron\"" 失败。真正的移除属于后续 Task
+  //   （Task 8/9 迁移 getPath.ts / env.ts / app.ts 时）。
   "electron",
   "undici",
   "@huggingface/transformers",
