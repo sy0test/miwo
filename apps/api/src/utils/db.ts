@@ -1,13 +1,10 @@
 import { readFile, writeFile } from "fs/promises";
-import getPath from "@/utils/getPath";
 import fs from "fs";
 import path from "path";
-import initDB from "@/lib/initDB";
 import type { DB } from "@/types/database";
 import crypto from "crypto";
-import fixDB from "@/lib/fixDB";
 import { config } from "@/config";
-import { createKnex } from "@/db/connect";
+import { connect, createKnex } from "@/db/connect";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
@@ -30,7 +27,7 @@ const db = createKnex();
  *
  * ⚠ 为什么必须有这个显式信号：`initKnexType` 的写盘是**异步且无人 await** 的。
  * 唯一需要等它的是 `scripts/gen-db-types.ts`，而它此前只能靠固定 `setTimeout(2000)` 猜时间 ——
- * 冷启动（首次建库 + fixDB）超过 2s 就会在写盘前 `exit(0)`，报告成功却什么都没生成。
+ * 冷启动（首次建库 + 迁移）超过 2s 就会在写盘前 `exit(0)`，报告成功却什么都没生成。
  * 这里把同一个 Promise 暴露出去，调用方 await 即可，不必再猜。
  *
  * 只在 `MIWO_GEN_DB_TYPES=1` 时非 null；调用方（`gen-db-types.ts`）负责 await 并处理 reject，
@@ -40,13 +37,34 @@ export let genDbTypesReady: Promise<void> | null = null;
 
 const GENERATE_DB_TYPES = config.env === "dev" && process.env.MIWO_GEN_DB_TYPES === "1";
 
-(async () => {
-  await initDB(db);
-  await fixDB(db);
-  // 类型生成不再是启动期的隐式副作用：dev 且显式要求（scripts/gen-db-types.ts 会置位）才生成，
-  // 否则每次 `pnpm dev` 都会重写 src/types/database.d.ts。
+/**
+ * db 就绪信号（Phase 1a / Task 4）：**连接 → 跑迁移**，完成前不许有人接请求。
+ *
+ * ⚠ 为什么不是"顶层 await"：本仓库 tsconfig 是 `module: CommonJS`（不是 ESM，见 tsconfig.json:4），
+ *    顶层 await 不可用。所以改成**导出一个 Promise**，由**唯一需要它的人**
+ *   （`app.ts` 起监听之前）`await` 它。
+ *
+ * ⚠ 这修的是 spec §3.3 点名的**启动竞态**：原实现是"**未被 await** 的 IIFE 里跑 initDB + fixDB"
+ *    —— 建表没完成就开始接请求（表现为冷启动第一批请求偶发 `no such table`）。
+ *
+ * ⚠ 这里**不再**调用 `@/lib/initDB` / `@/lib/fixDB`（Task 4 Step 3 摘除）。两个文件仍留在仓库里，
+ *    但只是**死代码**：它们的存在只为 `apps/api/scripts/verify-phase0.cjs` 的构件清单断言，删除归 Phase 1c。
+ *    守这条不变式的门禁是 `tools/check-dead-ddl.cjs`（从 `src/app.ts` 出发的 import 图上不得再出现它们）。
+ *    被摘掉的两条"启动期无条件副作用"的语义变化登记在 `src/db/migrations/001_schema.ts` 的 `up` 开头与根 README。
+ */
+export const dbReady: Promise<void> = (async () => {
+  const { applied } = await connect();
+  if (applied.length) console.log(`[db] 已应用迁移：${applied.join(", ")}`);
+  // 类型生成不再在启动路径上（Phase 0 Task 9 已改为 db:types 脚本）；保留显式开关：
   if (GENERATE_DB_TYPES) genDbTypesReady = initKnexType(db);
 })();
+// 失败必须响亮：不要让进程"看起来起来了、实际半残"（Phase 0 的 err.ts 只 console.error 不退出）。
+// ⚠ `process.exit(1)` 不能只写在 app.ts 的 `await dbReady` 那里：那条 await 在 `startServe()` 里，
+//    而 Electron 分支（随机端口）与别的入口也 import 本模块 —— 初始化失败一律让进程死。
+dbReady.catch((err) => {
+  console.error("[db] 初始化失败，进程即将退出：", err);
+  process.exit(1);
+});
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
 dbClient.schema = db.schema;
@@ -61,7 +79,7 @@ dbClient.schema = db.schema;
   // ⚠ `getOwnPropertyNames(Function.prototype)` 里有 **`caller` / `arguments` / `prototype`**：
   // 在**严格模式**（esbuild 打出来的包带 "use strict"）下**读取它们会直接抛**
   //   TypeError: 'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions
-  // 后果是整个 `utils/db` 模块初始化失败 → `fixDB` 里的 `db(...)` 变成 undefined
+  // 后果是整个 `utils/db` 模块初始化失败 → 所有 `db(...)` 调用点都拿到 undefined
   //   → 打包版启动报「服务启动失败 / db_default is not a function」，后端起不来。
   //（dev 用 tsx 转成非严格模式，读 `.caller` 只是拿到 null，所以本地测不出来 —— 必须跳过。）
   const SKIP = new Set(["constructor", "caller", "arguments", "prototype", "length", "name"]);

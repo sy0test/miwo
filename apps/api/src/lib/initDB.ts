@@ -1,3 +1,25 @@
+/**
+ * ⚠ 已停用（Phase 1a / Task 4）。
+ *
+ * 本文件的职责已迁移到 `apps/api/src/db/migrations/`：
+ *   - 建表/加列/删列 → `001_schema.ts`（spec §5.2 ①）
+ *   - 幂等种子       → `002_platform_seed.ts`（spec §5.2 ④）
+ *   - 「启动期把 state='生成中' 的行无条件改判失败」→ **已删除**（由 Phase 1d 的队列租约超时接管，spec §5.2 ②）
+ *   - 「启动期无条件覆写 o_prompt 全文」             → **已删除**（spec §5.2 ③）
+ *   - `tempOnsert` 回插 / 按适配器版本号重写文件的 3 个分支 → 迁移到 `003_vendor_asset_sync`（Task 10）
+ *
+ * ⚠ 本文件**仍被 4 个用户触发的运维路由**在请求时 import（`routes/other/deleteAllData.ts`、
+ *   `routes/setting/dbConfig/clearData.ts`、`routes/setting/dbConfig/importData.ts`、
+ *   `routes/setting/dev/getSwitchAiDevTool.ts`，其中 3 处真的调用 `initDB(...)`）。
+ *   那些路由的处置（删除接口 / 摘掉调用）是 **Phase 1b** 的事（见 `src/db/tenant-exceptions.json`）。
+ *   Phase 1a **不动**它们：本 Task 只摘掉"**每次启动都无条件跑**"的那条路径。
+ *
+ * 保留本文件在仓库里的**唯一**理由是 `apps/api/scripts/verify-phase0.cjs` 的构件存在性断言；
+ * 删除它（以及 `tools/check-copy.cjs` 的 .ts 数量下限）是 Phase 1c 的清理项。
+ *
+ * ⚠ **不要**再把它接回启动路径：`tools/check-dead-ddl.cjs` 从 `src/app.ts` 出发走 import 图，
+ *   发现启动链上出现 `initDB` / `fixDB` 的**代码级**引用就报红（豁免清单逐文件、附理由）。
+ */
 import { Knex } from "knex";
 import { v4 as uuid } from "uuid";
 import { getEmbedding } from "@/utils/agent/embedding";

@@ -4,9 +4,9 @@
  * 这个文件是**全新 MySQL 库的唯一结构真相**；同时它必须能在 sqlite 下跑通，
  * 因为本机的回归网（`apps/api/tests/**` 与 `apps/api/scripts/verify-phase0.cjs`）跑的是 sqlite。
  *
- * 与 `apps/api/src/lib/initDB.ts`（1176 行）的关系：后者是**旧真相**，Phase 1a 之后
- * 不再被启动路径调用（Task 7 摘除），本文件是它的替代。两者会短暂并存（1c 才删旧文件，
- * 因为 `apps/api/scripts/verify-phase0.cjs` 的构件清单还断言它存在）。
+ * 与 `apps/api/src/lib/initDB.ts`（1176 行）的关系：后者是**旧真相**，Phase 1a 起
+ * **不再被启动路径调用**（Task 4 摘除，守它的门禁是 `tools/check-dead-ddl.cjs`），本文件是它的替代。
+ * 两者会短暂并存（1c 才删旧文件，因为 `apps/api/scripts/verify-phase0.cjs` 的构件清单还断言它存在）。
  *
  * 与现状库的差异（全部是**有意**的，spec 有据；逐表差集见 Task 3 报告与
  * `apps/api/scripts/gen-schema-migration.cjs` 的机械输出）：
@@ -44,6 +44,23 @@ export default {
 
   async up(knex: Knex): Promise<void> {
     const t = types(knex);
+
+    // ⚠ 本迁移**不包含**两件旧 fixDB 在启动时做的事（spec §5.2 明确要求删除；Phase 1a / Task 4 Step 6）：
+    //   1. 「把 6 类 state='生成中' 的行改成失败」（fixDB.ts 的 `矫正因软件异常退出导致的状态不一致问题` 一段：
+    //      o_novel.eventState=0 / o_script.extractState=0 / o_assets.promptState / o_image.state /
+    //      o_storyboard.state / o_video.state）。删除理由：无条件写会与多实例互相踩、且会误杀正在运行的任务。
+    //      **替代机制是 Phase 1d 的队列租约超时（spec §9.2）**；在 1d 落地之前，重启后残留的"生成中"行
+    //      **不会**被自动改判 —— 这是 Phase 1a 引入的、**已知且盖章**的语义变化。
+    //      人工清除手段：`pnpm.cmd run db:repair-stuck`（新增，默认 dry-run；`--apply` 才写库；
+    //      默认只动超过 1 小时未更新的行，避免误杀正在跑的任务；幂等）。
+    //      见计划 Task 4 Step 6 与 Phase 1a 完成判据；登记落点还有根 README.md 的
+    //      「启动期副作用的两条语义变化」一节。
+    //   2. 「无条件覆写 o_prompt.data 全文」（fixDB.ts 的 o_prompt 覆写一段）。删除理由：运营改过的提示词
+    //      每次重启被冲掉。**这是收益**（spec §5.2 ③）；新库的提示词由 `002_platform_seed` 只插不改。
+    //
+    // ⚠ 也不要在这里"顺手补一个 state 清理的 UPDATE"：迁移纪律（根 README「迁移纪律」）规定 schema 迁移
+    //    只能用 schema builder，`tests/migration-ddl-mysql.test.ts` 的假-knex 路径只覆盖 schema builder；
+    //    而且把"启动时改数据"塞进 `001_schema` 等于把刚摘掉的副作用换个地方又装回去。
 
     // ---------- 用户与项目 ----------
     await knex.schema.createTable("o_user", (T) => {

@@ -14,6 +14,7 @@
 import knexFactory, { type Knex } from "knex";
 import { config, type MiwoConfig } from "@/config";
 import { sqldialect } from "@/db/dialect";
+import { migrationStatus, runMigrations } from "@/db/migrations";
 
 const SQLITE_CLIENT = "better-sqlite3";
 const MYSQL_CLIENT = "mysql2";
@@ -38,6 +39,11 @@ export const DBCONFIG = {
   //    本项目 id 来自 Date.now()（~1.7e12）或自增，远小于 2^53；导入脚本（Task 6）会断言这一点。
   supportBigNumbers: true,
   bigNumberStrings: false,
+  // ⚠ 连接建立超时（毫秒）。**必须显式给**：mysql2 的默认值是 10s，而"主机不可达/端口被丢包"
+  //    （prod 网络抖动、防火墙静默丢包）时那个默认值会让**启动**挂满 10s × 池内每条连接，
+  //    表现成"服务像是起不来"。5s 是"足够局域网建连、又不至于让启动像挂死"的取值。
+  //    断言：`tests/db-boot-order.test.ts` 的「connect() 连不上时给出可操作的报错」用例。
+  connectTimeout: 5000,
 } as const;
 
 export function clientConfig(c: MiwoConfig = config): string {
@@ -85,4 +91,43 @@ export function describeTarget(c: MiwoConfig = config): string {
 /** 让 `sqldialect` 也认识"还没建实例"的配置（迁移 runner 会用到）。 */
 export function dialectOfConfig(c: MiwoConfig = config): ReturnType<typeof sqldialect> {
   return driverOf(c);
+}
+
+/**
+ * 启动期初始化：连接 → 跑迁移 → 返回。
+ *
+ * ⚠ 这是 Phase 1a 唯一"启动时改库"的合法位置（spec §5.2 的迁移纪律：发布流程 = 备份 → 迁移 → 起服务）。
+ *    它替换掉的是 `utils/db.ts` 原来那个"**未被 await** 的 IIFE 里跑 initDB + fixDB"：
+ *    旧写法既没有 await（建表没完成就开始接请求），又是**无条件**的 DDL/DML 副作用。
+ *
+ * 幂等：`migrate.latest()` 对已执行的迁移是 no-op（靠 `knex_migrations` 跳过）。
+ *
+ * ⚠ **不要**在别处再调一次它：真正的启动接线在 `utils/db.ts` 的 `dbReady`（唯一消费者是 `app.ts` 起监听之前）。
+ *    本函数可以被脚本（`db:migrate` / `db:repair-stuck` 之类）显式复用，但"每次进程启动都跑"只有一条路径。
+ */
+export async function connect(c: MiwoConfig = config): Promise<{ db: Knex; applied: string[]; batch: number }> {
+  const db = createKnex(c);
+  try {
+    // 探活：让"连不上"在迁移之前就以清晰的错误暴露，而不是让 migrate 抛一个 tarn 超时
+    await db.raw("select 1");
+  } catch (err) {
+    await db.destroy().catch(() => {});
+    throw new Error(
+      `[db] 无法连接 ${describeTarget(c)}：${(err as Error).message}\n` +
+        `  本地开发：先按 README.md「迁移纪律」一节把本机 MySQL 起起来，或用 db:migrate 在一次性库上先试。\n` +
+        `  或者设 MIWO_DB_DRIVER=sqlite 用 sqlite 分支（回归网与 verify-phase0 走的就是它）。`,
+    );
+  }
+  const [batch, applied] = await runMigrations(db);
+  return { db, applied, batch };
+}
+
+/** 诊断：打印当前迁移状态（**不跑迁移**）。用完自己 destroy，不留常驻连接。 */
+export async function statusOf(c: MiwoConfig = config): Promise<Array<{ name: string; state: "done" | "pending" }>> {
+  const db = createKnex(c);
+  try {
+    return (await migrationStatus(db)).map((r) => ({ name: r.name, state: r.state }));
+  } finally {
+    await db.destroy();
+  }
 }

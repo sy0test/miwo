@@ -11,6 +11,7 @@ import cors from "cors";
 import path from "path";
 import fs from "fs";
 import u from "@/utils";
+import { dbReady } from "@/utils/db";
 import jwt from "jsonwebtoken";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
@@ -196,6 +197,19 @@ export default async function startServe(randomPort: Boolean = false) {
   // Electron 走 randomPort=true（端口由主进程分配），不受此影响 —— 此时固定绑回环。
   const port = randomPort ? 0 : config.port;
   const bindHost = randomPort ? "127.0.0.1" : config.host;
+
+  // ⚠ 迁移必须在**开始接请求之前**完成（spec §3.3「启动竞态」，Phase 1a / Task 4）。
+  //    这里而不是上面：`await import("@/router")`（第 178 行）会加载全部路由模块，但**只加载、不执行**
+  //    业务逻辑；真正"开始对外服务"的时刻是下面的 `server.listen`。所以把这道闸门放在它**紧前面**。
+  //    `dbReady` 是 `utils/db.ts` 在模块求值时启动的（连接 → 跑迁移），这里只等它 ——
+  //    若它失败，`dbReady.catch` 已 process.exit(1)，不会走到 listen。
+  //    ⚠ 必须在监听调用的**回调之外** await：写在那个回调里等于端口已经先监听了，
+  //    竞态原样保留（这正是本 Task 要修的东西）。
+  //    ⚠ 本注释与下面的 await 之间**不要**再写出真正的监听调用字面量：测试
+  //    （tests/db-boot-order.test.ts）用 `indexOf` 取那串文本**第一次**出现的位置，
+  //    在注释里出现就会把注释当成"真正的监听调用"，断言随之失真。
+  await dbReady;
+
   return await new Promise((resolve) => {
     server.listen(port, bindHost, async () => {
       const address = server.address();

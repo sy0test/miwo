@@ -43,6 +43,15 @@ export interface MiwoConfig {
   publicBaseUrl: string;
   trustProxy: number;
   jwtSecret: string;
+  /**
+   * 数据库目标（spec §5.1 的联合类型：sqlite 分支 dev/回归，mysql 分支部署）。
+   *
+   * ⚠ Phase 1a / Task 4 起这个联合类型被**真正消费**：`src/db/connect.ts` 的 `createKnex()`
+   *   按 `db.driver` 选 client，`connectionConfig()` 按分支给连接参数，启动路径
+   *   （`utils/db.ts` 的 `dbReady` → `connect()`）据此连库并跑迁移。
+   *   在此之前它只是配置层的一个形状，没有任何"选分支"的消费者。
+   *   ⚠ 本 Task **不新增**任何 `MIWO_*` 变量（裁定 5）：这里只补注释。
+   */
   db: MiwoDbConfigSqlite | MiwoDbConfigMysql;
 }
 

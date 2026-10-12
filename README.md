@@ -25,6 +25,11 @@ pnpm.cmd dev
 
 要求 Node **22.12–24**、pnpm 10。本机开发不需要 Docker。
 
+> ⚠ **首次启动会跑迁移，而且"迁移完成才监听端口"**（Phase 1a / Task 4 起）。如果你手上是**旧的 dev 库**
+> （`apps/api/data/db2.sqlite`，没有 `knex_migrations`），`pnpm dev` 会报 `table o_user already exists` ——
+> **不是迁移写错**，处置见下面「[不支持"在老库上原地跑迁移"](#-不支持在老库上原地跑迁移症状--原因--怎么做)」。
+> 想在空库上完整体验启动顺序（含"已应用迁移"日志）：`$env:MIWO_DATA_DIR="C:\Temp\miwo-boot"; pnpm.cmd dev`。
+
 ### 路由与配置（改动须知）
 
 - **新增/改名 `apps/api/src/routes/**` 下的文件后，重启 `pnpm dev` 即可，`src/router.ts` 会自动重新生成**。
@@ -67,9 +72,63 @@ pnpm.cmd dev
 - ⚠ 本机的 sqlite 回归网**证明不了**"全新 MySQL 库的结构对不对"：它建的是全新 sqlite 库，漏一列会两边**一致地错**。
   `apps/api/scripts/gen-schema-migration.cjs`（只读 dev 库、把"现状真有哪些列"打出来、不写任何文件）是防止手写迁移漏列的
   机械闸门；逐表核对口径与结论见 `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-3-report.md`。
-- 常用命令都在 **`apps/api` 下跑**（`tsx` 只装在 `@miwo/api` 的依赖里，在仓库根裸跑会 `ERR_MODULE_NOT_FOUND`）：
+- 常用命令都在 **`apps/api` 下跑**（`tsx` 只装在 `@miwo/api` 的依赖里，在仓库裸跑会 `ERR_MODULE_NOT_FOUND`）：
   `pnpm.cmd run db:migrate` / `db:migrate:status` / `db:migrate:down`；`MIWO_DB_DRIVER=mysql` 时连 MySQL。
   ⚠ `--down` / `--redo` **会重建所有表、破坏数据**：先在一次性库上试（把 `MIWO_DATA_DIR` 指到 `%TEMP%` 下的空目录）。
+- **启动路径（Phase 1a / Task 4 起）**：应用启动时先 **连接 → 跑迁移**，**迁移完成才监听端口**
+  （`src/db/connect.ts` 的 `connect()` ← `src/utils/db.ts` 导出的 `dbReady` ← `src/app.ts` 在 `server.listen` 之前
+  `await dbReady`）。旧实现的"未被 await 的 IIFE 里跑 `initDB` + `fixDB`"已删除；`initDB.ts` / `fixDB.ts`
+  两个文件**仍在仓库里但已不在启动链上**（只为 `verify-phase0.cjs` 的构件断言存在，删除归 Phase 1c），
+  这条不变式由门禁 **`node tools/check-dead-ddl.cjs`**（`pnpm.cmd run verify:dead-ddl`）守住：它从 `src/app.ts`
+  出发走 import 图，链上出现 `initDB`/`fixDB` 的**代码级**引用就报红（4 个用户触发的运维路由逐条豁免、附理由）。
+
+### ⚠ 不支持"在老库上原地跑迁移"（症状 → 原因 → 怎么做）
+
+- **症状**：在已有一套旧表（本机 `apps/api/data/db2.sqlite`，实测 30 张表、**没有** `knex_migrations`）的库上
+  启动应用或跑 `db:migrate`，报 `table o_user already exists`（或任何 `already exists`）。
+- **原因**：`001_schema` 用 `createTable` 建基线表结构，而迁移的"幂等"只靠 `knex_migrations` 跳过**已执行过**的条目 ——
+  老库没有这张表，于是 `001_schema` 被当成"待执行"，一建表就撞名。这是**设计如此**，不是迁移写错
+  （给 `createTable` 加 `hasTable` 守卫会掩盖结构漂移，见上一条）。
+- **怎么做**：
+  - a) **推荐（部署路径）**：把老库数据导入一个**空** MySQL 库 —— 先让迁移把表结构建出来，再灌数据
+    （`scripts/export-sqlite.cjs` + `scripts/import-mysql.cjs`，Task 6 产出）。
+  - b) **本机继续用 sqlite**：**不要**对 `apps/api/data/db2.sqlite` 跑启动路径/迁移。要留这套老库做回归就把它当只读样本；
+    回归网（`apps/api/tests/**`）与 `verify-phase0.cjs` 用的都是**新建的一次性库**（后者把 `MIWO_DATA_DIR` 指到 `%TEMP%` 下的空目录，**不碰** dev 库）。
+- **`apps/api/data/db2.sqlite` 的 sha256 是一条硬约束**：任何验收/回归都不许改写它（本 Task 前后实测一致）。
+- ⚠ **`verify-phase0.cjs` 现在跑的是"空库 + 迁移"**：它在一次性目录里先 `db:migrate`（建 `001_schema`），
+  再用 **`apps/api/scripts/verify-phase0-seed-min.ts`（临时脚手架）** 种入 `o_setting.tokenKey`（+ `shotsEngine=v2`）——
+  否则新库里没有任何种子行，`app.ts` 的鉴权中间件会把**所有**请求挡成 444（含只读的 `configHealth?summary=1`）。
+  **删除条件**：种子迁移 `002_platform_seed`（Task 5）落地后，`db:migrate` 自己就会种下 `tokenKey`，
+  届时可把那个脚本与 `verify-phase0.cjs` 里对它的调用一起删掉。
+
+### 启动期副作用的两条语义变化（Phase 1a / Task 4 盖章登记）
+
+删掉旧 `fixDB` 在**每次启动**时做的两件无条件副作用后，行为**有意**变成：
+
+| # | 旧行为（每次启动） | 现在 | 影响 / 替代 |
+|---|---|---|---|
+| 1 | 把 6 类 `state='生成中'` 的行**无条件**改判失败（`o_novel.eventState=0`、`o_script.extractState=0`、`o_assets.promptState`、`o_image.state`、`o_storyboard.state`、`o_video.state`） | **不再自动改判** | 重启后残留的"生成中"会**一直留在那里**（这正是删除的收益：多实例不再互踩、不再误杀正在跑的任务）。正式替代是 **Phase 1d 的队列租约超时**（spec §9.2）；在 1d 落地前，人工清除用 **`pnpm.cmd run db:repair-stuck`**（下节） |
+| 2 | **无条件覆写** `o_prompt.data` 全文 | **不再覆写** | **收益**：运营改过的提示词不再每次重启被冲掉。新库的提示词由 `002_platform_seed`（Task 5）**只插不改** |
+
+> 登记落点：本表 + `apps/api/src/db/migrations/001_schema.ts` 的 `up` 开头 + `apps/api/src/lib/fixDB.ts` 顶部"已停用"横幅
+> + `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-4-report.md`。
+
+### `db:repair-stuck`（人工清除"卡在生成中"的残留行）
+
+```powershell
+cd apps\api
+pnpm.cmd run db:repair-stuck                          # 默认 dry-run；默认只列"超过 1 小时没更新"的行
+pnpm.cmd run db:repair-stuck --apply                  # 真的改判成"生成失败"，并写失败原因
+pnpm.cmd run db:repair-stuck -- --older-than=30m      # 改窗口（30m / 6h / 2d / 3600000）
+pnpm.cmd run db:repair-stuck -- --older-than=2026-10-12T00:00:00Z   # ⚠ 绝对时间**就是** cutoff 本身
+```
+
+- **默认 dry-run**（只打印 表名/id/state/时间，不写库），`--apply` 才写；**幂等**（改判过的行不再是"生成中"，再跑是 0 行）。
+- **默认只动超过 1 小时**没有时间戳更新的行 —— 避免误杀正在跑的任务。
+- ⚠ `o_image` **没有时间列**（现状库与 `001_schema` 都没有），所以它**不在 age 判定的可修范围**内：
+  脚本会打印"该表有 N 行生成中但没有可用时间列 → 不按 age 修"，而不是无差别改判。这条限制**是有意的**
+  （宁可漏修，也不要误杀）。要给 `o_image` 补时间列属结构变更，排 Phase 1c/1d。
+- ⚠ 不动 `apps/api/data/db2.sqlite`：先 `MIWO_DATA_DIR` 指向一次性库再试（env 优先于 `.env` 文件）。
 
 ## 已知问题 / Known issues
 

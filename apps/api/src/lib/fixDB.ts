@@ -1,3 +1,27 @@
+/**
+ * ⚠ 已停用（Phase 1a / Task 4）。
+ *
+ * 本文件的职责已迁移到 `apps/api/src/db/migrations/`：
+ *   - 建表/加列/删列 → `001_schema.ts`（spec §5.2 ①）
+ *   - 幂等种子       → `002_platform_seed.ts`（spec §5.2 ④）
+ *   - 「把 6 类 state='生成中' 的行改成失败」（本文件 `矫正因软件异常退出导致的状态不一致问题` 一段）→
+ *     **已从启动路径删除**（spec §5.2 ②）
+ *   - 「无条件覆写 o_prompt.data 全文」（本文件 `o_prompt` 覆写一段）   → **已从启动路径删除**（spec §5.2 ③）
+ *   - `tempOnsert` 回插 + `code ?? ""` 空文件兜底 → **已删除**（Phase 0 deferred，spec §5.2 ④）
+ *   - 按"适配器版本号 < 阈值就重写文件"的分支 → **迁移到 `003_vendor_asset_sync`**（Task 10）
+ *
+ * ⚠ 两条副作用被摘除后的**语义变化（已盖章，见根 README「启动期副作用的两条语义变化」）**：
+ *   1. `state='生成中'` 的残留行**不再**在重启时被自动改判失败。替代机制是 Phase 1d 的队列租约超时
+ *      （spec §9.2）。在 1d 落地前，需要人工清除时用 **`pnpm.cmd run db:repair-stuck`**（默认 dry-run，
+ *      `--apply` 才写库，默认只动 1 小时未更新的行）—— 它就是本条副作用的**手工替代品**。
+ *   2. `o_prompt` 的全文不再每次重启被冲掉（这是**收益**：运营改过的提示词保住了）。
+ *
+ * 保留本文件在仓库里的**唯一**理由是 `apps/api/scripts/verify-phase0.cjs` 的构件存在性断言；
+ * 删除它是 Phase 1c 的清理项（本文件**没有**被任何路由在请求时调用）。
+ *
+ * ⚠ **不要**再把它接回启动路径：`tools/check-dead-ddl.cjs` 从 `src/app.ts` 出发走 import 图，
+ *   发现启动链上出现 `initDB` / `fixDB` 的**代码级**引用就报红（豁免清单逐文件、附理由）。
+ */
 import u from "@/utils";
 import path from "path";
 import fs from "fs";

@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-11T21:19:07.866Z",
+  "generatedAt": "2026-10-12T18:36:54.852Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 234,
+    "tsFilesScanned": 239,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)",
     "bypassFiles": "直接命名导入裸 db：import { db } from \"@/utils/db\"（spec 附录 B.1 的判据）",
@@ -21,7 +21,7 @@
     "apps/api/src/lib/fixDB.ts": {
       "count": 1,
       "lines": [
-        145
+        169
       ],
       "tables": [
         "o_vendorConfig"
@@ -256,6 +256,14 @@
     }
   },
   "raws": {
+    "apps/api/src/db/connect.ts": {
+      "count": 1,
+      "lines": [
+        112
+      ],
+      "confirmed": true,
+      "note": "[112 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。"
+    },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,
       "lines": [

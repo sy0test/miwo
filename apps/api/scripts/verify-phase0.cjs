@@ -21,6 +21,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
+const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
@@ -199,6 +200,20 @@ async function stopChild(child) {
 }
 
 // ---------- C/D/E：启动与接口 ----------
+/**
+ * 递归拷贝（**不用 `fs.cpSync`**：它的 `recursive` 是 Node 16.7+ 实验性 API，
+ * 本仓库 engines 是 >=22.12 但 Phase 0 的工具链刻意只用最保守的 fs 调用）。
+ */
+function copyDirRecursive(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    if (e.isDirectory()) copyDirRecursive(s, d);
+    else if (e.isFile()) fs.copyFileSync(s, d);
+  }
+}
+
 async function checkBootAndApi() {
   let port;
   try {
@@ -209,20 +224,92 @@ async function checkBootAndApi() {
   }
   pass(G_BOOT, `取得空闲端口 ${port}`);
 
-  const dataDir = path.join(API_ROOT, "data");
-  pass(G_BOOT, `使用独立数据目录 ${dataDir}`);
+  /**
+   * ⚠ 数据目录必须是**一次性的空目录**（Phase 1a / Task 4 起）：
+   *
+   * 旧口径是直接 `MIWO_DATA_DIR = apps/api/data`。Task 4 之后应用启动时会在数据目录里
+   * **跑 `001_schema` 迁移**（`src/db/connect.ts` 的 `connect()`），而那个目录里的 `db2.sqlite`
+   * 是**老库**（实测 30 张表、**没有** `knex_migrations`）—— `createTable` 会撞 "table already exists"，
+   * 应用根本起不来（这正是计划 Task 6「先把老库数据导入空库」存在的原因）。
+   * 所以这里改用 `os.tmpdir()` 下的空目录，**绝不读也不写** `apps/api/data/db2.sqlite`。
+   *
+   * 目录里只需要两样东西：
+   *   1. 空库 → 应用启动时自己跑 `001_schema`（这也就是"迁移完成 → 才监听端口"的运行期证据）；
+   *   2. `vendor/` `skills/` `modelPrompt/` 三个**只读静态资产目录**（`configHealth` 的
+   *      "vendor 13 / skills 31" 两条断言与启动期读取依赖它们；**不复制** `db2.sqlite`）。
+   *
+   * ⚠ 为什么还要先跑一次 `db:migrate` + `scripts/.tmp-seed-min.cjs`：新库迁完后**没有任何种子数据**，
+   *    而 `apps/api/src/app.ts` 的鉴权中间件要求 `o_setting.tokenKey` 存在，否则**每个**请求都返回 444
+   *    （连只读的 `configHealth?summary=1` 都到不了）—— 这是 Phase 1a 的**已知缺口**，
+   *    `002_platform_seed`（Task 5）落地后这段种子就会由迁移负责，届时可删掉。
+   *    两个步骤都用**同一个 env**（同一份 MIWO_DATA_DIR），所以指向的还是那个一次性库。
+   */
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-phase0-boot-"));
+  for (const sub of ["vendor", "skills", "modelPrompt"]) {
+    const src = path.join(API_ROOT, "data", sub);
+    if (fs.existsSync(src)) copyDirRecursive(src, path.join(dataDir, sub));
+  }
+  pass(G_BOOT, `使用一次性数据目录（空库 + 只读静态资产）${dataDir}`);
+
+  const bootEnv = {
+    ...process.env,
+    MIWO_ENV: "dev",
+    MIWO_PORT: String(port),
+    MIWO_HOST: "127.0.0.1",
+    MIWO_DATA_DIR: dataDir,
+    MIWO_JWT_SECRET: "phase0-verification-secret-at-least-32-bytes",
+    NODE_OPTIONS: "--import=tsx",
+  };
+
+  /** 用一次性库先把结构建出来：`tsx` 只装在 @miwo/api，所以必须 `--import=tsx` + cwd=apps/api。 */
+  const tsxStep = (scriptRelPath) =>
+    spawnSync(process.execPath, ["--import=tsx", scriptRelPath], {
+      cwd: API_ROOT,
+      env: bootEnv,
+      encoding: "utf8",
+      timeout: 120000,
+      windowsHide: true,
+    });
+
+  // ⚠ 先检查脚手架是否存在：缺了的话 `tsx` 的报错很难读，而根因只有一句"少种了 tokenKey"
+  const seedScript = path.join(API_ROOT, "scripts", "verify-phase0-seed-min.ts");
+  if (!fs.existsSync(seedScript)) {
+    fail(
+      G_BOOT,
+      "存在 scripts/verify-phase0-seed-min.ts（一次性库的最小种子脚手架）",
+      `缺少 ${seedScript}：新库迁完后没有任何 o_setting 行，鉴权中间件会挡掉**所有**请求（连只读的 configHealth 都 444）。` +
+        "该文件是 Phase 1a/Task 4 的临时脚手架，Task 5 的 002_platform_seed 落地后应由它接替并删除本文件。",
+    );
+    return;
+  }
+  pass(G_BOOT, "存在 scripts/verify-phase0-seed-min.ts（一次性库的最小种子脚手架）");
+
+  const migrateRun = tsxStep(path.join("scripts", "db-migrate.ts"));
+  if (migrateRun.status === 0) {
+    pass(G_BOOT, "先在一次性空库上跑 db:migrate（001_schema）");
+  } else {
+    fail(
+      G_BOOT,
+      "先在一次性空库上跑 db:migrate（001_schema）",
+      `exit ${migrateRun.status}；stdout=${String(migrateRun.stdout || "").slice(-500)}；stderr=${String(migrateRun.stderr || "").slice(-500)}`,
+    );
+  }
+
+  const seedRun = tsxStep(path.join("scripts", "verify-phase0-seed-min.ts"));
+  if (seedRun.status === 0) {
+    pass(G_BOOT, "种入 o_setting.tokenKey（002_platform_seed 落地前的最小种子）");
+  } else {
+    fail(
+      G_BOOT,
+      "种入 o_setting.tokenKey（002_platform_seed 落地前的最小种子）",
+      `exit ${seedRun.status}；stdout=${String(seedRun.stdout || "").slice(-500)}；stderr=${String(seedRun.stderr || "").slice(-500)}`,
+    );
+  }
 
   const child = spawn(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", path.join("src", "app.ts")], {
     cwd: API_ROOT,
-    env: {
-      ...process.env,
-      MIWO_ENV: "dev",
-      MIWO_PORT: String(port),
-      MIWO_HOST: "127.0.0.1",
-      MIWO_DATA_DIR: dataDir,
-      MIWO_JWT_SECRET: "phase0-verification-secret-at-least-32-bytes",
-      NODE_OPTIONS: "--import=tsx",
-    },
+    // ⚠ 与 db:migrate / 种子脚本用的是**同一个 env**（同一个一次性库）
+    env: bootEnv,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -295,6 +382,18 @@ async function checkBootAndApi() {
     record(G_CLEAN, "自己起的应用进程已退出", killed, `pid ${child.pid} 仍在运行`);
     const released = await waitPortReleased(port, 10000);
     record(G_CLEAN, `端口 ${port} 已释放（无人监听）`, released, "端口仍被监听，疑似孤儿进程");
+
+    // 一次性数据目录必须收干净（不许在 %TEMP% 里留垃圾，也保证"下次跑仍是空库"）
+    let removed = false;
+    for (let attempt = 0; attempt < 3 && !removed; attempt++) {
+      try {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+        removed = !fs.existsSync(dataDir);
+      } catch (e) {
+        await delay(500);
+      }
+    }
+    record(G_CLEAN, `一次性数据目录已删除 ${dataDir}`, removed, "删除失败（可能有句柄未释放）");
 
     // ⚠ 必须在收集完全部输出之后再断言未处理的 Promise 拒绝。
     // 为什么必须断言它：apps/api/src/err.ts 注册的全局 `process.on("unhandledRejection")` **只打印不退出**，

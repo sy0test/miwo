@@ -21,6 +21,7 @@
     "db:migrate": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts",
     "db:migrate:status": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --status",
     "db:migrate:down": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --down",
+    "db:repair-stuck": "node --env-file-if-exists=.env --import=tsx scripts/db-repair-stuck.ts",
     "db:generate": "node --import=tsx scripts/db-generate.ts",
     "debug:ai": "npx @ai-sdk/devtools",
     "license": "node scripts/license.ts",
