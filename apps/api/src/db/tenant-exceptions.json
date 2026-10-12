@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T20:23:14.620Z",
+  "generatedAt": "2026-10-12T21:38:14.566Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -267,11 +267,11 @@
     "apps/api/src/db/legacy/import.ts": {
       "count": 2,
       "lines": [
-        1287,
-        1297
+        1341,
+        1351
       ],
       "confirmed": true,
-      "note": "[1287/1297 src.raw(\"?? as ??\", [col, \"__v\"])] 处置（Task 8 Step 1）：这是 `extremeRowPicks()` 的**边界抽样**取数。两条都是 knex 的**标识符占位符**（`??` = 转义列名/表名，不是值绑定），实参只有 `col`（来自 `columnInfo()` 的**真实列名**）与常量 `\"__v\"` —— 没有任何来自请求/用户的字符串被拼进 SQL；返回的也只是主键 + 那一列，不返回整行业务数据。\n它读的**不是**应用库：调用方是 `scripts/extreme-picks-runner.ts`，传进来的 `src` 是**只读打开的 SQLite 老库快照**（`better-sqlite3` 的 `{ readonly: true }`，只读性另由 `scripts/export-sqlite.cjs` 的 sha256 前后一致自证）。没有请求上下文、不对 `o_*` 表做 join、也完全不碰目标库，因此**不参与租户过滤**；Phase 1b 的 `policies.ts` 不得给它注入租户条件。\n为什么用 raw：要按 `LENGTH(col)` 排序 / 取极值，query builder 表达不了\"列名\"这一维（同函数里的 `orderByRaw(\"LENGTH(??) DESC\", [col])` 是同一套参数化写法，只是没被本门禁的正则扫到）。"
+      "note": "[1341/1351 src.raw(\"?? as ??\", [col, \"__v\"])] 处置（Task 8 Step 1）：这是 `extremeRowPicks()` 的**边界抽样**取数。两条都是 knex 的**标识符占位符**（`??` = 转义列名/表名，不是值绑定），实参只有 `col`（来自 `columnInfo()` 的**真实列名**）与常量 `\"__v\"` —— 没有任何来自请求/用户的字符串被拼进 SQL；返回的也只是主键 + 那一列，不返回整行业务数据。\n它读的**不是**应用库：调用方是 `scripts/extreme-picks-runner.ts`，传进来的 `src` 是它用 `createKnex({ db: { driver: \"sqlite\", file: SRC } })` 建的 **knex 句柄**（`extreme-picks-runner.ts:68-70`）—— **不是** `better-sqlite3` 的 `{ readonly: true }` 连接（那个连接在同一文件里**另建**，见 `:81-83`，只用于按主键取整行）。knex 这条句柄**没有** readonly 开关：它的\"只读\"来自两点 —— ① `extremeRowPicks()` 只发 SELECT；② 源库快照的 sha256 前后一致断言（`scripts/export-sqlite.cjs`；注意那条只覆盖**导出**那一步，不覆盖这一步）。Phase 1b 判策略时请按**「不在请求上下文的 knex 句柄、只发 SELECT」**理解，**不要**按\"已打开为 readonly 的连接\"理解。没有请求上下文、不对 `o_*` 表做 join、也完全不碰目标库，因此**不参与租户过滤**；Phase 1b 的 `policies.ts` 不得给它注入租户条件。\n为什么用 raw：要按 `LENGTH(col)` 排序 / 取极值，query builder 表达不了\"列名\"这一维（同函数里的 `orderByRaw(\"LENGTH(??) DESC\", [col])` 是同一套参数化写法，只是没被本门禁的正则扫到）。"
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,

@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Knex } from "knex";
+import { sqldialect, type Dialect } from "@/db/dialect";
 
 /**
  * 种子目录的候选路径。
@@ -83,12 +84,14 @@ function readNdjson<T = Record<string, unknown>>(file: string): T[] {
 }
 
 /**
- * 下行删除的**行形状**（Task 5 独立审查修复 3）。
+ * 下行删除的**行形状**（Task 5 独立审查修复 3；合并审查修复 1 加固了比较口径）。
  *
  * ⚠ 为什么 down **不能**按身份键（`type` / `key` / `id`）删：Task 6 会先把老库数据导进来，
  *    若老库/运营已经写入了**同键但不同内容**的行，002 的 `up` 会跳过它们（只插不改），
  *    而按键删的 `down` 会把**不是 002 插的**那些行删掉 —— 回滚就不是"撤销本迁移"，
- *    而是"删用户数据"。改成"内容全等"判定后，down 只可能删掉"与本仓库种子逐字节相同的行"。
+ *    而是"删用户数据"。改成"种子行的全部列**逐列精确相等**"判定后，down 只可能删掉
+ *    "仍是本仓库种子那一行"的记录（**不是**"逐字节相同"这么强的说法：见下面 `whereExact`
+ *    列出的两条表示层语义 —— 数值列走数值比较、`BINARY` 只保证文本列按字节比）。
  *    代价：运营改过的种子行在 down 时**保留**（rollback 后重跑 002 也不会再插回它，
  *    因为 `seedTable` 的身份键判定仍认为它存在）—— 这是**有意偏保守**：
  *    "少删一行"可以人工补回，"多删一行运营数据"不可恢复。
@@ -98,6 +101,36 @@ function readNdjson<T = Record<string, unknown>>(file: string): T[] {
  */
 function pickColumns(row: Record<string, unknown>, cols: Set<string>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(row).filter(([k, v]) => cols.has(k) && v !== undefined));
+}
+
+/**
+ * 单列的"**精确**相等"谓词（合并审查修复 1）。
+ *
+ * ⚠ 为什么不能直接用 `knex(table).where(row)`：MySQL 服务端 collation 是
+ *    **`utf8mb4_0900_ai_ci`**（`ai` = accent-insensitive，`ci` = **case-insensitive**），
+ *    于是 SQL `=` 是**大小写不敏感**的：实测（真 MySQL 8.4.11）`'EVENTEXTRACTION' = 'eventExtraction'`
+ *    为真。后果是一条**真实的数据丢失路径**：运营/老库把某个种子行只改了大小写（或只改了声调符号），
+ *    旧 `down` 就会把它当成 002 插的行**删掉**。所以判据必须与 collation 无关：
+ *      · mysql：`BINARY ?? = ?` —— 两侧都按**字节**比；
+ *      · sqlite：`?? COLLATE BINARY = ?` —— 显式指定 BINARY，不依赖列的默认 collation
+ *        （本仓库 `001_schema` 里没有任何列声明 `COLLATE NOCASE`，但判据不该依赖这一点）。
+ *    ⚠ 两条**不是**"逐字节相同"的说法（README 与本文件的旧措辞已改正）：
+ *      ① 非文本列走的是**数值**比较（`BINARY intcol = 4` 在 MySQL 里仍是数值相等）；
+ *      ② 尾随空格：实测在 `utf8mb4_0900_ai_ci` 的列上 `t = 'a'` **不**匹配 `'a '`（0900 系列是 NO PAD）——
+ *         即"只加一个尾随空格"的行在**旧判据下本来就会存活**，那是 collation 的副作用而不是设计；
+ *         加固后它是**显式**的（`BINARY` 让大小写与尾随空格都参与比较）。
+ *         ⚠ 反例口径别搞混：两个**字面量** `'a ' = 'a'` 在本机返回 1，因为那走的是**连接** collation
+ *         （本机 mysql CLI 是 `gbk_chinese_ci`，PAD SPACE）而不是列的 collation —— "列 vs 绑定值"
+ *         才是 `down` 的实际形状。（实测原文见合并审查修复轮报告。）
+ *    方向不变：**少删一行**（可人工补回）优于**多删一行运营数据**（不可恢复）。
+ *
+ * ⚠ 没有任何字符串插值进 SQL：`??` 是 knex 的**标识符**占位符（列名来自 `columnInfo()` 的
+ *    真实列名或种子文件的键），值一律走 `?` 绑定参数。
+ */
+function whereExact(qb: Knex.QueryBuilder, col: string, value: unknown, dialect: Dialect): Knex.QueryBuilder {
+  if (value === undefined || value === null) return qb.whereNull(col);
+  const v = value as Knex.Value;
+  return dialect === "mysql" ? qb.whereRaw("BINARY ?? = ?", [col, v]) : qb.whereRaw("?? COLLATE BINARY = ?", [col, v]);
 }
 
 /** 按主键列判断"是否已存在"，只插不存在的。返回插入的行数。 */
@@ -180,20 +213,28 @@ export default {
   },
 
   async down(knex: Knex): Promise<void> {
-    // 只删**本迁移插进去的那些行**：判据是"内容与本仓库种子逐字节相同"，而不是"身份键相同"。
+    // 只删**本迁移插进去的那些行**：判据是"种子那一行的全部列都精确相等"（collation 无关，见 `whereExact`），
+    // 而不是"身份键相同"。
     // ⚠ 详见 pickColumns() 上方的说明 —— 按身份键删会把 Task 6 导入的同键老数据一起删掉。
+    // ⚠ **不能**退回 `knex(table).where(row).del()`：MySQL 的 `utf8mb4_0900_ai_ci` 下 SQL `=`
+    //    大小写不敏感，会把"只改了大小写"的行误删（数据丢失路径，回归网见
+    //    `tests/mysql-integration.test.ts` 的「down 不删只改了大小写的种子行」，那条只在真 MySQL 上才有判别力）。
     // ⚠ 表不存在 / 列不存在时**跳过**（down 必须能在"up 没跑完"的库上收尾，不能反过来炸）。
+    const dialect = sqldialect(knex);
     const tables = ["o_prompt", "o_agentDeploy", "o_setting", "o_vendorConfig"] as const;
     const files = ["o_prompt.ndjson", "o_agentDeploy.ndjson", "o_setting.platform.ndjson", "o_vendorConfig.templates.ndjson"] as const;
     for (const [i, table] of tables.entries()) {
       if (!(await knex.schema.hasTable(table))) continue;
       const cols = new Set(Object.keys((await knex(table).columnInfo()) as Record<string, unknown>));
       const rows = readNdjson(files[i]).map((r) => pickColumns(r, cols));
-      // 逐行一条 DELETE，条件是"所有列都相同"：只有真正由 002 插入且此后**没被改过**的行才会命中。
-      // 一条 UPDATE 就让它落到"保留"一侧 —— 这是本修复的安全方向。
+      // 逐行一条 DELETE，条件是"种子行的每一列都精确相等"：只有真正由 002 插入且此后
+      // **没被改过**（连大小写都没变）的行才会命中。一条 UPDATE 就让它落到"保留"一侧 ——
+      // 这是本修复的安全方向。
       for (const row of rows) {
         if (Object.keys(row).length === 0) continue;
-        await knex(table).where(row).del();
+        let q = knex(table);
+        for (const [col, value] of Object.entries(row)) q = whereExact(q, col, value, dialect);
+        await q.del();
       }
     }
   },

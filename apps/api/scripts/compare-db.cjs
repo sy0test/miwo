@@ -30,7 +30,17 @@
  *
  * 输出：`<dir>/source-samples.json`（源侧抽样）+ `<dir>/pick-kinds.json`（每行被哪层抽中）
  *      + `<dir>/compare-report.json`（机器可读报告）。
- * 退出码：0 = 完全一致；1 = 有差异（打印差异清单）。
+ * 退出码：0 = 完全一致；1 = 有差异（打印差异清单）**或触发了下面的两条护栏**。
+ *
+ * ───────────── 两条"不许空转"的护栏（合并审查修复 7）─────────────
+ *
+ *  1. **源为空即失败**：源库真读不到行（或 manifest 与源库对不上）时，各段比对都会"无差异通过"，
+ *     脚本会打印"行数与抽样单元格全部一致"并 exit 0 —— 那是**空转**，不是"数据一致"。所以
+ *     先按 `SELECT COUNT(*)` 真数一遍源库，且要求抽样行数 > 0，否则响亮失败。
+ *  2. **目标一致性校验**：`<dir>/import-report.json` 是**为某个目标库**生成的（里面记着
+ *     `target` = `describeTarget()`）。若本次 `MIWO_DB_*` / `MIWO_DATA_DIR` 指到**另一个**库，
+ *     "拿 A 库的导入报告判 B 库"会得到一份看起来全绿、实际无意义的结论 → 直接 exit 1。
+ *     报告里没有 `target`（更早的产物）同样失败：无法证明它在说哪个库。
  *
  * ⚠ 源库以 `{ readonly: true }` 打开：比对同样不许写源库。
  */
@@ -90,6 +100,35 @@ for (const t of manifest.tables) {
   }
   samples[t.name] = { pk, rows };
 }
+// ---- 空转护栏 ①（合并审查修复 7）：源库真读不到行 / manifest 与源库对不上 → 立刻失败 ----
+//   ⚠ 为什么必须真数一遍：只看 manifest 的 `rows` 会被"导出物自己写错"骗过；只看到抽样为空
+//      又要等半天才发现"一致"是空转。这里按 `SELECT COUNT(*)` 真读源库，顺便证明
+//      "这份 manifest 说的表，在这个源库里真的存在"。
+let srcTotalRows = 0;
+if (!manifest.tables.length) {
+  console.error(`[compare] ✘ 空源护栏：manifest 里一张表都没有（${MANIFEST}）—— 没有可比的东西，"一致"是空转（exit 1）`);
+  process.exit(1);
+}
+for (const t of manifest.tables) {
+  try {
+    srcTotalRows += Number(src.prepare(`SELECT COUNT(*) AS n FROM "${t.name}"`).get().n);
+  } catch (e) {
+    console.error(
+      `[compare] ✘ 源库读不到 manifest 里的表 \`${t.name}\`：${e.message}\n` +
+        `  说明这份 manifest（${MANIFEST}）不是这个源库（${SRC}）的导出物 —— 结论不可信（exit 1）`,
+    );
+    process.exit(1);
+  }
+}
+const sampleRows = Object.values(samples).reduce((s, v) => s + v.rows.length, 0);
+if (srcTotalRows === 0 || sampleRows === 0) {
+  console.error(
+    `[compare] ✘ 空源护栏：源库 ${SRC} 共 ${srcTotalRows} 行 / 抽到 ${sampleRows} 行 —— 没有任何东西可比较，\n` +
+      `  "行数与抽样单元格全部一致"在这种输入下是**空转**而不是数据一致（exit 1）`,
+  );
+  process.exit(1);
+}
+console.log(`[compare] 源库行数合计 ${srcTotalRows} 行（真数，不只信 manifest）；抽样 ${sampleRows} 行`);
 src.close();
 fs.writeFileSync(path.join(DIR, "source-samples.json"), JSON.stringify(samples, null, 2) + "\n", "utf8");
 console.log(`[compare] 源侧抽样已写 ${path.join(DIR, "source-samples.json")}（每表 ${SAMPLE}+3 行）`);
@@ -137,9 +176,29 @@ async function main() {
   const pickKinds = fs.existsSync(pickKindsPath) ? JSON.parse(fs.readFileSync(pickKindsPath, "utf8")) : undefined;
   const reportPath = path.join(DIR, "import-report.json");
   const imported = fs.existsSync(reportPath) ? JSON.parse(fs.readFileSync(reportPath, "utf8")) : null;
-  console.log("[compare] 目标：" + describeTarget());
+  const target = describeTarget();
+  console.log("[compare] 目标：" + target);
   console.log("[compare] 方言：" + dialectOfConfig());
-  if (!imported) console.log("[compare] 无 import-report.json：行数用严格口径（目标必须等于源）");
+  // ---- 目标一致性校验（合并审查修复 7）----
+  //   ⚠ 为什么必须校验：import-report.json 是**为某个目标库**生成的。若这次的环境变量指到
+  //      另一个库（或另一个 sqlite 文件），下面每一段都会"拿 A 库的导入报告判 B 库"——
+  //      行数期望值取错、缺席归因取错，却照样打印"完全一致"。那不是判据，是巧合。
+  //   ⚠ 本文件里的这段代码整体在**外层模板字面量**里，所以注释里**不许出现反引号**
+  //      （会当场把模板切成碎片 —— 实测踩过一次，node --check 报的是别的行）。
+  if (imported) {
+    if (!imported.target) {
+      console.error("[compare] ✘ 目标一致性：import-report.json 里没有 target 字段（更早版本的产物）——" +
+        "无法证明它在说哪个目标库，结论不可信（重跑 db:import 再比对；exit 1）");
+      process.exit(1);
+    }
+    if (imported.target !== target) {
+      console.error("[compare] ✘ 目标一致性：import-report.json 的目标是 " + imported.target +
+        "，本次连的是 " + target + " —— 拿一个库的导入报告判另一个库，结论不可信（exit 1）");
+      process.exit(1);
+    }
+  } else {
+    console.log("[compare] 无 import-report.json：行数用严格口径（目标必须等于源），且无目标一致性校验对象");
+  }
   const dst = createKnex();
   try {
     const plans = await plansFromManifest(dst, manifest);

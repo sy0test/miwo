@@ -441,22 +441,6 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
     expect(valuesEqual(null, 0).equal).toBe(false);
   });
 
-  it("valuesEqual 的判据（不 trim、不把数字串当数字、bigint 与浮点容差）", () => {
-    // 【Ruling 77】MySQL 的 ci collation / 尾随空格语义不同 → 比较器**不许**把差异吃掉
-    expect(valuesEqual("a ", "a").equal).toBe(false);
-    expect(valuesEqual("A", "a").equal).toBe(false);
-    expect(valuesEqual("123", 123).equal).toBe(false);
-    expect(valuesEqual("x", "x").equal).toBe(true);
-    // bigint 归一化（两个驱动下的合法表示）
-    expect(valuesEqual(BigInt(1791385147125), 1791385147125).equal).toBe(true);
-    // 浮点：表示差异（MySQL float vs sqlite REAL）用 1e-6 相对容差
-    expect(valuesEqual(4.300000190734863, 4.3).equal).toBe(true);
-    expect(valuesEqual(4.3, 5.3).equal).toBe(false);
-    // NULL / undefined 同义
-    expect(valuesEqual(null, undefined).equal).toBe(true);
-    expect(valuesEqual(null, 0).equal).toBe(false);
-  });
-
   it("equivalentForCompare：只多两条显式容忍（0/\"0\"、null/undefined），Ruling 77 的两条不被吃掉", () => {
     // brief Step 1 要求的两条容忍
     expect(equivalentForCompare(0, "0").equal).toBe(true);
@@ -540,6 +524,9 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
       table: "o_vendorConfig",
       pk: { id: "volcengine" },
       reason: "skipped-different-seed",
+      // ⚠ 合并审查修复 2：登记必须带**差异列集合**（(行,列) 粒度），不是"整行豁免"。
+      //    这条断言是**精确**匹配（`toContainEqual` 逐键比），所以"多登记一列"也会红。
+      columns: ["enable"],
     });
     // 目标里那一格保留种子值（绝不 upsert）
     expect(((await dst("o_vendorConfig").where("id", "volcengine").first()) as { enable: number }).enable).toBe(0);
@@ -568,6 +555,32 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
     expect(t.accountedMismatches.map((m) => `${m.column}:${m.accountedBy}`)).toEqual(["enable:skipped-different-seed"]);
     expect(t.accountedMismatches[0].source).toBe(1);
     expect(t.accountedMismatches[0].target).toBe(0);
+
+    // ⚠ 合并审查修复 2 的**判别力**：豁免粒度是 **(行, 列)**，不是整行。
+    //    把**同一行**里**没被登记**的另一列改坏 → 必须判红。
+    //    （"整行豁免"的实现会在这里假绿：那一行只要登记过一次就整行放行。）
+    await dst("o_vendorConfig").where("id", "volcengine").update({ models: "[\"tampered\"]" });
+    const cmp2 = await compareRows({
+      dst,
+      manifest,
+      samples: {
+        o_vendorConfig: {
+          pk: ["id"],
+          rows: [
+            { id: "volcengine", inputValues: "{}", models: "[]", enable: 1 },
+            { id: "brandnew", inputValues: "{}", models: "[]", enable: 1 },
+          ],
+        },
+      },
+      plans,
+      outcomes: res.outcomes,
+      expectedAbsent: res.expectedAbsent,
+    });
+    expect(cmp2.ok, "同一行里**未被登记**的列被改坏，必须判红（整行豁免会在这里假绿）").toBe(false);
+    const t2 = cmp2.tables.find((x) => x.table === "o_vendorConfig")!;
+    expect(t2.mismatches.map((m) => m.column)).toEqual(["models"]);
+    // 登记过的 `enable` 仍然走"按设计不同"通道 —— 不是"一红就整行都红"
+    expect(t2.accountedMismatches.map((m) => m.column)).toEqual(["enable"]);
     await dst.destroy();
   });
 

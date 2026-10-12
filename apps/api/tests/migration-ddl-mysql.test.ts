@@ -168,8 +168,10 @@ interface KeyRef {
  *   1. **表级主键**：``,primary key (`id`)``（多列复合主键也是这个形状，
  *      例：`o_assets2Storyboard` 的 `primary key (`storyboardId`, `assetId`)`）。
  *   2. **列属性主键**：`` `id` bigint unsigned not null auto_increment primary key,``
- *      —— **没有括号**。`t.pk(T)`（`bigIncrements`）与 `T.bigInteger("id").unsigned().primary()`
- *      都编译成这样；27 张 create 里 **20 张**是它（只有 3 张走表级主键、4 张走复合主键）。
+ *      —— **没有括号**。`t.pk(T)`（`bigIncrements`）编译成这样；27 张 create 里 **18 张**是它。
+ *      （合并审查修复 6：这里原来写"20 张是它（只有 3 张走表级主键、4 张走复合主键）"，
+ *       与实现不符 —— 实测是 **18 张列属性 / 9 张表级**，其中表级里 4 张是复合主键。
+ *       数字现在由本文件的「形状分布」断言机械复核，不再靠注释。）
  *      旧正则只认形状 1 → 实测 27 张 create 里 **只有 9 张**被抽到，
  *      `o_artStyle` / `o_agentDeploy` / `o_prompt` / `o_modelPrompt` **一条 key ref 都没有**。
  *   3. **alter 追加的索引**：``alter table `t` add index `n`(`c`)`` 与
@@ -351,8 +353,9 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     //    同一个索引、相邻的那一列）完全逃逸。手写清单必然漏，所以这里改成**机械扫描**：
     //    从编译出来的全部 DDL 里抽出每一条 key 规格的列，再逐列抠类型 —— 加新索引时不需要维护任何清单。
     //    ⚠ 修复轮 1：`keyRefsOf` 的抽取面当时**窄于它声称的范围**（只认表级 `primary key (` 与
-    //    `add (unique )?index`）→ 实测漏掉 20 张表的列属性主键与 2 条 `add unique`
+    //    `add (unique )?index`）→ 实测漏掉 **18** 张表的列属性主键与 2 条 `add unique`
     //    （`o_agentWorkData` 的 `key` 列一次都没被检查过）。形状清单见 `keyRefsOf` 的注释。
+    //    （合并审查修复 6：原来这里写"20 张表的列属性主键"，与同一文件的形状分布断言不符。）
     //    ⚠ 为什么静态断言也值得有：1170 是**服务端**的语义校验，SQL 串本身完全合法，
     //    所以"没连过真 MySQL"时它是唯一能提前发现的手段（真连的断言在
     //    `tests/mysql-integration.test.ts`，门控 MIWO_TEST_MYSQL=1）。
@@ -363,6 +366,20 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     //   60 这条下限正好卡在旧抽取面（44）与新抽取面（67）之间 —— 抽取面一旦退回旧形状，这里先红。
     expect(countKeyRefs(stmts)).toBeGreaterThan(60);
     expect(bad).toEqual([]);
+
+    // ⚠ **形状分布的机械判据**（合并审查修复 6）：这段代码上方的注释原来写着"列属性主键 20 张 /
+    //    表级 3 张 / 复合 4 张"，与实现不符（实测 **18 / 9，其中表级里 4 张是复合主键**）。
+    //    注释里的数字要能被人复核才不会漂移，所以这里把它变成断言：`keyRefsOf` 一旦漏掉某种形状，
+    //    这两个数字先红，而不是让读者去信一句注释。
+    const refs = keyRefsOf(stmts);
+    const colAttrTables = new Set(refs.filter((r) => r.index === "primary key (列属性)").map((r) => r.table));
+    const tableLevelCols = new Map<string, number>();
+    for (const r of refs) if (r.index === "primary key") tableLevelCols.set(r.table, (tableLevelCols.get(r.table) ?? 0) + 1);
+    const compositeTables = [...tableLevelCols.values()].filter((n) => n > 1);
+    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(18);
+    expect(tableLevelCols.size, "表级 `primary key (…)`（含复合）的表数").toBe(9);
+    expect(compositeTables.length, "表级主键里是复合主键的表数").toBe(4);
+    expect(colAttrTables.size + tableLevelCols.size, "两种形状之和必须覆盖全部 27 张 create").toBe(27);
 
     // 判别力自证（在**合成 DDL** 上跑同一个谓词）。五条分别钉住 `keyRefsOf` 的每一种形状，
     // 以及"同一形状的负例"——负例是必需的：只加正例时，"抽取面变宽后误报/漏报"两种退化都不会被发现。
@@ -395,7 +412,10 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
         "alter table `t` add index `t_type_index`(`type`(20))",
       ])
     ).toHaveLength(0);
-    // ⑤ 复合索引里**只有前缀列是 text**（`add unique ... (`isolationKey`, `type`)`）→ 必须仍然抓到 `type`。
+    // ⑤ 复合索引里**只有后缀列是 text**（`add unique ... (`isolationKey`, `type`)`：
+    //    前缀列 `isolationKey` 是 varchar（合法），**后一列 `type` 才是 longtext**）→ 必须仍然抓到 `type`。
+    //    （合并审查修复 6：这里原来写"只有前缀列是 text"，措辞**反了** ——
+    //      前缀列恰恰是合法的那个，违规的是它后面那一列。）
     //    这就是 memories 的真实形状：前缀列是 varchar（合法），后面那一列才是违规列；
     //    抽取面只抓"第一列"或只抓"带前缀长度的列"都会在这里假绿。
     expect(
@@ -448,7 +468,7 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(narrow(limits["o_modelPrompt.fileName"])).toBe("MAX_LENGTH");
     expect(narrow(limits["o_modelPrompt.path"])).toBe("MAX_LENGTH");
 
-    // ② 反向的机械判据：**有数字上限的列就是 schema 里那 25 个 `T.string(...)` / `t.vstr(...)`**，
+    // ② 反向的机械判据：**有数字上限的列就是 schema 里那 27 个 `T.string(...)` / `t.vstr(...)`**，
     //    一个不多、一个不少。这条比"抽查几个 key"强：任何"把 varchar 悄悄改成 text"（或反过来）
     //    都会在这里红，而且报出**多/少了哪一列**。
     const BOUNDED: Array<[string, number]> = [

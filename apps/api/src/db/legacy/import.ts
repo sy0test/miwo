@@ -20,7 +20,10 @@
  *
  * ───────────── ⚠ Task 5 交接条款：导入顺序与回滚语义（本文件是它的登记落点）─────────────
  *
- * `002_platform_seed` 的 `down` 判据是 **"内容与本仓库种子逐字节相同才删"**（Task 5 独立审查修复 3）。
+ * `002_platform_seed` 的 `down` 判据是 **"仍是本仓库种子那一行"才删**（逐列**精确**比较，与
+ * collation 无关：mysql 侧 `BINARY`、sqlite 侧 `COLLATE BINARY`；Task 5 独立审查修复 3 定的
+ * "内容全等"方向，合并审查修复 1 把比较口径从 SQL `=` 加固成 collation 无关 ——
+ * MySQL 的 `utf8mb4_0900_ai_ci` 下 `=` **大小写不敏感**，"只改大小写"的行会被误删）。
  * 因此搬迁链必须守住三条（改导入策略时，`tests/migration-seed.test.ts` 的
  * 「down 不误伤 Task 6 先导入的同键老数据」与 `tests/legacy-import.test.ts` 的种子表用例会红）：
  *
@@ -32,7 +35,7 @@
  *       末尾的断言会当场红）。见 `NEVER_IMPORT_SETTING_KEYS`。
  *     → 同身份键但内容不同的行按"已存在 → 跳过"处理：这样 `down` 的行为是可预测的（见第 2 条）。
  *  2. **回滚语义**（同一份文字也在根 `README.md` 的「迁移纪律」一节）：
- *     - 回滚只删"与仓库种子逐字节相同"的行：002 插的、此后没人改过的行 → 被删；
+ *     - 回滚只删"仍是本仓库种子那一行"的记录（逐列精确相等）：002 插的、此后没人改过的行 → 被删；
  *       **导入进来的行 → 保留**；
  *     - 因此 **"先跑 002 → 再导入 → 再 rollback" 不会误删任何导入数据**，但留下的也不是"空库"：
  *       平台表里会剩导入的那几行。要重做一遍必须让目标库回到"迁移刚建好 + 002 已跑"的状态，
@@ -102,7 +105,7 @@ export const SEED_IDENTITY_KEYS: Record<string, string[]> = {
 /**
  * 种子表的**主键列**。身份键之外的第二种冲突：老库的 `o_prompt` 行可能换了 `type` 但留着
  * 已被种子占用的 `id` → 直接 insert 会撞主键。此时**必须跳过并报告**（绝不 upsert，
- * 也绝不改种子的 id —— 那会破坏 `down` 的逐字节判定）。
+ * 也绝不改种子的 id —— 那会破坏 `down` 的"逐列精确相等"判定）。
  */
 export const SEED_PRIMARY_KEYS: Record<string, string[]> = {
   o_prompt: ["id"],
@@ -853,17 +856,27 @@ export interface ImportTableOutcome {
  * 于是目标库里那一格**永久保留种子值**。跳过是**设计如此**，但"老库状态没搬过去"这句
  * 必须被**逐条登记**出来：这正是不许 `down` 按键删的理由（运营改过的那一行要留住）。
  * 登记之后 `compare-db` 才能把它归因成"按设计的缺席"，而不是既误报红、又悄悄瞒掉。
+ *
+ * ⚠ **合并审查修复 2：豁免粒度是 (行, 列)，不是整行。** 上面两类**必须**给出 `columns`
+ * （= 导入那一刻源行与目标已存在行的**差异列集合**），比对阶段只对这些格子放行 ——
+ * 整行豁免会把**同一行里别的列**的真实差异一起吃掉（那是"比对了但没比出来"的假绿）。
+ * 用可辨识联合而不是可选字段，是为了让"忘记给列"变成**编译错误**：
+ *   · 只有 `forbidden-setting-key` / `skipped-unrepresentable` / `pk-conflict` 这三个"整行不搬"
+ *     的原因才允许不带 `columns`（它们不是"保留目标侧那一格的值"，而是整行缺席）。
  */
-export interface ExpectedAbsent {
-  table: string;
-  pk: Record<string, unknown>;
-  reason:
-    | "forbidden-setting-key"
-    | "skipped-unrepresentable"
-    | "pk-conflict"
-    | "skipped-different-seed"
-    | "skipped-pk-conflict-seed";
-}
+export type ExpectedAbsent =
+  | {
+      table: string;
+      pk: Record<string, unknown>;
+      reason: "forbidden-setting-key" | "skipped-unrepresentable" | "pk-conflict";
+    }
+  | {
+      table: string;
+      pk: Record<string, unknown>;
+      reason: "skipped-different-seed" | "skipped-pk-conflict-seed";
+      /** **只有这些列**允许与源不同（= 目标侧保留的是"导入前已经在那里的那一行"的值）。 */
+      columns: string[];
+    };
 
 /** `expectedAbsent` 的逐条登记的条数上限（超长行可能有上万条时不让报告无界膨胀）。 */
 export const EXPECTED_ABSENT_CAP = 2000;
@@ -885,6 +898,29 @@ export interface ImportExportResult {
 function forbiddenSettingRow(table: string, row: Record<string, unknown>): boolean {
   if (table !== "o_setting") return false;
   return NEVER_IMPORT_SETTING_KEYS.includes(String(row.key));
+}
+
+/**
+ * 源行 vs 目标里**已经存在**的那一行 → **差异列集合**（合并审查修复 2）。
+ *
+ * 这个集合就是 `ExpectedAbsent.columns` 的来源，也是比对阶段 `accountedMismatches` 的**粒度**：
+ * 只放行"导入那一刻就不同的那些格子"。整行豁免会把同一行里别的列的真实差异一起吃掉 ——
+ * 例如 `o_vendorConfig.id='volcengine'` 登记了 `enable`，若目标那一行的 `models` 后来被改坏了，
+ * 整行豁免会让它**静默通过**；按列登记则照样判红。
+ *
+ * 判定口径与 `importExport` 里"内容相同即跳过"的判定**同一套**（`valuesEqual` + 目标列类型推出的
+ * `numericColumns`），所以不会出现"导入说相同、登记说不同"的自相矛盾。
+ */
+function differingColumns(
+  row: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  columns: string[],
+  numeric: Set<string>,
+): string[] {
+  const incoming = pickRow(row, columns, numeric);
+  return Object.entries(incoming)
+    .filter(([k, v]) => !valuesEqual(v, existing[k]).equal)
+    .map(([k]) => k);
 }
 
 /**
@@ -1015,23 +1051,37 @@ export async function importExport(opts: {
           outcome.skippedExisting += 1;
           // ⚠ 关键的可观测性：同身份键但**内容不同**的老库行在这里被丢弃（按交接条款"已存在 → 跳过"，
           //    不得 upsert）。数量必须报出来，否则"用户的老状态没搬过去"是静默的。
-          const incoming = pickRow(row, plan.columns, numeric);
-          const same = Object.entries(incoming).every(([k, v]) => valuesEqual(v, existing[k]).equal);
-          if (!same) {
+          //
+          // ⚠ 合并审查修复 2：登记的是**差异列集合**（(行,列) 粒度），不是"整行豁免" ——
+          //    整行豁免会把同一行里别的列的真实差异一起吃掉。见 `ExpectedAbsent` 的注释。
+          const differing = differingColumns(row, existing, plan.columns, numeric);
+          if (differing.length) {
             outcome.skippedDifferent += 1;
             // **逐条**登记（不只是计数）：`compare-db` 靠它把"这一格按设计没搬"与"搬丢了"分开。
-            noteAbsent({ table: plan.table, pk: pkOf(row), reason: "skipped-different-seed" });
+            noteAbsent({ table: plan.table, pk: pkOf(row), reason: "skipped-different-seed", columns: differing });
             // 逐行打印：这是"老库状态没搬过去"的**唯一**证据面（实测命中 1 行：
             // `o_vendorConfig.id='volcengine'` 老库 `enable=1`、种子 `enable=0`）。
-            log(`  ⚠ ${plan.table} ${JSON.stringify(pkOf(row))} 与种子同身份键但内容不同 → 保留种子值（老库那一行未搬，需拍板）`);
+            log(
+              `  ⚠ ${plan.table} ${JSON.stringify(pkOf(row))} 与种子同身份键但内容不同 → 保留种子值` +
+                `（差异列：${differing.join(",")}；老库那一行未搬，需拍板）`,
+            );
           }
           continue;
         }
         if (!samePkAsIdentity) {
           const pkWhere = pickRow(row, pk, numeric);
-          if (await opts.dst(plan.table).where(pkWhere).first()) {
+          const occupied = (await opts.dst(plan.table).where(pkWhere).first()) as Record<string, unknown> | undefined;
+          if (occupied) {
             outcome.conflicts += 1;
-            noteAbsent({ table: plan.table, pk: pkOf(row), reason: "skipped-pk-conflict-seed" });
+            // 目标那一行是**另一个实体**（身份键都不同）→ 差异列可能很多，同样逐列登记。
+            // 登记之后，(行,列) 粒度的豁免只覆盖"导入那一刻就不同的格子"；此后目标行再被别人
+            // 改出**新的**差异，比对阶段会照旧判红。
+            noteAbsent({
+              table: plan.table,
+              pk: pkOf(row),
+              reason: "skipped-pk-conflict-seed",
+              columns: differingColumns(row, occupied, plan.columns, numeric),
+            });
             continue;
           }
         }
@@ -1112,6 +1162,10 @@ export interface SampleMismatch {
  * ⚠ 为什么不是"直接不报"：报红会把**设计如此**说成缺陷（下一个审查者会去修一个不存在的 bug），
  * 而不报就是**静默**（连"老库这一格没搬"都看不出来）。所以走**第三条路**：逐条登记进报告、
  * 在打印里显式列出、并且**只对登记过的 (行, 列) 组合**生效 —— 同一行别的列不一致照样判红。
+ *
+ * ⚠ **实现口径（合并审查修复 2）**：登记的那份 `columns` 是**导入那一刻**算出来的差异列集合
+ * （`differingColumns()`），比对阶段用 `accountedColumns` 按 `(行签名 → 列集合)` 逐列查。
+ * 不是"这一行登记过就整行放行" —— 整行豁免会把同一行里别的列的真差异一起吃掉。
  */
 export interface AccountedMismatch extends SampleMismatch {
   /** 为什么这一格允许不同（来自 `expectedAbsent` 的登记原因）。 */
@@ -1363,7 +1417,8 @@ export async function compareRows(opts: {
     const missingInTarget: MissingInTarget[] = [];
     let checked = 0;
     const seedSkips = (opts.expectedAbsent ?? []).filter(
-      (e) => e.table === rec.name && (e.reason === "skipped-different-seed" || e.reason === "skipped-pk-conflict-seed"),
+      (e): e is Extract<ExpectedAbsent, { columns: string[] }> =>
+        e.table === rec.name && (e.reason === "skipped-different-seed" || e.reason === "skipped-pk-conflict-seed"),
     );
     if (plan && sample) {
       // ⚠ 数值归一化用**目标列类型**推出的集合（【Ruling 43】），与导入侧同一个 `numericColumns()` ——
@@ -1373,22 +1428,24 @@ export async function compareRows(opts: {
       // "抽了 N 行"这句话就不再是"读了 N 条不同的行"。
       const seen = new Set<string>();
       const pickKind = new Map(kinds.map((k) => [pkSignature(k.pk), k.kind]));
-      // "这一行/这一格按设计没搬"的登记集合。种子行可能用**身份键**登记（`o_vendorConfig` 是 `id`，
-      // 与主键相同；但 `o_prompt` 是 `type`、`o_setting`/`o_agentDeploy` 是 `key`）—— 两种签名都收。
-      const accountedKeys = new Set<string>();
+      // "这一行/这一格按设计没搬"的登记集合（**合并审查修复 2：粒度 = (行, 列)**）。
+      // 种子行可能用**身份键**登记（`o_vendorConfig` 是 `id`，与主键相同；但 `o_prompt` 是 `type`、
+      // `o_setting`/`o_agentDeploy` 是 `key`）—— 两种签名都收。
+      // ⚠ 值里带的是 `columns`：**只有登记过的那几列**允许与源不同；同一行别的列照旧判红。
+      const accountedColumns = new Map<string, { reason: ExpectedAbsent["reason"]; columns: Set<string> }>();
       for (const e of seedSkips) {
         const values = Object.values(e.pk);
-        accountedKeys.add(`${e.table}|${pkSignature(e.pk)}`);
+        const entry = { reason: e.reason as ExpectedAbsent["reason"], columns: new Set(e.columns) };
+        // 空 `columns` = 没有一格被登记 ⇒ 不豁免任何格子（宁红不瞒；导入侧不可能产生空集合：
+        // 只有"确有差异列"才会登记这两类原因）。
+        if (!entry.columns.size) continue;
+        accountedColumns.set(`${e.table}|${pkSignature(e.pk)}`, entry);
         if (values.length === 1) {
-          accountedKeys.add(`${e.table}|${pkSignature({ id: values[0] })}`);
-          accountedKeys.add(`${e.table}|${pkSignature({ type: values[0] })}`);
-          accountedKeys.add(`${e.table}|${pkSignature({ key: values[0] })}`);
+          for (const alias of ["id", "type", "key"]) {
+            accountedColumns.set(`${e.table}|${pkSignature({ [alias]: values[0] })}`, entry);
+          }
         }
       }
-      const accountedReasonFor = (sig2: string): ExpectedAbsent["reason"] | null => {
-        if (accountedKeys.has(`${rec.name}|${sig2}`)) return seedSkips[0].reason;
-        return null;
-      };
       for (const srcRow of sample.rows) {
         const pkWhere: Record<string, unknown> = {};
         for (const c of sample.pk) pkWhere[c] = normalizeValue(srcRow[c], true);
@@ -1406,13 +1463,14 @@ export async function compareRows(opts: {
         }
         checked += 1;
         // 目标行里"指向登记过的那一行"的任一标识（主键 + 身份键常见列名）。
-        // 只登记过的行会被算进 `accountedMismatches`，其余行照旧判红。
-        let cellAccounted: ExpectedAbsent["reason"] | null = null;
+        // ⚠ **合并审查修复 2**：命中的是"这一行登记了哪几列"，逐列放行 —— 整行豁免会把同一行里
+        //    其它列的真实差异一起吃掉（那正是本修复要堵的假绿）。
+        let rowAccount: { reason: ExpectedAbsent["reason"]; columns: Set<string> } | undefined;
         for (const idCol of new Set(["id", "type", "key", ...sample.pk])) {
           if (dstRow[idCol] === undefined) continue;
-          const hit = accountedReasonFor(pkSignature({ [idCol]: dstRow[idCol] }));
+          const hit = accountedColumns.get(`${rec.name}|${pkSignature({ [idCol]: dstRow[idCol] })}`);
           if (hit) {
-            cellAccounted = hit;
+            rowAccount = hit;
             break;
           }
         }
@@ -1420,7 +1478,7 @@ export async function compareRows(opts: {
           if (!(col in srcRow)) continue;
           const v = equivalentForCompare(normalizeValue(srcRow[col], numeric.has(col)), dstRow[col]);
           if (v.equal) continue;
-          if (cellAccounted) {
+          if (rowAccount && rowAccount.columns.has(col)) {
             // 目标那一格**保留的是种子值**（老库那一行按交接条款未搬）→ 登记，不判红。
             accountedMismatches.push({
               pk: pkWhere,
@@ -1428,7 +1486,7 @@ export async function compareRows(opts: {
               source: srcRow[col],
               target: dstRow[col],
               reason: v.reason,
-              accountedBy: cellAccounted,
+              accountedBy: rowAccount.reason,
             });
             continue;
           }

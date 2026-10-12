@@ -257,6 +257,8 @@ pnpm.cmd run db:migrate
 | `bigint unsigned` 读回的 JS 类型 | **`number`**（不是 string）—— `supportBigNumbers:true` + `bigNumberStrings:false` 生效，`o_project.id = 1791385147125` 原样往返；只对 **> 2^53-1** 的值不安全（本项目的 id 都是 `Date.now()` 毫秒值，离 2^53 很远） |
 | 批量 insert 的 `insertId` | 单行 → `[1]`；两行 → `[2]`（**首行**的 id，sqlite 会是末行 3）。`tests/mysql-integration.test.ts` 把这条差异钉住了 |
 | `knex_migrations*` | `knex_migrations`（`id int unsigned auto_increment`，knex 内部实现）+ `knex_migrations_lock` 是**两张基础设施表**，不在 27 张业务表里 → Phase 1b 的 `policies.ts` 必须显式声明它们，否则 fail-closed 的策略检查会在任何碰它们的代码上报错 |
+| **`utf8mb4_0900_ai_ci` 下 SQL `=` 大小写不敏感**（合并审查修复 1 实测） | 服务端 collation 是 `utf8mb4_0900_ai_ci`（`ai`=accent-insensitive、`ci`=**case**-insensitive）。实测：`'EVENTEXTRACTION' = 'eventExtraction'` → **1**；`BINARY 'EVENTEXTRACTION' = 'eventExtraction'` → **0**。在真表上更能说明后果：`t` 为 `utf8mb4_0900_ai_ci` 的列里放 `'a'`/`'A'`/`'a '`，`WHERE t = 'a'` 命中 **2 行**（`'a'` 与 `'A'`）。→ **任何"用 SQL `=` 判两条记录是否同一形态"的代码都必须显式用 `BINARY`**（`002_platform_seed.down` 原来就是这样误删"只改了大小写"的种子行，现已加固）。附带事实：`WHERE t = 'a'` **不**匹配 `'a '`（0900 系列是 NO PAD，尾随空格在**列 vs 值**比较里是有意义的 —— 所以那条尾随空格的行在旧判据下**本来就会存活**）；但两个**字面量**相比（`'a ' = 'a'`）在本机 mysql CLI 上返回 1，因为那走**连接** collation `gbk_chinese_ci`（PAD SPACE）—— 别拿字面量实验当结论 |
+| **`information_schema` 的 `AUTO_INCREMENT` 是缓存值**（合并审查修复 3 实测） | `@@information_schema_stats_expiry = 86400`（秒）。实测（本机 8.4.11）：`INSERT 3 行 → ALTER TABLE ai AUTO_INCREMENT = 4` 后查 `information_schema.tables` = **4**；再 `DELETE FROM ai; ALTER TABLE ai AUTO_INCREMENT = 1;` 后**仍然报 4**，而**真实**下一条插入的 `id` 是 **1**；`ANALYZE TABLE ai` 之后才刷新成 2。→ **断言不许读可能被缓存的元数据**：`tests/mysql-integration.test.ts` 原来用 `information_schema.tables.AUTO_INCREMENT >= 4` 断言"计数器被钉高"，近乎恒真；现在改成**读真实插入行为**（非空 + `ALTER=1` → 下一条 `id=4`；`del` + `ALTER=1` → `id=1`） |
 
 ## 迁移纪律（spec §5.2）
 
@@ -365,7 +367,13 @@ pnpm.cmd run db:compare                             # 行数 + 抽样单元格�
    （导入报告会给出 `skippedDifferent` 计数，**不静默**）。
    `o_agentWorkData`（唯一键）与 `o_segment`（唯一键）在导入前必须查重，重复即拒绝。
 2. **`o_setting.tokenKey` 绝不导回目标库**：老库那一行留在老库里（见上一条的断言）。
-3. **回滚语义**：`002_platform_seed` 的 `down` 只删"与仓库种子**逐字节相同**"的行 ——
+3. **回滚语义**：`002_platform_seed` 的 `down` 只删"**仍是本仓库种子那一行**"的记录 ——
+   判据是种子行的**全部列逐列精确相等**，且**与 collation 无关**（mysql 侧 `BINARY ?? = ?`、
+   sqlite 侧 `?? COLLATE BINARY = ?`，见 `002_platform_seed.ts` 的 `whereExact()`）。
+   ⚠ 这里**不能**写成"逐字节相同"：非文本列走的是数值比较（`BINARY intcol = 4` 在 MySQL 里
+   仍是数值相等）。而"必须与 collation 无关"不是洁癖 —— 本机 collation 是
+   **`utf8mb4_0900_ai_ci`**，SQL `=` **大小写不敏感**：加固前"只把大小写改掉"的种子行会被
+   `down` **删掉**（真实的数据丢失路径；实测红案见 §6 的第一条新行）。加固后它**存活**。
    - 002 插的、此后没人改过的行 → 被删；**导入进来的行 → 保留**；
    - 所以"先跑 002 → 再导入 → 再 rollback"**不会误删任何导入数据**，但留下的也不是"空库"：
      平台表里会剩导入的那几行。要重做一遍，就让目标库回到"迁移刚建好 + 002 已跑"的状态，
@@ -374,19 +382,27 @@ pnpm.cmd run db:compare                             # 行数 + 抽样单元格�
      这些被跳过的行在 `down` 时**不会**被删（内容不同）—— 这正是修复 3 要的方向。
    - 回归网：`apps/api/tests/migration-seed.test.ts` 的「down 不误伤 Task 6 先导入的同键老数据」；
      `apps/api/tests/legacy-import.test.ts` 的种子表用例。改动导入策略时它们会红。
+     ⚠ "只改大小写必须存活"那条**判别力用例在 `tests/mysql-integration.test.ts`**（门控真 MySQL）：
+     sqlite 的 TEXT `=` 本身就是 BINARY 语义，同一用例在 sqlite 上加固前后**都绿**（零判别力），
+     写在 sqlite 文件里只会是一条假门禁。
    - ⚠ **`--down --all` 会连 `001_schema.down` 一起跑，而它是 `dropTableIfExists` 27 张业务表** ——
-     所以"全回滚后一行都不剩"**证明不了**上面那条逐字节判据。要验它必须**单独**跑 `002.down`
+     所以"全回滚后一行都不剩"**证明不了**上面那条"精确相等"判据。要验它必须**单独**跑 `002.down`
      （Task 8 Step 5 就是这么做的，本机真 MySQL 12 条判据全 PASS：被改过的种子行存活、
      未改动的 7 行被删、`002.up` 也不覆写它）。
 4. **⚠ "跳过已存在"的那几行会留下一个"老库状态没搬过去"的格子**（Task 8 全量搬迁实测命中）：
    老库 `o_vendorConfig.id='volcengine'` 是 `enable=1`，而 `002` 的模板是 `enable=0`
    → 导入按本条款"跳过已存在"，目标库里那一格**永久保留种子值 0**。这不是数据丢失，是**设计如此**，
    但必须看得见，所以：
-   - 导入侧**逐条**登记 `expectedAbsent`（新原因 `skipped-different-seed` / `skipped-pk-conflict-seed`），
-     并在 `--apply` 时逐行打印 `⚠ … 与种子同身份键但内容不同 → 保留种子值`；
+   - 导入侧**逐条**登记 `expectedAbsent`（新原因 `skipped-different-seed` / `skipped-pk-conflict-seed`，
+     **并带上是哪几列不同**），并在 `--apply` 时逐行打印
+     `⚠ … 与种子同身份键但内容不同 → 保留种子值（差异列：…）`；
    - 比对侧把它归到 `compare-report.json` 的 **`accountedMismatches`**（带 `accountedBy`），
      **不判红**但**照列**（`compare-db` 会打印 `⚠ 按设计未搬 <列> @ …`）。判红会把"设计如此"说成缺陷；
      不报就是**静默**——两条都不行，所以走这条第三条路。
+   - ⚠ **豁免粒度是 (行, 列)，不是整行**：登记里带 `columns`（= 导入那一刻算出来的差异列集合），
+     比对阶段**逐列**查它。整行豁免会把**同一行里别的列**的真实差异一起吃掉 ——
+     实测判别力：把 `o_vendorConfig` 那一行的 `models` 改坏（未被登记的列）→ 照样判红
+     （`tests/legacy-import.test.ts` 的种子表用例里有这条断言）。
    - 处置需要拍板：要么接受"种子值优先"，要么 Phase 1b 给一次性对齐脚本（**不要**改成 upsert）。
    - ⚠ 这条也是"抽样必须抽边界"的实证：均匀抽样抽不中 `volcengine` 那一行（8/13 的偏移都没命中），
      是 Task 8 新加的**边界抽样**把它抓出来的。

@@ -108,8 +108,12 @@ function die(msg) {
 }
 
 // ⚠ 下面这些顶层副作用是**导出动作**的一部分（会读源库、会写 out 目录），必须只在"直接跑它"时发生：
-//    `tests/migration-ddl-mysql.test.ts` 用 `createRequire` require 本文件来复用它自己的
-//    `SCHEMA_LIMITS` 快照做漂移断言 —— 那种 require **绝不能**顺手跑一次真导出。
+//    本文件**不再导出 `SCHEMA_LIMITS` 常量**（合并审查修复 6 改正了这条陈旧注释）——
+//    目标侧长度上限现在由 `scripts/schema-limits.cjs` 的 `deriveTargetLimits()` 从 `001_schema`
+//    机械推导，`tests/migration-ddl-mysql.test.ts` 用 `createRequire` 直接 require **那个文件**做漂移断言，
+//    **不经过本文件**（旧注释说的是 `SCHEMA_LIMITS` 快照，那条路径已经不存在了）。
+//    当前仓库里**没有任何 require 本文件的调用方**；`IS_MAIN` 守卫留着是为了让"将来被 require 时
+//    不会顺手跑一次真导出"这件事继续成立（要收掉它就得连 `module.exports` 一起收）。
 //    ESM 里判断"被 import 还是被直接跑"要 import.meta，但本文件是 CJS，`require.main === module`
 //    是那件事的原生写法（且 `--import=tsx` / vitest 两种加载方式下都成立）。
 const IS_MAIN = require.main === module;
@@ -145,7 +149,6 @@ async function main() {
     const v = TARGET_LIMITS[key];
     return typeof v === "number" ? v : null; // MAX_LENGTH 哨兵 = 目标侧无数字上限
   };
-  void limitOf;
 
   fs.mkdirSync(OUT, { recursive: true });
 
@@ -230,7 +233,6 @@ async function main() {
     }
 
     // ---- 长度体检（【Ruling 34/41 ②③】）----
-    // ---- 长度体检（【Ruling 34/41 ②③】）----
     // ⚠ 口径必须与**导入侧**一致（修复轮 1 对齐）：`src/db/legacy/import.ts` 的 `oversizeValues()`
     //    拿的是**目标库** `columnInfo().maxLength`，它的注释写明"`text`/`longtext` 的 maxLength 是 null
     //    （不走这条）；只有真正带长度上限的列才量"。本脚本以前拿"源库 PRAGMA 声明的 varchar(N)"
@@ -314,7 +316,7 @@ async function main() {
   for (const key of ["o_agentWorkData.data", "memories.isolationKey"]) {
     const s = manifest.columnStats[key];
     if (!s) {
-      console.log(`  ${key}：schema 里查不到这一列（告警也不该有——请核对 SCHEMA_LIMITS 推导与表名）`);
+      console.log(`  ${key}：schema 里查不到这一列（告警也不该有——请核对 scripts/schema-limits.cjs 的推导与表名）`);
     } else if (s.targetLimit === null) {
       console.log(
         `  ${key}：目标结构无数字上限（001_schema 是 longtext；源库声明 ${s.sourceDeclaredType || "无"}），不做超长判定`,

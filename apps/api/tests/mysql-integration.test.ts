@@ -138,19 +138,18 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       //    这条护栏会退化成空转 —— 那样即便哪天 `del()` 被删掉也不会红。
       await runMigrations(db);
 
-      // 1) 从**非空**状态起步：把计数器钉到 4（InnoDB 允许"不低于 max(id)+1"的值）。
+      // 1) 从**非空**状态起步，并且**用一次真实插入**把计数器读出来。
+      //    ⚠ 合并审查修复 3：这里**不许**读 `information_schema.tables.AUTO_INCREMENT` ——
+      //    那是**缓存**元数据（`information_schema_stats_expiry` 默认 86400 秒），实测
+      //    `del()` + `ALTER ... = 1` 之后它**仍然报 4**，于是旧断言 `pinnedAutoInc >= 4`
+      //    近乎恒真（根本没有判别力）。规范：**断言必须读实际插入行为，不得读可能被缓存的元数据**。
       await db("o_artStyle").insert([{ name: "seed1" }, { name: "seed2" }, { name: "seed3" }]);
       const rowsBeforeDel = Number(((await db("o_artStyle").count({ n: "*" }).first()) as { n: number | string }).n);
       expect(rowsBeforeDel, "起点必须是非空表，否则下面的 del() 是空转").toBeGreaterThan(0);
-      await db.raw("ALTER TABLE o_artStyle AUTO_INCREMENT = 4");
-      const pinnedAutoInc = Number(
-        (
-          (await db.raw(
-            "SELECT AUTO_INCREMENT AS a FROM information_schema.tables WHERE table_schema = database() AND table_name = 'o_artStyle'",
-          )) as any
-        )[0][0].a,
-      );
-      expect(pinnedAutoInc, "非空表上的 AUTO_INCREMENT 必须被钉在 max(id)+1 之上").toBeGreaterThanOrEqual(4);
+      //    非空表上把计数器置 1 → InnoDB 钉到 `max(id)+1 = 4`；下一条插入的 id 必须是 **4**。
+      await db.raw("ALTER TABLE o_artStyle AUTO_INCREMENT = 1");
+      const pinnedProbe = await db("o_artStyle").insert({ name: "probe" });
+      expect(pinnedProbe[0], "非空表上 ALTER=1 之后下一条 id 必须是 4（读真实插入，不读缓存元数据）").toBe(4);
 
       // 2) 先清空，再把计数器显式归零 —— 只有这个顺序才能真的降到 1。
       //    （反向顺序的实测红案见 task-7 报告「修复轮 1」：`expected 4 to be 1`。）
@@ -318,4 +317,54 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       await dst.destroy();
     }
   }, 600000);
+
+  /**
+   * **合并审查修复 1 的判别力用例**：`002_platform_seed.down` 的相等判据必须与 collation 无关。
+   *
+   * 为什么这条只能在真 MySQL 上才有判别力：本机 MySQL 的服务端 collation 是
+   * **`utf8mb4_0900_ai_ci`**（`ci` = case-insensitive）→ SQL `=` **大小写不敏感**。
+   * 旧实现 `knex(table).where(种子行).del()` 因此会把"**只把大小写改掉**"的那一行
+   * 当成 002 插的行**删掉**：老库/运营只要改过一次大小写，一次回滚就吃掉一行用户数据。
+   * sqlite 的 TEXT `=` 本身就是 BINARY 语义 → 同一用例在 sqlite 上**加固前后都绿**（零判别力），
+   * 所以它落在这个门控文件里（`MIWO_TEST_MYSQL=1`；默认套件 skip）。
+   *
+   * 加固方式见 `src/db/migrations/002_platform_seed.ts` 的 `whereExact()`：
+   * mysql 侧 `BINARY ?? = ?`、sqlite 侧 `?? COLLATE BINARY = ?`。
+   */
+  it("002.down 不删「只改了大小写」的种子行（MySQL ci collation 下 SQL = 会误命中）", async () => {
+    const db = createKnex();
+    try {
+      // 从干净状态重建 001 + 002：`o_prompt` 里是 4 行**纯种子**
+      await rollbackMigrations(db, true);
+      await runMigrations(db);
+      const before = Number(((await db("o_prompt").count({ n: "*" }).first()) as { n: number | string }).n);
+      expect(before, "o_prompt 的种子行数（底座非空，否则下面的断言是空转）").toBeGreaterThan(1);
+
+      // 只改**大小写**：对 `utf8mb4_0900_ai_ci` 而言与种子"相等"（SQL `=` 会命中），
+      // 对 `BINARY` 比较则是另一行。
+      await db("o_prompt").where("type", "eventExtraction").update({ type: "EVENTEXTRACTION" });
+
+      const mod = (await import("@/db/migrations/002_platform_seed")).default;
+      await mod.down(db);
+
+      // ① 只改大小写的那一行必须**存活**（加固前这里红：旧判据按 ci `=` 把它删掉了）
+      const survivor = await db("o_prompt").where("type", "EVENTEXTRACTION").first();
+      expect(survivor, "只改大小写的种子行被 down 删掉了：等于把 ci collation 的不敏感 `=` 当成了相等判据").toBeTruthy();
+      const after = Number(((await db("o_prompt").count({ n: "*" }).first()) as { n: number | string }).n);
+      expect(after, "down 之后 o_prompt 只该剩那一行被改过的").toBe(1);
+      // ② 反向护栏：没动过的行照旧被删干净 —— 否则"存活"可能只是"down 什么都不删"的空转
+      //    ⚠ 这条护栏**自己**也必须用 `BINARY`：`where("type", "eventExtraction")` 在本库的
+      //      `utf8mb4_0900_ai_ci` 下会**同时命中** 'EVENTEXTRACTION'（ci 不敏感）——
+      //      实测这条断言第一版就被 ci collation 打红（`expected { id: 1, … } to be undefined`），
+      //      正是本用例要钉住的那个坑，所以连测试的查询也得写清楚比较口径。
+      const untouched = await db("o_prompt").whereRaw("BINARY ?? = ?", ["type", "eventExtraction"]).first();
+      expect(untouched, "没动过的种子行没被删掉 → down 空转了（护栏本身失效）").toBeUndefined();
+      expect(Number(((await db("o_agentDeploy").count({ n: "*" }).first()) as { n: number | string }).n), "o_agentDeploy 应被 down 全清").toBe(0);
+      // ③ 数值主键的精确比较也要真的命中：上面"只剩 1 行"已经蕴含它，这里把第 4 张表也钉一下
+      expect(Number(((await db("o_vendorConfig").count({ n: "*" }).first()) as { n: number | string }).n)).toBe(0);
+    } finally {
+      await rollbackMigrations(db, true).catch(() => {});
+      await db.destroy();
+    }
+  }, 180000);
 });
