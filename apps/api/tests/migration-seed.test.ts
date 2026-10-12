@@ -9,7 +9,9 @@
  *   5. `o_setting` 只有平台键、**绝无 `tokenKey`**（Phase 1c 才把它彻底移出 DB）；
  *   6. `o_vendorConfig` 恰好 8 个空模板行（enable=0 / inputValues={} / models=[]）；
  *   7. **只插不改**：手工改过的行重跑 `up` 不被覆盖；第二次 `up` 插入 0 行；
- *      `down` 只删自己种下的行，运行期新增的行存活。
+ *      `down` 只删"内容与本仓库种子逐字节相同"的行 —— 运行期新增的、被运营改过的、
+ *      以及 Task 6 先导入的同键老数据都存活（Task 5 独立审查修复 3 把判据从"身份键"改成"内容全等"）。
+ *   8. 单份种子文件**缺失或 0 行**时 `up` 当场抛错、错误信息指名文件（Task 5 独立审查修复 1）。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -18,10 +20,21 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Knex } from "knex";
 import type { MiwoConfig } from "@/config";
 import { createKnex } from "@/db/connect";
-import { makeMigrationSource } from "@/db/migrations";
+import { makeMigrationSource, MIGRATIONS } from "@/db/migrations";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-seed-"));
-afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
+// ⚠ Windows 上一次性库文件的句柄可能还没释放完 → rmSync 会 EPERM（实测：某个用例红掉时
+//    afterAll 会把 EPERM 记成"Failed Suites"，掩盖真正的失败原因）。重试几次即可。
+afterAll(() => {
+  for (let i = 0; i < 5; i++) {
+    try {
+      fs.rmSync(TMP, { recursive: true, force: true });
+      return;
+    } catch {
+      /* 再试 */
+    }
+  }
+});
 let seq = 0;
 function freshDb(): Knex {
   seq += 1;
@@ -159,4 +172,128 @@ describe("002_platform_seed", () => {
     expect(await db.schema.hasTable("o_prompt")).toBe(true);
     await db.destroy();
   });
+
+  // ---- 以下为 Task 5 独立审查修复 3/4 补出的用例 ----
+
+  /**
+   * 修复 3 的**核心判别力**：down 的判据是"内容与本仓库种子逐字节相同"，不是"身份键相同"。
+   *
+   * 旧实现按 `type` / `key` / `id` 删：Task 6 会先把老库数据导进来，若老库（或运营）已经写了
+   * **同键但不同内容**的行，002 的 up 跳过它（只插不改），旧 down 却会把它删掉 ——
+   * 回滚变成"删用户数据"。下面先在 down 之前把种子行改成"运营内容"，它必须活下来。
+   */
+  it("down 不删被改过的种子行（同键不同内容 = 不是 002 插的形态）", async () => {
+    const db = await migratedDb();
+    await db("o_prompt").where("type", "audioBindPrompt").update({ data: "运营手工改过的内容" });
+    await db("o_setting").where("key", "shotsEngine").update({ value: "legacy" });
+    await db("o_vendorConfig").where("id", "miwo").update({ enable: 1, inputValues: "{\"baseURL\":\"https://ops.example\"}" });
+    const mod = (await import("@/db/migrations/002_platform_seed")).default;
+    await mod.down(db);
+    // 改过的三行都还在（旧实现会把它们按身份键删掉）
+    expect((await db("o_prompt").where("type", "audioBindPrompt").first()).data).toBe("运营手工改过的内容");
+    expect((await db("o_setting").where("key", "shotsEngine").first()).value).toBe("legacy");
+    expect((await db("o_vendorConfig").where("id", "miwo").first()).enable).toBe(1);
+    // 而没动过的种子行照旧被删干净：down 仍然是"可回滚"的，不是"什么都不删"
+    expect(await db("o_prompt").where("type", "eventExtraction").first()).toBeUndefined();
+    expect(await db("o_agentDeploy").first()).toBeUndefined();
+    expect(await db("o_setting").where("key", "modelDtype").first()).toBeUndefined();
+    await db.destroy();
+  });
+
+  /**
+   * 修复 3 的**前提**（逐字节判定真的成立）：up 插入的行形状必须与 down 的判定形状一致，
+   * 否则 down 会一行都删不掉（"看着安全、实际不可回滚"）。
+   *
+   * ⚠ 断言形状 = 目标表真实列的集合：这也是 `o_setting` 走 `pickColumns`（修复 3 后半）的回归网。
+   */
+  it("种子的列集合与目标表一致，且 down 能把 002 插的行全部删掉", async () => {
+    const db = await migratedDb();
+    const pairs: Array<[string, string]> = [
+      ["o_prompt", "o_prompt.ndjson"],
+      ["o_agentDeploy", "o_agentDeploy.ndjson"],
+      ["o_setting", "o_setting.platform.ndjson"],
+      ["o_vendorConfig", "o_vendorConfig.templates.ndjson"],
+    ];
+    for (const [table, file] of pairs) {
+      const cols = new Set(Object.keys((await db(table).columnInfo()) as Record<string, unknown>));
+      for (const [i, line] of fs.readFileSync(path.join(SEED_DIR, file), "utf8").split(/\r?\n/).filter((l) => l.trim()).entries()) {
+        const keys = Object.keys(JSON.parse(line));
+        // 多一列（源库特有列）会被 pickColumns 静默丢掉 —— 那会让该表**永远删不干净**，所以这里必须红
+        expect(keys.filter((k) => !cols.has(k)), `${file}:${i + 1} 有目标表不存在的列`).toEqual([]);
+      }
+    }
+    const mod = (await import("@/db/migrations/002_platform_seed")).default;
+    await mod.down(db);
+    for (const [table] of pairs) {
+      expect(Number(((await db(table).count({ n: "*" }).first()) as any).n), `${table} 没被 down 清空`).toBe(0);
+    }
+    await db.destroy();
+  });
+
+  /** 修复 3 的**误伤面**：down 不得碰"同身份键但内容不同"的行（模拟 Task 6 先导入老数据）。 */
+  it("down 不误伤 Task 6 先导入的同键老数据（键相同、内容不同）", async () => {
+    const db = await migratedDb();
+    // 模拟"Task 6 先导入"：把 002 插的行换成同键不同内容（= 老库那一行的样子）
+    await db("o_prompt").where("type", "eventExtraction").update({ id: 999, name: "老库的事件提取", data: "OLD", useData: "x" });
+    const mod = (await import("@/db/migrations/002_platform_seed")).default;
+    await mod.down(db);
+    const row = await db("o_prompt").where("type", "eventExtraction").first();
+    expect(row, "同键但内容不同的行被 down 删掉了（正是修复 3 要防的误伤）").toBeTruthy();
+    expect(row.name).toBe("老库的事件提取");
+    await db.destroy();
+  });
+
+  /** 修复 1 的**可执行**回归网：单文件缺失 / 空文件必须抛错（错误信息要指名文件），不是静默 seed 0 行。 */
+  it("种子文件缺失或为空时 up 抛错（错误信息指名文件）", async () => {
+    const src = path.join(SEED_DIR, "o_vendorConfig.templates.ndjson");
+    const stash = path.join(TMP, "o_vendorConfig.templates.ndjson.stash");
+    fs.copyFileSync(src, stash);
+    // ⚠ 这两个库**只跑 001_schema**（不跑 002）：若跑过 002，`o_vendorConfig` 里已经有 8 行，
+    //    "0 行"就证明不了"抛错发生在真的什么都没插的时候"。只建表 → up 一失败，四张表必须全空。
+    const db1 = freshDb();
+    const db2 = freshDb();
+    const schemaOnly = makeMigrationSource(MIGRATIONS.filter((m) => m.name === "001_schema"));
+    await db1.migrate.latest({ migrationSource: schemaOnly });
+    await db2.migrate.latest({ migrationSource: schemaOnly });
+    const countAll = async (db: Knex) => {
+      const out: number[] = [];
+      for (const t of ["o_prompt", "o_agentDeploy", "o_setting", "o_vendorConfig"]) {
+        out.push(Number(((await db(t).count({ n: "*" }).first()) as any).n));
+      }
+      return out;
+    };
+    try {
+      // ① 缺失：up 必须抛错，且错误信息指名是哪一份文件
+      fs.rmSync(src);
+      await expect(
+        (async () => {
+          const mod = (await import("@/db/migrations/002_platform_seed")).default;
+          await mod.up(db1);
+        })(),
+      ).rejects.toThrow(/o_vendorConfig\.templates\.ndjson/);
+
+      // ② 空文件（0 行）：同样必须抛错 —— 这正是"静默 seed 0 行"的那条通道
+      fs.writeFileSync(src, "");
+      await expect(
+        (async () => {
+          const mod = (await import("@/db/migrations/002_platform_seed")).default;
+          await mod.up(db2);
+        })(),
+      ).rejects.toThrow(/o_vendorConfig\.templates\.ndjson/);
+
+      // ③ 两种情况下四张表都必须**一行都没有**：证明 up 不是"插了一半再炸"
+      expect(await countAll(db1)).toEqual([0, 0, 0, 0]);
+      expect(await countAll(db2)).toEqual([0, 0, 0, 0]);
+    } finally {
+      // 逐字节还原（用 copy 而不是写回字符串，避免行尾/BOM 被测试改写）
+      fs.copyFileSync(stash, src);
+      fs.rmSync(stash);
+      await db1.destroy();
+      await db2.destroy();
+    }
+    // 还原后必须一切照旧（证明本用例没有留下副作用）
+    const db3 = await migratedDb();
+    expect(Number(((await db3("o_vendorConfig").count({ n: "*" }).first()) as any).n)).toBe(8);
+    await db3.destroy();
+  }, 60000);
 });

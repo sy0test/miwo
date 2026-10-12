@@ -164,6 +164,16 @@ export default async function startServe(randomPort: Boolean = false) {
     //    `configHealth?summary=1` 返回 200 且 `o_setting` 里**没有** tokenKey（两条断言互为约束）。
     const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
     const tokenKey = (setting && setting.value) || config.jwtSecret;
+    // ⚠⚠ 下面这一行**当前不可达（unreachable）**，保留它是因为 Phase 1c 会把 `tokenKey` 机制整体替换掉，
+    //    那时这里的形状会变；现在就删会丢掉"密钥缺失时该怎么办"的意图（444 + 可读文案）。
+    //    不可达的**原因**（Task 5 独立审查实测）：`config.ts:160` 是**模块加载期**的
+    //    `export const config = loadConfig()`，而 `loadConfig()` 对 `MIWO_JWT_SECRET` 走 `required()` +
+    //    "≥ 32 字节"的 fail-fast；本模块第 19 行 `import { config } from "@/config"` 又在任何请求之前。
+    //    所以缺密钥时进程**根本起不来**（抛 ConfigError 退出），能走到中间件时 `config.jwtSecret` 恒非空
+    //    → `tokenKey` 恒为真串 → 这个 `if` 永不成立。
+    //    **不要**为了让它可达去放宽 `config.ts` 的 fail-fast —— 那是削弱安全校验、把 fail-fast 换成运行期 444。
+    //    它也不该被断言成"可达分支"：全仓没有、也不应有覆盖 444 的用例（`tests/auth-token-key.test.ts`
+    //    覆盖的是它上面那行的**两条密钥优先级路径**，那才是本阶段真正有分叉的逻辑）。
     if (!tokenKey) return res.status(444).send({ message: "服务器秘钥未配置，请联系管理员" });
     // 从 header 或 query 参数获取 token
     const rawToken = req.headers.authorization || (req.query.token as string) || "";

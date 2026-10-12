@@ -41,6 +41,11 @@ const READY_TIMEOUT_MS = 60000;
 const OUT_TAIL = 2000;
 // 平台种子的导出物（Task 5 的 002_platform_seed 的输入）。下面用它来断言"种子真的按导出文件落地了"。
 const SEED_DIR = path.join(API_ROOT, "src", "db", "migrations", "seed");
+// ⚠ **下界**（Task 5 独立审查修复 1）：期望行数原本**只从 seed/*.ndjson 现算**，
+//    于是"种子文件被清空/被截断成 0 行"时 0 === 0 **恒真通过** —— 被测值和期望值同源推导，
+//    互相掩护。这里把四份文件的**基线行数**写死成常量：文件一旦被截断，下界断言当场变红，
+//    而不是"文件说什么就是什么"。002 侧还有一道（缺失/0 行直接抛错），两道互为约束。
+const SEED_EXPECT = { "o_prompt.ndjson": 4, "o_agentDeploy.ndjson": 19, "o_setting.platform.ndjson": 4, "o_vendorConfig.templates.ndjson": 8 };
 
 const G_FREEZE = "A 旧仓库冻结";
 const G_FILES = "B 构件存在";
@@ -223,8 +228,12 @@ function copyDirRecursive(src, dest) {
  * 这里证明的是 002_platform_seed 的**四张表都按导出文件落地**，而且 `o_setting` 里**没有 tokenKey**
  * （Phase 1c 才把 JWT 密钥彻底移出 DB；它必须在配置 MIWO_JWT_SECRET 里）。
  *
- * 期望行数**从 `seed/*.ndjson` 现算**，不硬编码：导出物一改，这里自动跟着走（也就不会出现
- * "种子文件与断言各说各话"）。
+ * ⚠ `seed/*.ndjson` 的期望行数**从文件现算**，同时**必须**满足 SEED_EXPECT 的下界/基线
+ *   （Task 5 独立审查修复 1）：单靠"现算"会让"文件被清空"变成 0 === 0 的恒真通过。
+ *
+ * ⚠ 整个函数包在 try/catch 里（Task 5 独立审查修复 4）：种子目录缺失、文件读不到、
+ *   better-sqlite3 装不上之类都必须变成**带标签的失败断言**，而不是让本脚本抛裸栈
+ *   （裸栈会让 E 组"临时目录已清理"根本不执行 → %TEMP% 里留 boot 目录）。
  */
 function inspectMigratedDb(dbFile) {
   if (!fs.existsSync(dbFile)) {
@@ -233,44 +242,78 @@ function inspectMigratedDb(dbFile) {
   }
   pass(G_BOOT, `迁移建出了一次性库 ${dbFile}`);
 
-  let Database;
+  let db = null;
   try {
-    Database = require(path.join(API_ROOT, "node_modules", "better-sqlite3"));
-  } catch {
-    Database = require("better-sqlite3");
-  }
+    let Database;
+    try {
+      Database = require(path.join(API_ROOT, "node_modules", "better-sqlite3"));
+    } catch {
+      Database = require("better-sqlite3");
+    }
 
-  const seedLines = (name) =>
-    fs
-      .readFileSync(path.join(SEED_DIR, name), "utf8")
-      .split(/\r?\n/)
-      .filter((l) => l.trim().length > 0).length;
+    // 期望行数：**先**按 SEED_EXPECT 的基线核对文件本身（被清空 / 被截断当场红），再据此比对库里落地情况。
+    const seedLines = {};
+    let seedOk = true;
+    for (const [name, want] of Object.entries(SEED_EXPECT)) {
+      const p = path.join(SEED_DIR, name);
+      let got = null;
+      let why = "";
+      try {
+        got = fs.readFileSync(p, "utf8").split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+      } catch (e) {
+        why = `${p} 读不到：${e && e.message}`;
+      }
+      seedLines[name] = got;
+      if (got === null) {
+        seedOk = false;
+        fail(G_BOOT, `种子文件 ${name} 存在且可读`, why);
+      } else if (got < want) {
+        seedOk = false;
+        fail(G_BOOT, `种子文件 ${name} 至少有 ${want} 行（下界，防截断/清空）`, `实际 ${got} 行：${p}`);
+      } else {
+        pass(G_BOOT, `种子文件 ${name} ${got} 行（基线 ${want}）`);
+      }
+    }
 
-  const db = new Database(dbFile, { readonly: true });
-  try {
+    db = new Database(dbFile, { readonly: true });
     const applied = db.prepare("SELECT name FROM knex_migrations ORDER BY name").all().map((r) => r.name);
     const want = ["001_schema", "002_platform_seed"];
     record(G_BOOT, `迁移名册 = ${want.join(" + ")}`, JSON.stringify(applied) === JSON.stringify(want), `实际 ${JSON.stringify(applied)}`);
 
+    // ---- o_prompt：行数 + **排序后的 type 集合**都要与导出文件一致 ----
+    // ⚠ 原来标签写的是"type 同集合"、实际只比了行数：行数相等而 type 换了（例如种错表 / 种串了行）
+    //    照样通过。这里改成真的比集合（Task 5 独立审查修复 4）。
     const promptTypes = db.prepare("SELECT type FROM o_prompt ORDER BY type").all().map((r) => r.type);
-    const wantPrompts = seedLines("o_prompt.ndjson");
-    record(
-      G_BOOT,
-      `o_prompt 种子 ${wantPrompts} 行已落地（type 与导出文件同集合）`,
-      promptTypes.length === wantPrompts,
-      `实际 ${promptTypes.length} 行：${promptTypes.join(",")}`,
-    );
+    let wantPromptTypes = null;
+    try {
+      wantPromptTypes = fs
+        .readFileSync(path.join(SEED_DIR, "o_prompt.ndjson"), "utf8")
+        .split(/\r?\n/)
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l).type)
+        .sort();
+    } catch (e) {
+      fail(G_BOOT, "o_prompt 导出文件可解析出 type 集合", `${e && e.message}`);
+    }
+    if (wantPromptTypes) {
+      record(
+        G_BOOT,
+        `o_prompt 种子 ${wantPromptTypes.length} 行已落地，且 type 集合与导出文件一致`,
+        JSON.stringify(promptTypes) === JSON.stringify(wantPromptTypes),
+        `实际 ${promptTypes.length} 行：[${promptTypes.join(",")}]；期望 [${wantPromptTypes.join(",")}]`,
+      );
+    }
 
     const agents = db.prepare("SELECT COUNT(*) AS c FROM o_agentDeploy").get().c;
-    const wantAgents = seedLines("o_agentDeploy.ndjson");
-    record(G_BOOT, `o_agentDeploy 种子 ${wantAgents} 行已落地`, agents === wantAgents, `实际 ${agents} 行`);
+    const wantAgents = seedLines["o_agentDeploy.ndjson"];
+    record(G_BOOT, `o_agentDeploy 种子 ${wantAgents} 行已落地`, seedOk && agents === wantAgents, `实际 ${agents} 行`);
 
     const settingKeys = db.prepare("SELECT key FROM o_setting ORDER BY key").all().map((r) => r.key);
-    const wantSettings = seedLines("o_setting.platform.ndjson");
+    const wantSettings = seedLines["o_setting.platform.ndjson"];
     record(
       G_BOOT,
       `o_setting 只有 ${wantSettings} 个平台键、且**没有 tokenKey**（JWT 密钥走配置）`,
-      settingKeys.length === wantSettings && !settingKeys.includes("tokenKey"),
+      seedOk && settingKeys.length === wantSettings && !settingKeys.includes("tokenKey"),
       `实际 ${JSON.stringify(settingKeys)}`,
     );
 
@@ -278,16 +321,25 @@ function inspectMigratedDb(dbFile) {
     record(G_BOOT, "o_setting.shotsEngine = v2（结构化分镜默认开）", !!engine && engine.value === "v2", `实际 ${engine ? engine.value : "(缺)"}`);
 
     const vendors = db.prepare("SELECT id, inputValues, models, enable FROM o_vendorConfig ORDER BY id").all();
-    const wantVendors = seedLines("o_vendorConfig.templates.ndjson");
+    const wantVendors = seedLines["o_vendorConfig.templates.ndjson"];
     const allEmpty = vendors.length > 0 && vendors.every((r) => r.inputValues === "{}" && r.models === "[]" && r.enable === 0);
     record(
       G_BOOT,
       `o_vendorConfig ${wantVendors} 个空模板行（带凭据的行没有进仓库、也没有进新库）`,
-      vendors.length === wantVendors && allEmpty,
+      seedOk && vendors.length === wantVendors && allEmpty,
       `实际 ${vendors.length} 行：${vendors.map((r) => `${r.id}(enable=${r.enable},${r.inputValues.length}B)`).join(" ")}`,
     );
+  } catch (e) {
+    // 兜底：任何未预料的异常（种子目录不存在 / 依赖缺失 / 库被写坏）都变成一条带标签的失败断言。
+    fail(G_BOOT, "一次性库检查（inspectMigratedDb）正常跑完", `抛出异常：${(e && e.stack) || e}`);
   } finally {
-    db.close();
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        /* 关不掉就算了，别让它盖掉上面的断言结果 */
+      }
+    }
   }
 }
 
@@ -328,10 +380,26 @@ async function checkBootAndApi() {
    *    是**预期状态**、不是缺口。删除脚手架后 `verify-phase0` 仍然全绿，正是"002 的种子完整 + 启动
    *    路径不再依赖库里的密钥"这两件事的**联合证据**。
    */
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-phase0-boot-"));
-  for (const sub of ["vendor", "skills", "modelPrompt"]) {
-    const src = path.join(API_ROOT, "data", sub);
-    if (fs.existsSync(src)) copyDirRecursive(src, path.join(dataDir, sub));
+  // ⚠ 一次性数据目录的创建/拷贝也可能抛（磁盘满、路径无权限、资产被占用）。
+  //    Task 5 独立审查修复 4：抛之前必须**先把刚建出来的目录删掉**，否则 %TEMP% 里会留一个
+  //    `miwo-phase0-boot-*` 残骸；而 `mkdtempSync` 的路径也没法在 finally 里补删（那时 dataDir 还没赋值）。
+  let dataDir;
+  try {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-phase0-boot-"));
+    for (const sub of ["vendor", "skills", "modelPrompt"]) {
+      const src = path.join(API_ROOT, "data", sub);
+      if (fs.existsSync(src)) copyDirRecursive(src, path.join(dataDir, sub));
+    }
+  } catch (e) {
+    if (dataDir) {
+      try {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      } catch {
+        /* 删不掉就如实记一条失败 */
+      }
+    }
+    fail(G_BOOT, "创建一次性数据目录并拷入只读静态资产", `抛出异常：${(e && e.message) || e}；目录 ${dataDir || "(未创建)"} ${dataDir && fs.existsSync(dataDir) ? "仍在" : "已清理"}`);
+    return;
   }
   pass(G_BOOT, `使用一次性数据目录（空库 + 只读静态资产）${dataDir}`);
 
@@ -372,29 +440,40 @@ async function checkBootAndApi() {
   //    它比原来那条"种入 tokenKey"更强：断言的是 002 的**全部四张表**，而不是"能起服务就行"。
   inspectMigratedDb(path.join(dataDir, "db2.sqlite"));
 
-  const child = spawn(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", path.join("src", "app.ts")], {
-    cwd: API_ROOT,
-    // ⚠ 与 db:migrate / 种子脚本用的是**同一个 env**（同一个一次性库）
-    env: bootEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  // ⚠ 从此处起必须在 finally 里收干净（Task 5 独立审查修复 4）：
+  //    原实现把"删一次性目录"写在应用就绪分支的 finally 里 —— 只要走 `return`
+  //    （迁移失败 / 起不来之外的分支）就**不经过**那里，`%TEMP%\miwo-phase0-boot-*` 会残留。
+  let child = null;
+  try {
+    child = spawn(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", path.join("src", "app.ts")], {
+      cwd: API_ROOT,
+      // ⚠ 与 db:migrate / 种子脚本用的是**同一个 env**（同一个一次性库）
+      env: bootEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (e) {
+    // spawn 同步失败（例如 execPath 不可执行、资源耗尽）：记一条带标签的失败，进程没起来。
+    fail(G_BOOT, "启动应用子进程（tsx src/app.ts）", `spawn 抛出异常：${(e && e.message) || e}`);
+  }
 
   let stdoutBuf = "";
   let stderrBuf = "";
   let exitedEarly = false;
-  child.stdout.on("data", (d) => (stdoutBuf += d.toString()));
-  child.stderr.on("data", (d) => (stderrBuf += d.toString()));
-  child.on("exit", () => {
-    exitedEarly = true;
-  });
+  if (child) {
+    child.stdout.on("data", (d) => (stdoutBuf += d.toString()));
+    child.stderr.on("data", (d) => (stderrBuf += d.toString()));
+    child.on("exit", () => {
+      exitedEarly = true;
+    });
+  }
 
   const healthUrl = `http://127.0.0.1:${port}/api/other/configHealth?summary=1`;
   try {
     // 等待端口就绪：**轮询**而不是固定 sleep（最多 60s）
     let ready = false;
     const deadline = Date.now() + READY_TIMEOUT_MS;
-    while (Date.now() < deadline) {
+    while (child && Date.now() < deadline) {
       await delay(1000);
       if (child.exitCode !== null || child.signalCode !== null) break;
       try {
@@ -413,7 +492,11 @@ async function checkBootAndApi() {
       fail(
         G_BOOT,
         `${READY_TIMEOUT_MS / 1000}s 内就绪（轮询 configHealth?summary=1）`,
-        exitedEarly ? `应用进程提前退出。输出前 ${OUT_TAIL} 字符：\n${out().slice(0, OUT_TAIL)}` : `超时未就绪。输出前 ${OUT_TAIL} 字符：\n${out().slice(0, OUT_TAIL)}`,
+        child === null
+          ? "应用子进程没能启动（见上一条断言），无法轮询"
+          : exitedEarly
+            ? `应用进程提前退出。输出前 ${OUT_TAIL} 字符：\n${out().slice(0, OUT_TAIL)}`
+            : `超时未就绪。输出前 ${OUT_TAIL} 字符：\n${out().slice(0, OUT_TAIL)}`,
       );
     } else {
       pass(G_BOOT, `${READY_TIMEOUT_MS / 1000}s 内就绪（轮询 configHealth?summary=1）`);
@@ -444,8 +527,14 @@ async function checkBootAndApi() {
     }
   } finally {
     // ---- E. 必须杀掉自己起的进程，不能留占端口的孤儿 ----
-    const killed = await stopChild(child);
-    record(G_CLEAN, "自己起的应用进程已退出", killed, `pid ${child.pid} 仍在运行`);
+    if (child) {
+      const killed = await stopChild(child);
+      record(G_CLEAN, "自己起的应用进程已退出", killed, `pid ${child.pid} 仍在运行`);
+    } else {
+      // spawn 就没成功：没有进程可杀，这条断言记为通过（"没有孤儿进程"是真的），
+      // 启动失败本身已经在上面的 G_BOOT 里单独记了一条失败。
+      pass(G_CLEAN, "自己起的应用进程已退出（spawn 未成功，无进程可杀）");
+    }
     const released = await waitPortReleased(port, 10000);
     record(G_CLEAN, `端口 ${port} 已释放（无人监听）`, released, "端口仍被监听，疑似孤儿进程");
 
