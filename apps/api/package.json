@@ -18,6 +18,10 @@
     "prebuild": "node --import=tsx scripts/generate-router.ts",
     "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
     "db:types": "node --env-file-if-exists=.env --import=tsx scripts/gen-db-types.ts",
+    "db:migrate": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts",
+    "db:migrate:status": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --status",
+    "db:migrate:down": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --down",
+    "db:generate": "node --import=tsx scripts/db-generate.ts",
     "debug:ai": "npx @ai-sdk/devtools",
     "license": "node scripts/license.ts",
     "vendor2json": "node scripts/vendor2json.ts"
