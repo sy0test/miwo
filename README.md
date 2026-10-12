@@ -95,11 +95,16 @@ pnpm.cmd dev
   - b) **本机继续用 sqlite**：**不要**对 `apps/api/data/db2.sqlite` 跑启动路径/迁移。要留这套老库做回归就把它当只读样本；
     回归网（`apps/api/tests/**`）与 `verify-phase0.cjs` 用的都是**新建的一次性库**（后者把 `MIWO_DATA_DIR` 指到 `%TEMP%` 下的空目录，**不碰** dev 库）。
 - **`apps/api/data/db2.sqlite` 的 sha256 是一条硬约束**：任何验收/回归都不许改写它（本 Task 前后实测一致）。
-- ⚠ **`verify-phase0.cjs` 现在跑的是"空库 + 迁移"**：它在一次性目录里先 `db:migrate`（建 `001_schema`），
-  再用 **`apps/api/scripts/verify-phase0-seed-min.ts`（临时脚手架）** 种入 `o_setting.tokenKey`（+ `shotsEngine=v2`）——
-  否则新库里没有任何种子行，`app.ts` 的鉴权中间件会把**所有**请求挡成 444（含只读的 `configHealth?summary=1`）。
-  **删除条件**：种子迁移 `002_platform_seed`（Task 5）落地后，`db:migrate` 自己就会种下 `tokenKey`，
-  届时可把那个脚本与 `verify-phase0.cjs` 里对它的调用一起删掉。
+- ⚠ **`verify-phase0.cjs` 现在跑的是"空库 + 迁移"**（Phase 1a / Task 5 起）：它在一次性目录里先 `db:migrate`
+  （`001_schema` 建表 + `002_platform_seed` 种平台数据），然后**就地只读断言**种子真的落地
+  （迁移名册、`o_prompt` 4 行、`o_agentDeploy` 19 行、`o_setting` 只有平台键、`o_vendorConfig` 8 个空模板），
+  最后才起应用、轮询、收尾。
+  - 它**不再需要** Task 4 那段临时脚手架（`apps/api/scripts/verify-phase0-seed-min.ts`）—— 该文件与其调用点
+    已随 Task 5 删除（断言只增不减：31/31 → **36/36**，用"种子四张表都落地 + 库里没有 tokenKey"取代了
+    原来的"种了 tokenKey 就能起服务"）。
+  - ⚠ `o_setting.tokenKey` **不进新库**（`002_platform_seed` 有一条显式断言兜住它）：JWT 密钥取自配置
+    `MIWO_JWT_SECRET`（`src/app.ts` 的鉴权中间件在库里没有 `tokenKey` 行时回退到它）。把密钥从库里搬进配置
+    正是 spec §6.2 / Phase 1c 的方向，所以"新库里没有 tokenKey"是**预期状态**。
 
 ### 启动期副作用的两条语义变化（Phase 1a / Task 4 盖章登记）
 

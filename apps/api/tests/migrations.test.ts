@@ -124,10 +124,10 @@ describe("迁移机制（spec §5.2）", () => {
     expect(b2).toBe(2);
     expect(n2).toEqual([extra.name]);
     const rows = (await db("knex_migrations").select("name", "batch").orderBy("name")) as Array<{ name: string; batch: number }>;
-    expect(rows).toEqual([
-      { name: NAMES[0], batch: 1 },
-      { name: extra.name, batch: 2 },
-    ]);
+    // ⚠ 期望值**由清单推导**而不是硬编码两条：清单每加一条迁移（Task 5 的 002、Task 6 的 003…）
+    //    这里就自动跟着长，不需要再改测试。语义仍是"清单里的每条都是 batch 1、额外那条是 batch 2"，
+    //    且按名字排序（"899_tmp_extra" 排在 0xx 之后）——断言强度没有变化。
+    expect(rows).toEqual([...NAMES.map((n) => ({ name: n, batch: 1 })), { name: extra.name, batch: 2 }]);
     // status 报的是**清单**里的条目（不是 `knex_migrations` 全表）。
     // 这里顺带验证一个真实行为：DB 里出现清单外的迁移时，knex 的清单校验会**响亮报错**
     // （"The migration directory is corrupt, the following files are missing: <name>"），

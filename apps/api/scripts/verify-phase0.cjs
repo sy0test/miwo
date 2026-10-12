@@ -39,6 +39,8 @@ const OLD_WEB = "D:\\sy_workspace\\code\\toonflow-web";
 
 const READY_TIMEOUT_MS = 60000;
 const OUT_TAIL = 2000;
+// 平台种子的导出物（Task 5 的 002_platform_seed 的输入）。下面用它来断言"种子真的按导出文件落地了"。
+const SEED_DIR = path.join(API_ROOT, "src", "db", "migrations", "seed");
 
 const G_FREEZE = "A 旧仓库冻结";
 const G_FILES = "B 构件存在";
@@ -214,6 +216,81 @@ function copyDirRecursive(src, dest) {
   }
 }
 
+/**
+ * 只读检查一次性库里的**迁移名册 + 平台种子**（用 better-sqlite3 直接读文件，绝不经过应用）。
+ *
+ * 这是 Task 5 用来**取代临时种子脚手架**的那一步：脚手架只能证明"种了 tokenKey 就能起服务"，
+ * 这里证明的是 002_platform_seed 的**四张表都按导出文件落地**，而且 `o_setting` 里**没有 tokenKey**
+ * （Phase 1c 才把 JWT 密钥彻底移出 DB；它必须在配置 MIWO_JWT_SECRET 里）。
+ *
+ * 期望行数**从 `seed/*.ndjson` 现算**，不硬编码：导出物一改，这里自动跟着走（也就不会出现
+ * "种子文件与断言各说各话"）。
+ */
+function inspectMigratedDb(dbFile) {
+  if (!fs.existsSync(dbFile)) {
+    fail(G_BOOT, `迁移建出了一次性库 ${dbFile}`, "文件不存在：db:migrate 没跑到建库这一步");
+    return;
+  }
+  pass(G_BOOT, `迁移建出了一次性库 ${dbFile}`);
+
+  let Database;
+  try {
+    Database = require(path.join(API_ROOT, "node_modules", "better-sqlite3"));
+  } catch {
+    Database = require("better-sqlite3");
+  }
+
+  const seedLines = (name) =>
+    fs
+      .readFileSync(path.join(SEED_DIR, name), "utf8")
+      .split(/\r?\n/)
+      .filter((l) => l.trim().length > 0).length;
+
+  const db = new Database(dbFile, { readonly: true });
+  try {
+    const applied = db.prepare("SELECT name FROM knex_migrations ORDER BY name").all().map((r) => r.name);
+    const want = ["001_schema", "002_platform_seed"];
+    record(G_BOOT, `迁移名册 = ${want.join(" + ")}`, JSON.stringify(applied) === JSON.stringify(want), `实际 ${JSON.stringify(applied)}`);
+
+    const promptTypes = db.prepare("SELECT type FROM o_prompt ORDER BY type").all().map((r) => r.type);
+    const wantPrompts = seedLines("o_prompt.ndjson");
+    record(
+      G_BOOT,
+      `o_prompt 种子 ${wantPrompts} 行已落地（type 与导出文件同集合）`,
+      promptTypes.length === wantPrompts,
+      `实际 ${promptTypes.length} 行：${promptTypes.join(",")}`,
+    );
+
+    const agents = db.prepare("SELECT COUNT(*) AS c FROM o_agentDeploy").get().c;
+    const wantAgents = seedLines("o_agentDeploy.ndjson");
+    record(G_BOOT, `o_agentDeploy 种子 ${wantAgents} 行已落地`, agents === wantAgents, `实际 ${agents} 行`);
+
+    const settingKeys = db.prepare("SELECT key FROM o_setting ORDER BY key").all().map((r) => r.key);
+    const wantSettings = seedLines("o_setting.platform.ndjson");
+    record(
+      G_BOOT,
+      `o_setting 只有 ${wantSettings} 个平台键、且**没有 tokenKey**（JWT 密钥走配置）`,
+      settingKeys.length === wantSettings && !settingKeys.includes("tokenKey"),
+      `实际 ${JSON.stringify(settingKeys)}`,
+    );
+
+    const engine = db.prepare("SELECT value FROM o_setting WHERE key = 'shotsEngine'").get();
+    record(G_BOOT, "o_setting.shotsEngine = v2（结构化分镜默认开）", !!engine && engine.value === "v2", `实际 ${engine ? engine.value : "(缺)"}`);
+
+    const vendors = db.prepare("SELECT id, inputValues, models, enable FROM o_vendorConfig ORDER BY id").all();
+    const wantVendors = seedLines("o_vendorConfig.templates.ndjson");
+    const allEmpty = vendors.length > 0 && vendors.every((r) => r.inputValues === "{}" && r.models === "[]" && r.enable === 0);
+    record(
+      G_BOOT,
+      `o_vendorConfig ${wantVendors} 个空模板行（带凭据的行没有进仓库、也没有进新库）`,
+      vendors.length === wantVendors && allEmpty,
+      `实际 ${vendors.length} 行：${vendors.map((r) => `${r.id}(enable=${r.enable},${r.inputValues.length}B)`).join(" ")}`,
+    );
+  } finally {
+    db.close();
+  }
+}
+
 async function checkBootAndApi() {
   let port;
   try {
@@ -228,21 +305,22 @@ async function checkBootAndApi() {
    * ⚠ 数据目录必须是**一次性的空目录**（Phase 1a / Task 4 起）：
    *
    * 旧口径是直接 `MIWO_DATA_DIR = apps/api/data`。Task 4 之后应用启动时会在数据目录里
-   * **跑 `001_schema` 迁移**（`src/db/connect.ts` 的 `connect()`），而那个目录里的 `db2.sqlite`
+   * **跑迁移**（`src/db/connect.ts` 的 `connect()`），而那个目录里的 `db2.sqlite`
    * 是**老库**（实测 30 张表、**没有** `knex_migrations`）—— `createTable` 会撞 "table already exists"，
    * 应用根本起不来（这正是计划 Task 6「先把老库数据导入空库」存在的原因）。
    * 所以这里改用 `os.tmpdir()` 下的空目录，**绝不读也不写** `apps/api/data/db2.sqlite`。
    *
    * 目录里只需要两样东西：
-   *   1. 空库 → 应用启动时自己跑 `001_schema`（这也就是"迁移完成 → 才监听端口"的运行期证据）；
+   *   1. 空库 → 应用启动时自己跑迁移（`001_schema` + `002_platform_seed`）；
    *   2. `vendor/` `skills/` `modelPrompt/` 三个**只读静态资产目录**（`configHealth` 的
    *      "vendor 13 / skills 31" 两条断言与启动期读取依赖它们；**不复制** `db2.sqlite`）。
    *
-   * ⚠ 为什么还要先跑一次 `db:migrate` + `scripts/.tmp-seed-min.cjs`：新库迁完后**没有任何种子数据**，
-   *    而 `apps/api/src/app.ts` 的鉴权中间件要求 `o_setting.tokenKey` 存在，否则**每个**请求都返回 444
-   *    （连只读的 `configHealth?summary=1` 都到不了）—— 这是 Phase 1a 的**已知缺口**，
-   *    `002_platform_seed`（Task 5）落地后这段种子就会由迁移负责，届时可删掉。
-   *    两个步骤都用**同一个 env**（同一份 MIWO_DATA_DIR），所以指向的还是那个一次性库。
+   * ⚠ **Task 5 起不再需要那段临时种子脚手架**（`scripts/verify-phase0-seed-min.ts`，已随本 Task 删除）：
+   *    `002_platform_seed` 是它的正式接替者 —— 一次 `db:migrate` 就把平台种子（提示词 / Agent 部署 /
+   *    平台键 / 供应商空模板）种好。而 `o_setting.tokenKey` 按 Phase 1c 的方向**不进库**：
+   *    JWT 密钥取自配置 `MIWO_JWT_SECRET`（见 `src/app.ts` 鉴权中间件），所以"新库里没有 tokenKey"
+   *    是**预期状态**、不是缺口。删除脚手架后 `verify-phase0` 仍然全绿，正是"002 的种子完整 + 启动
+   *    路径不再依赖库里的密钥"这两件事的**联合证据**。
    */
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-phase0-boot-"));
   for (const sub of ["vendor", "skills", "modelPrompt"]) {
@@ -271,40 +349,22 @@ async function checkBootAndApi() {
       windowsHide: true,
     });
 
-  // ⚠ 先检查脚手架是否存在：缺了的话 `tsx` 的报错很难读，而根因只有一句"少种了 tokenKey"
-  const seedScript = path.join(API_ROOT, "scripts", "verify-phase0-seed-min.ts");
-  if (!fs.existsSync(seedScript)) {
-    fail(
-      G_BOOT,
-      "存在 scripts/verify-phase0-seed-min.ts（一次性库的最小种子脚手架）",
-      `缺少 ${seedScript}：新库迁完后没有任何 o_setting 行，鉴权中间件会挡掉**所有**请求（连只读的 configHealth 都 444）。` +
-        "该文件是 Phase 1a/Task 4 的临时脚手架，Task 5 的 002_platform_seed 落地后应由它接替并删除本文件。",
-    );
-    return;
-  }
-  pass(G_BOOT, "存在 scripts/verify-phase0-seed-min.ts（一次性库的最小种子脚手架）");
-
+  // ⚠ 只跑一次 `db:migrate`：001_schema 建表 + 002_platform_seed 种平台数据。
+  //    Task 4 曾经在这里再补一个"种 tokenKey 的最小脚手架"，Task 5 已按交接删除它。
   const migrateRun = tsxStep(path.join("scripts", "db-migrate.ts"));
   if (migrateRun.status === 0) {
-    pass(G_BOOT, "先在一次性空库上跑 db:migrate（001_schema）");
+    pass(G_BOOT, "先在一次性空库上跑 db:migrate（001_schema + 002_platform_seed）");
   } else {
     fail(
       G_BOOT,
-      "先在一次性空库上跑 db:migrate（001_schema）",
+      "先在一次性空库上跑 db:migrate（001_schema + 002_platform_seed）",
       `exit ${migrateRun.status}；stdout=${String(migrateRun.stdout || "").slice(-500)}；stderr=${String(migrateRun.stderr || "").slice(-500)}`,
     );
   }
 
-  const seedRun = tsxStep(path.join("scripts", "verify-phase0-seed-min.ts"));
-  if (seedRun.status === 0) {
-    pass(G_BOOT, "种入 o_setting.tokenKey（002_platform_seed 落地前的最小种子）");
-  } else {
-    fail(
-      G_BOOT,
-      "种入 o_setting.tokenKey（002_platform_seed 落地前的最小种子）",
-      `exit ${seedRun.status}；stdout=${String(seedRun.stdout || "").slice(-500)}；stderr=${String(seedRun.stderr || "").slice(-500)}`,
-    );
-  }
+  // ⚠ 迁移完**就地读库**断言"种子真的落地" —— 这一步取代了 Task 4 的临时种子脚手架。
+  //    它比原来那条"种入 tokenKey"更强：断言的是 002 的**全部四张表**，而不是"能起服务就行"。
+  inspectMigratedDb(path.join(dataDir, "db2.sqlite"));
 
   const child = spawn(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", path.join("src", "app.ts")], {
     cwd: API_ROOT,

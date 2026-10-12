@@ -14,6 +14,7 @@
  */
 import type { Knex } from "knex";
 import schema from "@/db/migrations/001_schema";
+import platformSeed from "@/db/migrations/002_platform_seed";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -26,7 +27,9 @@ export interface Migration {
 export const MIGRATIONS: Migration[] = [
   // Task 3 产出 001_schema（建 27 张表 + 删 o_skillList/o_skillAttribution）
   schema,
-  // Task 5 会在这里追加 002_platform_seed
+  // Task 5 产出 002_platform_seed（平台种子：只插不改；o_prompt / o_agentDeploy /
+  // o_setting 平台键 / o_vendorConfig 8 个空模板；**不 seed tokenKey**）
+  platformSeed,
   // Task 6 会在这里追加 003_legacy_vendor_merge（仅在需要把旧供应商行合并进 miwo 时）
 ];
 

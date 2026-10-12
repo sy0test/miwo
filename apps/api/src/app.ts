@@ -153,9 +153,18 @@ export default async function startServe(randomPort: Boolean = false) {
   }
 
   app.use(async (req, res, next) => {
+    // ⚠ JWT 密钥的来源（Phase 1a / Task 5）：**库里优先，配置兜底**。
+    //    · 老库（还有 `o_setting.tokenKey` 行）：行为与以前**一字不差** —— 密钥就是那一行；
+    //    · 新库（`002_platform_seed` 明确**不种** `tokenKey`，见 spec §6.2 / Phase 1c）：回退到配置
+    //      `MIWO_JWT_SECRET`（`config.ts` 强制 >= 32 字节，所以这个兜底永远有值）。
+    //    这正是"把 JWT 密钥从数据库搬进配置"那一步的落点。没有兜底的话，**全新安装的库**
+    //    会让**所有**请求都 444（连只读的 `configHealth?summary=1` 都到不了白名单）——
+    //    而那个 444 不是任何安全控制：不带 token 的受保护接口**仍然是 401**（下面的分支没动）。
+    //    证据：`apps/api/scripts/verify-phase0.cjs` 在全新空库上只跑 `db:migrate` 就要求
+    //    `configHealth?summary=1` 返回 200 且 `o_setting` 里**没有** tokenKey（两条断言互为约束）。
     const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
-    if (!setting) return res.status(444).send({ message: "服务器秘钥未配置，请联系管理员" });
-    const { value: tokenKey } = setting;
+    const tokenKey = (setting && setting.value) || config.jwtSecret;
+    if (!tokenKey) return res.status(444).send({ message: "服务器秘钥未配置，请联系管理员" });
     // 从 header 或 query 参数获取 token
     const rawToken = req.headers.authorization || (req.query.token as string) || "";
     const token = rawToken.replace("Bearer ", "");

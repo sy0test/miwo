@@ -1,0 +1,4 @@
+{"key":"modelDtype","value":"fp16"}
+{"key":"modelOnnxFile","value":"[\"all-MiniLM-L6-v2\", \"onnx\", \"model_fp16.onnx\"]"}
+{"key":"shotsEngine","value":"v2"}
+{"key":"switchAiDevTool","value":"0"}
