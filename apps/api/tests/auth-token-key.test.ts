@@ -104,6 +104,16 @@ interface Server {
 async function startServer(): Promise<Server> {
   const port = await freePort();
   const dataDir = fs.mkdtempSync(path.join(TMP, "boot-"));
+  // ⚠ 本文件**钉死 sqlite**，即使外层设了 `MIWO_TEST_MYSQL=1`（vitest.config.ts 会把
+  //    `MIWO_DB_DRIVER=mysql` 注入 `process.env`，子进程会继承它）。
+  //
+  // 为什么必须钉：本用例断言的是"**同一个库**里 tokenKey 在不在 → 用哪个密钥验签"，
+  //    而下面的 `openDb()` 打开的是 sqlite 文件。若子进程接了 MySQL，R2 就变成
+  //    "把 tokenKey 插进 sqlite、却去问 MySQL 上的那个服务器" —— 服务器读不到那一行 →
+  //    回退到配置密钥 → **配置密钥反而被接受**。两种结局都是假的：
+  //      · 前面的 `mysql-integration.test.ts` 刚 drop 过全部表时 → `no such table: o_setting` 直接红；
+  //      · MySQL 里恰好也没有 tokenKey 时 → 用例**假绿**（"库值优先"那半边从未被验证）。
+  //    被测对象是密钥优先级、不是方言；钉死 sqlite 才真的验到东西。
   const child = spawn(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", path.join("src", "app.ts")], {
     cwd: API_ROOT,
     env: {
@@ -114,6 +124,10 @@ async function startServer(): Promise<Server> {
       MIWO_DATA_DIR: dataDir,
       MIWO_JWT_SECRET: CONFIG_SECRET,
       NODE_OPTIONS: "--import=tsx",
+      // ⚠ 只钉 driver 就够了：`config.ts` 只在 `dbDriver === "mysql"` 时才去读
+      //    `MIWO_DB_HOST/PORT/USER/PASSWORD/NAME`，所以继承来的那几个值到了 sqlite 分支上
+      //    根本不会被读（写空字符串反而会引入一个"空值到底算不算设置"的新问题）。
+      MIWO_DB_DRIVER: "sqlite",
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,

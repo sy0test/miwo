@@ -21,9 +21,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { config } from "@/config";
+import { config, type MiwoConfig } from "@/config";
 import { createKnex, describeTarget } from "@/db/connect";
 import { migrationStatus, rollbackMigrations, runMigrations } from "@/db/migrations";
+import {
+  checkIdRanges,
+  checkIdTypes,
+  extremeRowPicks,
+  findDuplicates,
+  importTable,
+  planImport,
+  type SourceSamples,
+} from "@/db/legacy/import";
 
 const ENABLED = process.env.MIWO_TEST_MYSQL === "1";
 const d = ENABLED ? describe : describe.skip;
@@ -138,4 +147,146 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       await db.destroy();
     }
   }, 120000);
+
+  /**
+   * **Task 8 的端到端往返**：仓库里的老 sqlite 库 → 真 MySQL，逐表行数 + 抽样逐列一致。
+   *
+   * 与 `tests/legacy-import.test.ts` 的分工：那边是 **sqlite↔sqlite** 的判据网（本机没 MySQL 也能跑），
+   * 这边只补"真 MySQL 上的类型 / 字符集 / 严格模式"这一段 —— 两个方言的**表示差异**
+   * （`bigint unsigned` 回读成 number、`float(8,2)` 的尾数、longtext 的万字符往返）只有真连才看得见。
+   *
+   * 为什么抽样要分两层（Task 8 Step 1 的结论，这里同样适用）：
+   *   均匀抽样（按第一列排序取首行）**抽不中边界** —— 老库最关键的几条数据恰好是边界
+   *   （`o_agentWorkData.data` 最长 103,624 字符、`o_project.id` 是 `Date.now()` 毫秒值）。
+   *   只比首行会让"27 张表全绿"发生在**从没读过那 5 行超长数据**的前提下。所以这里同样
+   *   用 `extremeRowPicks()` 把"每列最长文本 / 数值极值"的行也拉进来比。
+   *
+   * ⚠ 本用例会 DROP/重建 `MIWO_DB_NAME` 里的全部表（与上面几条同一约定：只许指向专用测试库）。
+   * ⚠ 老库快照 `apps/api/data/db2.sqlite` **只读**打开（`better-sqlite3` 的 `readonly`），
+   *   并且这里**不**断言它的 sha256（那条硬约束由 `legacy-import.test.ts` 与 `export-sqlite.cjs` 守）。
+   */
+  it("dev sqlite 库 → MySQL 全量搬迁：逐表行数与分层抽样逐列一致", async () => {
+    const devPath = path.resolve(__dirname, "..", "data", "db2.sqlite");
+    if (!fs.existsSync(devPath)) return; // CI 上没有 dev 库快照
+
+    // ⚠ 四张平台种子表在 `002` 之后**已经有行**，而 `importTable()` 是"整表搬"的原语：
+    //   它对种子表会撞主键（实测 `Duplicate entry '1' for key 'o_agentdeploy.PRIMARY'`）。
+    //   生产路径（`importExport()` / `scripts/import-mysql.cjs`）对它们走"跳过已存在"——
+    //   那一段由 `legacy-import.test.ts` 的种子用例 + `compare-db.cjs` 在真 MySQL 上验，
+    //   这里**显式**跳过并把原因说出来，而不是假装种子表也走同一条路。
+    const SEED = ["o_prompt", "o_agentDeploy", "o_setting", "o_vendorConfig"];
+    const dst = createKnex();
+    const src = createKnex({
+      ...config,
+      db: { driver: "sqlite", file: devPath, poolMin: 1, poolMax: 2 },
+    } as unknown as MiwoConfig);
+    try {
+      // 1) 目标库回到"迁移刚建好 + 002 已跑"的空状态（与上一条用例同一往返路径）
+      await rollbackMigrations(dst, true).catch(() => {});
+      await runMigrations(dst);
+
+      // 2) 任何写入之前：唯一键查重 + id 越界（【Ruling 34/41】）
+      const plans = await planImport({ src, dst });
+      expect(await findDuplicates(src, plans)).toEqual([]);
+      expect(await checkIdRanges(src, plans)).toEqual([]);
+
+      // 3) 逐表搬（列交集 + id 保真；`importTable` 内部断言 `done === sourceRows`）
+      const moved: string[] = [];
+      let planned = 0;
+      for (const p of plans) {
+        if (!p.targetExists || !p.columns.length || SEED.includes(p.table)) continue;
+        planned += p.sourceRows ?? 0;
+        const r = await importTable({ src, dst, plan: p, batchSize: 500 });
+        expect(r.rows, `${p.table} 搬运行数`).toBe(p.sourceRows ?? 0);
+        moved.push(`${p.table}=${r.rows}`);
+      }
+      expect(planned).toBeGreaterThan(2000); // 防"清单一空 → 全程空转"的假绿（实测 2,373 行）
+
+      // 4) 逐表行数：搬过的必须**恰好**相等（preflight 已证明它们进的是空表）
+      const targetCount = async (t: string): Promise<number> => {
+        const row = (await dst(t).count({ n: "*" }).first()) as { n: number | string } | undefined;
+        return row ? Number(row.n) : 0;
+      };
+      for (const p of plans) {
+        if (!p.targetExists || !p.columns.length || SEED.includes(p.table)) continue;
+        expect(await targetCount(p.table), `${p.table} 目标行数`).toBe(p.sourceRows ?? 0);
+      }
+      // 种子表：目标必须非空（种子真的落地），且**不与源冲突的那部分内容一致**（下面第 5 步按身份键比）。
+      for (const t of SEED) expect(await targetCount(t), `${t} 种子落地`).toBeGreaterThan(0);
+
+      // 5) 分层抽样：每表"按第一列排序的首行" + "每列最长文本 / 数值极值"的行，逐列比较。
+      //    种子表按**身份键**（`002_platform_seed` 的 `seedTable(..., keyOf)` 口径）定位：
+      //    待搬迁的行是"目标里没有同身份键"的那几条，重合的几条在生产路径里是"跳过已存在"，
+      //    拿主键去比会被判成"缺席"（噪音）—— 所以这里只比身份键能对上的行。
+      const IDENTITY: Record<string, string> = { o_prompt: "type", o_agentDeploy: "key", o_setting: "key", o_vendorConfig: "id" };
+      // ⚠ **已拍板的"按设计不同"**：老库 `o_vendorConfig.id='volcengine'` 是 `enable=1`，
+      //   而 `002_platform_seed` 的模板是 `enable=0`。导入按交接条款"跳过已存在、不得 upsert"
+      //   → 目标保留种子值。**这不是本用例要重判的差异**：`compare-db.cjs` 的
+      //   `accountedMismatches` 已经逐条登记它（Task 8 Step 2 实跑抓到的就是这个）。
+      //   这里显式列出来，是为了让"本用例不比哪一格"这件事**写在代码里**而不是靠读者猜；
+      //   若哪天这条不再被登记（例如种子改了），`compare-db` 那边会红。
+      const ACCOUNTED: Record<string, string[]> = { "o_vendorConfig|volcengine": ["enable"] };
+      const samples: SourceSamples = {};
+      for (const p of plans) {
+        if (!p.targetExists || !p.columns.length) continue;
+        const key = IDENTITY[p.table] ?? p.columns[0];
+        const rows = (await src(p.table).orderBy(key).limit(1)) as Array<Record<string, unknown>>;
+        samples[p.table] = { pk: [key], rows };
+      }
+      const extreme = await extremeRowPicks(
+        src,
+        { tables: plans.map((p) => ({ name: p.table, rows: p.sourceRows ?? 0, bytes: 0, sha256: "", columns: p.columns })) },
+        samples,
+      );
+      let compared = 0;
+      let extremeCompared = 0;
+      let seedRowsCompared = 0;
+      let accountedCells = 0;
+      for (const p of plans) {
+        if (!p.targetExists || !p.columns.length) continue;
+        const key = IDENTITY[p.table] ?? p.columns[0];
+        const where: Array<Record<string, unknown>> = [];
+        if (samples[p.table].rows[0]) where.push({ [key]: samples[p.table].rows[0][key] });
+        for (const e of extreme[p.table] ?? []) {
+          if (e.pk[key] !== undefined) where.push({ [key]: e.pk[key] });
+        }
+        for (const w of where) {
+          const accountedCols = ACCOUNTED[`${p.table}|${String(w[key])}`] ?? [];
+          const s = (await src(p.table).where(w).first()) as Record<string, unknown> | undefined;
+          const d = (await dst(p.table).where(w).first()) as Record<string, unknown> | undefined;
+          // 缺席 = 生产路径按"跳过已存在"处理的那几行（逐条归因归 `compare-db`，这里不重复判）
+          if (!s || !d) continue;
+          compared += 1;
+          if (SEED.includes(p.table)) seedRowsCompared += 1;
+          for (const c of p.columns) {
+            if (accountedCols.includes(c)) {
+              accountedCells += 1;
+              continue;
+            }
+            // 口径与 `compare-db` 一致：两边都 `String()` 后比（容忍 0 与 "0" 的表示差异），
+            // 但**不 trim** —— 【Ruling 77】MySQL 的尾随空格语义不同，吃掉差异就是藏 bug。
+            expect(String(d[c] ?? ""), `${p.table}.${c} @ ${JSON.stringify(w)}`).toBe(String(s[c] ?? ""));
+          }
+        }
+        extremeCompared += (extreme[p.table] ?? []).length;
+      }
+      // 防"两层抽样都没抽到东西 → 全程空转"的假绿
+      expect(compared).toBeGreaterThan(20);
+      expect(extremeCompared).toBeGreaterThan(0);
+      expect(seedRowsCompared).toBeGreaterThan(0);
+      // "按设计不同"的那一格必须真的被读到过（否则这条豁免就是空转的）
+      expect(accountedCells).toBeGreaterThan(0);
+      console.log(
+        `[mysql-integration] 搬迁往返：搬 ${moved.length} 张表 / ${planned} 行（跳过种子表 ${SEED.join(",")}）；` +
+          `抽样比较 ${compared} 行（其中边界 ${extremeCompared} 行、种子表身份键对齐 ${seedRowsCompared} 行、` +
+          `按设计不同 ${accountedCells} 格 = o_vendorConfig.volcengine.enable）`,
+      );
+
+      // 6) 【Ruling 43】id 类列读回来必须还是 number（类型漂移为空）
+      expect(await checkIdTypes(dst, plans)).toEqual([]);
+    } finally {
+      await src.destroy();
+      await dst.destroy();
+    }
+  }, 600000);
 });

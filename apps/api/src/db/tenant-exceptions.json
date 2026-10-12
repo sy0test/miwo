@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T19:17:15.820Z",
+  "generatedAt": "2026-10-12T20:23:14.620Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -263,6 +263,15 @@
       ],
       "confirmed": true,
       "note": "[112 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。"
+    },
+    "apps/api/src/db/legacy/import.ts": {
+      "count": 2,
+      "lines": [
+        1287,
+        1297
+      ],
+      "confirmed": true,
+      "note": "[1287/1297 src.raw(\"?? as ??\", [col, \"__v\"])] 处置（Task 8 Step 1）：这是 `extremeRowPicks()` 的**边界抽样**取数。两条都是 knex 的**标识符占位符**（`??` = 转义列名/表名，不是值绑定），实参只有 `col`（来自 `columnInfo()` 的**真实列名**）与常量 `\"__v\"` —— 没有任何来自请求/用户的字符串被拼进 SQL；返回的也只是主键 + 那一列，不返回整行业务数据。\n它读的**不是**应用库：调用方是 `scripts/extreme-picks-runner.ts`，传进来的 `src` 是**只读打开的 SQLite 老库快照**（`better-sqlite3` 的 `{ readonly: true }`，只读性另由 `scripts/export-sqlite.cjs` 的 sha256 前后一致自证）。没有请求上下文、不对 `o_*` 表做 join、也完全不碰目标库，因此**不参与租户过滤**；Phase 1b 的 `policies.ts` 不得给它注入租户条件。\n为什么用 raw：要按 `LENGTH(col)` 排序 / 取极值，query builder 表达不了\"列名\"这一维（同函数里的 `orderByRaw(\"LENGTH(??) DESC\", [col])` 是同一套参数化写法，只是没被本门禁的正则扫到）。"
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,

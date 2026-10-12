@@ -32,6 +32,8 @@ import {
   checkIdRanges,
   checkIdTypes,
   compareRows,
+  equivalentForCompare,
+  extremeRowPicks,
   findDuplicates,
   importExport,
   importTable,
@@ -437,6 +439,136 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
     // NULL / undefined 同义
     expect(valuesEqual(null, undefined).equal).toBe(true);
     expect(valuesEqual(null, 0).equal).toBe(false);
+  });
+
+  it("valuesEqual 的判据（不 trim、不把数字串当数字、bigint 与浮点容差）", () => {
+    // 【Ruling 77】MySQL 的 ci collation / 尾随空格语义不同 → 比较器**不许**把差异吃掉
+    expect(valuesEqual("a ", "a").equal).toBe(false);
+    expect(valuesEqual("A", "a").equal).toBe(false);
+    expect(valuesEqual("123", 123).equal).toBe(false);
+    expect(valuesEqual("x", "x").equal).toBe(true);
+    // bigint 归一化（两个驱动下的合法表示）
+    expect(valuesEqual(BigInt(1791385147125), 1791385147125).equal).toBe(true);
+    // 浮点：表示差异（MySQL float vs sqlite REAL）用 1e-6 相对容差
+    expect(valuesEqual(4.300000190734863, 4.3).equal).toBe(true);
+    expect(valuesEqual(4.3, 5.3).equal).toBe(false);
+    // NULL / undefined 同义
+    expect(valuesEqual(null, undefined).equal).toBe(true);
+    expect(valuesEqual(null, 0).equal).toBe(false);
+  });
+
+  it("equivalentForCompare：只多两条显式容忍（0/\"0\"、null/undefined），Ruling 77 的两条不被吃掉", () => {
+    // brief Step 1 要求的两条容忍
+    expect(equivalentForCompare(0, "0").equal).toBe(true);
+    expect(equivalentForCompare("0", 0).equal).toBe(true);
+    expect(equivalentForCompare(null, undefined).equal).toBe(true);
+    expect(equivalentForCompare(1, "1").equal).toBe(true);
+    // ⚠ 【Ruling 77】的两条**必须继续报差异**：回退是 `String` 相等，不是 trim / 不是忽略大小写
+    expect(equivalentForCompare("a ", "a").equal).toBe(false);
+    expect(equivalentForCompare("A", "a").equal).toBe(false);
+    // null 只与 null 同义（不许被 String() 变成 "null" 而偷偷相等）
+    expect(equivalentForCompare(null, "null").equal).toBe(false);
+    // 结构化值不走回退：String({}) 恒是 "[object Object]"，那会让两个不同的 JSON 判等
+    expect(equivalentForCompare({ a: 1 }, "{ a: 1 }").equal).toBe(false);
+    expect(equivalentForCompare({ a: 1 }, { a: 2 }).equal).toBe(false);
+    expect(equivalentForCompare({ a: 1 }, { a: 1 }).equal).toBe(true);
+    // 真差异照旧
+    expect(equivalentForCompare(4.3, 5.3).equal).toBe(false);
+  });
+
+  it("extremeRowPicks：每列最长文本 / 数值极值所在的行被抽中（均匀抽样抽不到的边界）", async () => {
+    // 造一张只有 4 行、但"边界"全在中间行的小表：均匀抽首/中/末可能碰巧命中，
+    // 而这里断言的是**判据本身**——最长文本行与最大/最小数值行必须被点名。
+    const src = db("extreme-src");
+    await src.schema.createTable("o_assets", (T) => {
+      T.integer("id").primary();
+      T.string("prompt");   // 文本 → longest-text
+      T.integer("projectId"); // 整数 → max/min-number
+    });
+    await src("o_assets").insert([
+      { id: 1, prompt: "short", projectId: 5 },
+      { id: 2, prompt: "x".repeat(300), projectId: 1 },
+      { id: 3, prompt: "mid", projectId: 1791385147125 },
+      { id: 4, prompt: "tiny", projectId: -7 },
+    ]);
+    const samples: SourceSamples = { o_assets: { pk: ["id"], rows: [{ id: 1, prompt: "short", projectId: 5 }] } };
+    const picks = await extremeRowPicks(src, { tables: [{ name: "o_assets", rows: 4, bytes: 0, sha256: "", columns: ["id", "prompt", "projectId"] }] }, samples);
+    const list = picks.o_assets ?? [];
+    const at = (column: string, metric: string) => list.find((p) => p.column === column && p.metric === metric);
+    // 最长文本行 = id 2（300 字符）
+    expect(at("prompt", "longest-text")?.pk).toEqual({ id: 2 });
+    expect(String(at("prompt", "longest-text")?.value).length).toBe(300);
+    // 数值极值行 = id 3（Date.now() 毫秒值）/ id 4（-7）
+    expect(at("projectId", "max-number")?.pk).toEqual({ id: 3 });
+    expect(at("projectId", "min-number")?.pk).toEqual({ id: 4 });
+    expect(Number(at("projectId", "max-number")?.value)).toBe(1791385147125);
+    // 空表 / 没有行可得时不许抛，也不许返回空对象以外的瞎猜
+    await src.schema.createTable("o_video", (T) => {
+      T.integer("id").primary();
+      T.string("prompt");
+    });
+    const empty = await extremeRowPicks(
+      src,
+      { tables: [{ name: "o_video", rows: 0, bytes: 0, sha256: "", columns: ["id", "prompt"] }] },
+      { o_video: { pk: ["id"], rows: [] } },
+    );
+    expect(empty.o_video).toBeUndefined();
+    await src.destroy();
+  });
+
+  it("种子表按设计跳过时**逐条登记**：内容不同的那一行必须出现在 expectedAbsent（不许静默）", async () => {
+    // 复刻真机上抓到的那个缺口：种子给 `volcengine.enable = 0`，老库给 `1`。
+    // 导入按交接条款"跳过已存在"→ 目标保留种子值；登记必须把那一行**逐条**说出来。
+    const fixture = writeExport("seed-skip", [
+      {
+        name: "o_vendorConfig",
+        columns: ["id", "inputValues", "models", "enable"],
+        rows: [
+          { id: "volcengine", inputValues: "{}", models: "[]", enable: 1 }, // 与种子同 id、内容不同
+          { id: "brandnew", inputValues: "{}", models: "[]", enable: 1 },   // 种子里没有 → 正常写入
+        ],
+      },
+    ]);
+    const dst = await migrated("target");
+    const res = await importExport({ dst, dir: fixture.dir, apply: true, log: () => {} });
+    expect(res.applied).toBe(true);
+    const outcome = res.outcomes.find((o) => o.table === "o_vendorConfig");
+    expect(outcome?.inserted).toBe(1);          // brandnew
+    expect(outcome?.skippedExisting).toBe(1);   // volcengine
+    expect(outcome?.skippedDifferent).toBe(1);  // 且**内容不同** —— 老库那一格没搬过去
+    expect(res.expectedAbsent).toContainEqual({
+      table: "o_vendorConfig",
+      pk: { id: "volcengine" },
+      reason: "skipped-different-seed",
+    });
+    // 目标里那一格保留种子值（绝不 upsert）
+    expect(((await dst("o_vendorConfig").where("id", "volcengine").first()) as { enable: number }).enable).toBe(0);
+    // 比对：这一格走"按设计不同"通道登记，**不让 ok 变 false**，但必须可见
+    const manifest = readExportManifest(fixture.dir);
+    const plans = await plansFromManifest(dst, manifest);
+    const cmp = await compareRows({
+      dst,
+      manifest,
+      samples: {
+        o_vendorConfig: {
+          pk: ["id"],
+          rows: [
+            { id: "volcengine", inputValues: "{}", models: "[]", enable: 1 },
+            { id: "brandnew", inputValues: "{}", models: "[]", enable: 1 },
+          ],
+        },
+      },
+      plans,
+      outcomes: res.outcomes,
+      expectedAbsent: res.expectedAbsent,
+    });
+    expect(cmp.ok).toBe(true);
+    const t = cmp.tables.find((x) => x.table === "o_vendorConfig")!;
+    expect(t.mismatches).toEqual([]); // 不许混进"真差异"
+    expect(t.accountedMismatches.map((m) => `${m.column}:${m.accountedBy}`)).toEqual(["enable:skipped-different-seed"]);
+    expect(t.accountedMismatches[0].source).toBe(1);
+    expect(t.accountedMismatches[0].target).toBe(0);
+    await dst.destroy();
   });
 
   it("nonEmptyBusinessTables：种子表不算非空，其余表算", async () => {

@@ -183,6 +183,20 @@ pnpm.cmd run db:migrate
 - `pnpm.cmd run db:migrate:down`（回滚最近一批）
 - `node --import=tsx scripts/db-migrate.ts --down --all`（全回滚；⚠ 必须在 `apps/api` 下跑，`tsx` 只装在 `@miwo/api`）
 - ⚠ 回滚会 drop 表；先备份（`db:export` 或直接拷库）
+- ⚠ **`--down --all` 不会删 `knex_migrations` / `knex_migrations_lock` 这两张基础设施表**（knex 自己的行为，
+  不是本项目的遗漏）。所以"回滚干净"的判据是**业务表 0 张**，不是"库里一张表都没有"。
+  本机真 MySQL 实测（Task 8 Step 5，三次 `SHOW TABLES`）：
+
+  | 时点 | 表数 | 明细 |
+  |---|---|---|
+  | 迁移已应用 | **29** | 27 业务 + `knex_migrations` + `knex_migrations_lock` |
+  | `--down --all` 之后 | **2** | 只剩那两张 `knex_*`（**业务表 0 张**） |
+  | `db:migrate` 再 up 之后 | **29** | 27 业务 + 2 张 `knex_*` |
+
+  → 下一个人看到"回滚后还有表"时**不要**手工 `DROP` 它们：那会让 `knex_migrations` 的记账与实际结构脱节
+  （迁移系统会以为 001/002 从没跑过，而表已经建过 → 再 up 撞 `table already exists`）。
+  另外：**回滚后重建的库里不会自动有老库数据** —— `--down` 是"撤销结构"，搬迁数据要靠
+  `db:import --apply` 再灌一遍（顺序：`--down --all` → `db:migrate` → `db:import --apply` → `db:compare`）。
 
 ### 3. 老 sqlite 库怎么办
 
@@ -345,9 +359,79 @@ pnpm.cmd run db:compare                             # 行数 + 抽样单元格�
      这些被跳过的行在 `down` 时**不会**被删（内容不同）—— 这正是修复 3 要的方向。
    - 回归网：`apps/api/tests/migration-seed.test.ts` 的「down 不误伤 Task 6 先导入的同键老数据」；
      `apps/api/tests/legacy-import.test.ts` 的种子表用例。改动导入策略时它们会红。
-4. ⚠ **本机没有 MySQL 服务端**：导入/比对逻辑在 sqlite↔sqlite 上全覆盖，但
-   "真 MySQL 的类型/字符集/严格模式行为"**未验证**（由 Task 8 的 MySQL 集成测试补端到端证据）。
-   与方言相关的判断（超长值是否阻断）被抽成纯函数 `oversizeBlocks()` 单独断言。
+   - ⚠ **`--down --all` 会连 `001_schema.down` 一起跑，而它是 `dropTableIfExists` 27 张业务表** ——
+     所以"全回滚后一行都不剩"**证明不了**上面那条逐字节判据。要验它必须**单独**跑 `002.down`
+     （Task 8 Step 5 就是这么做的，本机真 MySQL 12 条判据全 PASS：被改过的种子行存活、
+     未改动的 7 行被删、`002.up` 也不覆写它）。
+4. **⚠ "跳过已存在"的那几行会留下一个"老库状态没搬过去"的格子**（Task 8 全量搬迁实测命中）：
+   老库 `o_vendorConfig.id='volcengine'` 是 `enable=1`，而 `002` 的模板是 `enable=0`
+   → 导入按本条款"跳过已存在"，目标库里那一格**永久保留种子值 0**。这不是数据丢失，是**设计如此**，
+   但必须看得见，所以：
+   - 导入侧**逐条**登记 `expectedAbsent`（新原因 `skipped-different-seed` / `skipped-pk-conflict-seed`），
+     并在 `--apply` 时逐行打印 `⚠ … 与种子同身份键但内容不同 → 保留种子值`；
+   - 比对侧把它归到 `compare-report.json` 的 **`accountedMismatches`**（带 `accountedBy`），
+     **不判红**但**照列**（`compare-db` 会打印 `⚠ 按设计未搬 <列> @ …`）。判红会把"设计如此"说成缺陷；
+     不报就是**静默**——两条都不行，所以走这条第三条路。
+   - 处置需要拍板：要么接受"种子值优先"，要么 Phase 1b 给一次性对齐脚本（**不要**改成 upsert）。
+   - ⚠ 这条也是"抽样必须抽边界"的实证：均匀抽样抽不中 `volcengine` 那一行（8/13 的偏移都没命中），
+     是 Task 8 新加的**边界抽样**把它抓出来的。
+5. ⚠ **本机现在的 MySQL 现状（Task 7 起）**：真 MySQL 8.4.11 已装在本机（`D:\sy_workspace\.tools\mysql`，
+   端口 3307，见上面「1. 本机 MySQL」）。导入/比对逻辑在 sqlite↔sqlite 上全覆盖，
+   **真 MySQL 的端到端往返由 `apps/api/tests/mysql-integration.test.ts` 守**（`MIWO_TEST_MYSQL=1`
+   时真跑：`up → down → up` 往返、自增 `id` 全是 `bigint unsigned`、批量 insert 的 insertId 是首行、
+   dev 库 → MySQL 全量搬迁的逐表行数 + 分层抽样逐列一致）。与方言相关的判断
+   （超长值是否阻断）另被抽成纯函数 `oversizeBlocks()` 单独断言。
+
+**分层抽样：为什么"27 张表全绿"不等于"数据一致"（Task 8 Step 1 的实测教训）**
+
+`compare-db.cjs` 的抽样是**两层**，两层抽中的行都写进 `source-samples.json`，逐行比**全部列**：
+
+| 层 | 怎么取 | 漏在哪儿（第一层的实测缺陷） |
+|---|---|---|
+| 1. 均匀 | 主键排序后"首 / 中 / 末 + N 个均匀分布点" | 抽不中**边界**：老库 `o_agentWorkData.data` 最长 **103,624 字符**、`o_tasks.relatedObjects` 614、`o_project.id` 是 `Date.now()` 毫秒值、`o_shot.duration` 是 `float(8,2)` |
+| 2. 边界 | **每一列**的最长文本行 + 数值最大/最小行（`extremeRowPicks()`） | —— |
+
+- **实测差距**：只跑第一层时 27 张表全绿；加上第二层立刻红了 1 处
+  （`o_vendorConfig.enable @ {"id":"volcengine"}`，见下面第 4 条）。所以"全绿"必须读成
+  "**抽到的**行一致"，不是"数据一致"。
+- 边界查询只 `SELECT` 主键 + 那一列（不能把 10 万字符的行 ×226 列整行拉回来），
+  抽中的行再按主键回源库取**整行**，与均匀层同口径（整行、逐列）。
+- 比对口径 `equivalentForCompare()`：先跑 `valuesEqual()`（**不 trim、不忽略大小写**，
+  【Ruling 77】），只在判不等时回退到 `String(a) === String(b)`（容忍 `0`/`"0"`、`null`/`undefined`）。
+  所以 `"a "` vs `"a"`、`"A"` vs `"a"` **仍然报差异**，而 `"0"` vs `0` 不算差异。
+- ⚠ 边界层**只加严、不放松**：它是新增的一层，不改任何既有判据的阈值。
+
+**Task 8 全量搬迁实测（dev sqlite → 本机真 MySQL 8.4.11，逐表行数）**
+
+`apps/api/data/db2.sqlite`（sha256 `44716850…c4ef2`，导出前后一致，只读打开）→ `miwo_test`：
+**27 张表 / 2,373 行，`compare exit=0`，行数差异 0，抽样 197 行（均匀 134 + 边界 63）逐列一致**。
+差异只有两处**按设计**的：
+
+| 表 | 源 | 目标 | 差异归因 |
+|---|---|---|---|
+| `o_setting` | 12 | 11 | `tokenKey` **绝不导回**（JWT 密钥，见上面第 2 条） |
+| `o_vendorConfig` | 13 | 13 | 行数相同，但 `volcengine.enable` 保留种子值（`accountedMismatches`，见上面第 4 条） |
+
+逐表行数（源 → 目标，全部一致；0 行的表略）：`o_user 1→1`、`o_project 8→8`、`o_agentDeploy 19→19`、
+`o_setting 12→11`、`o_tasks 61→61`、`o_prompt 4→4`、`o_script 8→8`、`o_assets 108→108`、`o_image 58→58`、
+`o_storyboard 116→116`、`o_agentWorkData 8→8`、`o_video 1→1`、`o_videoTrack 110→110`、`o_vendorConfig 13→13`、
+`o_imageFlow 1→1`、`o_assets2Storyboard 520→520`、`o_scriptAssets 116→116`、`memories 92→92`、
+`o_segment 57→57`、`o_shot 134→134`、`o_shotAssets 926→926`。
+
+抽样覆盖到的"长 / 宽 / 边界"字段（边界层每张表每列都点名，共 63 行）：
+
+| 类别 | 实测字段（例） |
+|---|---|
+| 超长文本（`longtext`） | `o_agentWorkData.data` **103,624 字符**、`o_tasks.relatedObjects` **614 字符**（这两列在 Task 7 前是 `varchar(255)`，正是"只在真 MySQL 爆炸"的那两列） |
+| 万字文本 | `memories.content`、`o_script.content`、`o_storyboard.prompt` / `data`、`o_segment.data` / `reason` |
+| `Date.now()` 毫秒大整数（`bigint unsigned`） | `o_project.id 1791385147125`、各表 `projectId` / `videoTrackId` / `trackId`、`o_segment.projectId` / `o_shot.projectId`（Task 6 修复轮 2 从 `int` 改成 `u64` 的那两列） |
+| 浮点（MySQL `float(8,2)`，**只有真连才看得见尾数**） | `o_segment.duration` / `videoDuration`、`o_shot.duration` |
+| 窄列上限 | `memories.isolationKey`（`varchar(191)`，实测最长 31）、`o_agentWorkData.key`（`varchar(255)`） |
+| 复合主键（没有 `id` 列、游标分页会静默丢行的那 4 张） | `o_assets2Storyboard`、`o_scriptAssets`、`o_shotAssets`、`o_assetsRole2Audio` |
+
+（【Ruling 86】的三条 Task 7 实测结论 —— `bigint unsigned` 回读是 JS `number`（无需 `Number()` 归一化）、
+103,624 字符 longtext 往返逐字节一致、分镜表文本完整读回 —— 本次全量搬迁**真的比到了这些字段**，
+不再重复证明。）
 
 
 ### 启动期副作用的两条语义变化（Phase 1a / Task 4 盖章登记）
