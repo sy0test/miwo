@@ -22,12 +22,19 @@
  *     MySQL 的 `int` 上限 2147483647 会在写入时直接报越界；sqlite 的 INTEGER 是 64 位，
  *     所以这个缺陷**只在真 MySQL 暴露**。清单见 `tests/migration-ddl-mysql.test.ts` 的
  *     「毫秒时间戳列」用例（12 张表 / 15 列）与本节各表的 `t.ms(...)` 调用点。
- *   - **`o_project.id` / `o_videoTrack.id` 及其 10 个外键列走 `t.u64()`，不是 `integer`**（修复轮 1）：
+ *   - **`o_project.id` / `o_videoTrack.id` 及其 12 个外键列走 `t.u64()`，不是 `integer`**（修复轮 1 + 2）：
  *     这两个 id 由代码用 `Date.now()` 显式给（`routes/project/addProject.ts:29`、`utils/redraw.ts:711`），
  *     **本身就是毫秒值**；装它们的 `projectId` / `trackId` / `videoTrackId` 因此也必须 64 位。
- *     同一根因、同一证据（实测 dev 库 `o_project.id` = 1791385147125），清单见
- *     `tests/migration-ddl-mysql.test.ts` 的「id / 外键列也是 Date.now()」用例。
+ *     同一根因、同一证据（实测 dev 库 `o_project.id` = 1791385147125）。
+ *     ⚠ 修复轮 1 漏了 `o_segment.projectId` / `o_shot.projectId`（修复轮 2 补上）—— 当时判据是
+ *     `tests/migration-ddl-mysql.test.ts` 里一张**手工外键清单**，清单外的表永远不会被检查。
+ *     现在判据换成机械扫描：`tests/migration-column-fit.test.ts`（判据 A 同名整数列宽度必须一致；
+ *     判据 B 老库实测值域 vs 目标类型上界；判据 C 活库真实行复核）。加外键列时**不需要**再维护清单。
  *     去掉那些显式 `Date.now()` 属 Phase 1b 的 35 处 insert 语义复核，本阶段**不动调用点**。
+ *   - **长文本列不得比现状库窄（修复轮 2）**：`o_agentWorkData.data`（实测最长 103,624 字符）与
+ *     `o_tasks.relatedObjects`（614 字符）在现状库里声明成 varchar(255) 却装着更长的值
+ *     （sqlite 不强制长度）→ 一律走 `t.text()`（mysql `longtext`）。机械证据：判据 B 逐列比对
+ *     "老库实测最大字符数 vs 目标类型字符上限"。
  *   - **o_modelPrompt.fileName / path 保持 TEXT（修复轮 1）**：现状库是 TEXT（initDB.ts:411-412），
  *     收窄成 varchar(255) 会让超长路径在 MySQL 报 `Data too long`；这两列无索引需求（见表内注释）。
  *
@@ -127,7 +134,12 @@ export default {
       t.pk(T);
       t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）→ 不能用 int
       T.string("taskClass");
-      T.string("relatedObjects");
+      // ⚠ 现状库声明的是 varchar(255)，但**实际最长 614 字符**（2 行超 255）——
+      //   sqlite 不强制 varchar 长度所以本机看不出问题，真 MySQL 严格模式直接
+      //   `Data too long for column`。判据：**不得把 SQLite 接受得了的数据在 MySQL 侧拒掉或截断**
+      //   → 必须 longtext。该列无 where/orderBy/索引，放宽无副作用。
+      //   机械证据：`tests/migration-column-fit.test.ts` 判据 B（fixture 实测 maxChars=614）。
+      t.text(T, "relatedObjects");
       T.string("model");
       t.text(T, "describe");
       T.string("state");
@@ -278,7 +290,10 @@ export default {
       t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("episodesId");
       T.string("key");
-      T.string("data");
+      // ⚠ 同 `o_tasks.relatedObjects`：现状库声明 varchar(255)，但实际最长 **103,624 字符**（5 行超 255）。
+      //   这一列存的是 `productionAgent` 的分镜表 JSON（真相就是这份文本，见 AGENTS.md §3）→
+      //   被 MySQL 拒掉/截断等于**静默夹断分镜数据**。机械证据：判据 B（fixture maxChars=103624）。
+      t.text(T, "data");
       t.ms(T, "createTime");
       t.ms(T, "updateTime");
       t.u64(T, "userId");
@@ -372,7 +387,11 @@ export default {
     // ---------- 结构化分镜 v2（建模正确的两张，主键同样是 BIGINT UNSIGNED） ----------
     await knex.schema.createTable("o_segment", (T) => {
       t.pk(T);
-      T.integer("projectId");
+      // ⚠ **不能是 `T.integer`**（修复轮 2）：它是 `o_project.id` 的外键，而那个 id 由代码用
+      //   `Date.now()` 显式给（`routes/project/addProject.ts:29`）→ 老库实测 1791385147125 > int 上界。
+      //   修复轮 1 漏了这张表（当时判据是手工清单）；现在由 `tests/migration-column-fit.test.ts`
+      //   的机械扫描守住（判据 A 同名整数列宽度 + 判据 B 值域 vs 目标类型）。
+      t.u64(T, "projectId");
       T.integer("scriptId");
       T.integer("segmentIndex");
       T.integer("sceneIndex");
@@ -396,7 +415,9 @@ export default {
 
     await knex.schema.createTable("o_shot", (T) => {
       t.pk(T);
-      T.integer("projectId");
+      // ⚠ 同 `o_segment.projectId`（修复轮 2）：`= o_project.id` = `Date.now()` 毫秒值，
+      //   老库实测 1791385147125 → mysql `int` 装不下（严格模式 Out of range，非严格静默夹断）。
+      t.u64(T, "projectId");
       T.integer("scriptId");
       T.integer("sceneIndex");
       t.text(T, "sceneTitle");

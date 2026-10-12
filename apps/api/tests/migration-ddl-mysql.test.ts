@@ -14,12 +14,50 @@
  *
  * ⚠ 它**不能**替代"真连一次 MySQL"（Task 8 才做那个）。它能证明的是"SQL 串对"，不是"服务端接受"。
  */
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import knexFactory from "knex";
 import { types } from "@/db/dialect";
 import schema from "@/db/migrations/001_schema";
 
 const mysql = knexFactory({ client: "mysql2", connection: { host: "127.0.0.1", user: "x", database: "miwo" } });
+
+/** 老库逐列实测值域（`scripts/gen-legacy-column-stats.cjs` 只读记录；老库本身不入库）。 */
+const LEGACY_STATS = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, "fixtures", "legacy-column-stats.json"), "utf8")
+) as { stats: Record<string, Record<string, { max: number | null }>> };
+
+/** MySQL 有符号 `int` 的上界（毫秒值一定超它）。 */
+const MYSQL_INT_MAX = 2147483647;
+
+/**
+ * **机械清单**（修复轮 2）：迁移真正建出来的表里，哪些列的**老库实测最大值**超过 mysql `int` 上界。
+ *
+ * 为什么必须机械：修复轮 1 用的是手写的 10 列外键清单 → `o_segment.projectId` / `o_shot.projectId`
+ * 不在清单里就永远不被检查（真 MySQL 上这两张表 191 行全写不进去，非严格模式还会静默夹断）。
+ * 现在清单从"老库实测值域"推出来，加表/加外键列时不需要人工维护。
+ */
+async function columnsWiderThanInt(): Promise<Array<[string, string]>> {
+  const created = new Set<string>();
+  const collector: any = {
+    client: mysql.client,
+    schema: {
+      createTable: (name: string) => { created.add(name); return Promise.resolve(); },
+      dropTableIfExists: () => Promise.resolve(),
+    },
+    raw: () => Promise.resolve(),
+  };
+  await (schema as any).up(collector);
+  const out: Array<[string, string]> = [];
+  for (const [table, cols] of Object.entries(LEGACY_STATS.stats)) {
+    if (!created.has(table)) continue; // 退役表（o_skillList / o_skillAttribution）不在迁移里
+    for (const [col, s] of Object.entries(cols)) {
+      if (s.max !== null && s.max > MYSQL_INT_MAX) out.push([table, col]);
+    }
+  }
+  return out.sort((a, b) => (a[0] + a[1] < b[0] + b[1] ? -1 : 1));
+}
 
 /**
  * 从一段 `create table ...` / `alter table ...` 文本里抠出**某个列的完整类型定义**（不含列名，
@@ -252,7 +290,7 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(ddl).toContain("`path` longtext");
   });
 
-  it("id / 外键列也是 Date.now()：o_project.id + o_videoTrack.id + 10 个外键列 → bigint unsigned", async () => {
+  it("id / 外键列也是 Date.now()：o_project.id + o_videoTrack.id + **机械扫出的全部超 int 列** → bigint unsigned", async () => {
     // 同一根因的第二组：`o_project.id` 与 `o_videoTrack.id` **由代码用 `Date.now()` 显式给**
     //   （routes/project/addProject.ts:29 `id: Date.now()`；utils/redraw.ts:711 `trackId = Date.now() + seq++`），
     //   所以它们**不是**"自增小整数"，而是毫秒值（实测 dev 库 `o_project.id` = 1791385147125 > int 上限）。
@@ -268,29 +306,34 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(colType(track, "id")).toBe("bigint unsigned");
     expect(track).toContain("`id` bigint unsigned not null auto_increment");
 
-    const FK_COLUMNS: Array<[string, string]> = [
-      ["o_tasks", "projectId"],
-      ["o_novel", "projectId"],
-      ["o_script", "projectId"],
-      ["o_assets", "projectId"],
-      ["o_storyboard", "projectId"],
-      ["o_storyboard", "trackId"],
-      ["o_agentWorkData", "projectId"],
-      ["o_video", "projectId"],
-      ["o_video", "videoTrackId"],
-      ["o_videoTrack", "projectId"],
-    ];
-    expect(FK_COLUMNS.length).toBe(10);
-    for (const [table, col] of FK_COLUMNS) {
+    // ⚠⚠ 修复轮 2：这里原来是**手写的 10 列外键清单**，而 `o_segment.projectId` / `o_shot.projectId`
+    //   不在清单里 → 漏了一整批（每张表 191 行都写不进真 MySQL）。手写清单是根因，所以换成**机械扫描**：
+    //   列清单从"老库实测值域"里筛（`tests/fixtures/legacy-column-stats.json`，由
+    //   `scripts/gen-legacy-column-stats.cjs` 只读记录），条件是"实测最大值 > mysql int 上界 2147483647"，
+    //   再与迁移真正建出来的表取交集。加新表/新外键列时**不需要**再维护这张清单。
+    //   同一套判据的完整版（含 varchar 超长、活库真实行复核）在 `tests/migration-column-fit.test.ts`。
+    const mechanicallyDerived = await columnsWiderThanInt();
+    // 27 列（老库实测）− `o_skillList` 的 2 列（退役表，不建）= 25 列
+    expect(mechanicallyDerived.length, "机械清单长度变了：fixture 或 DDL 解析失效了？").toBe(25);
+    for (const [table, col] of mechanicallyDerived) {
       const ddl = await ddlFor(table);
       const type = colType(ddl, col);
       expect(type, `${table}.${col} 必须 bigint unsigned`).toBe("bigint unsigned");
       expect(type, `${table}.${col} 不得退化成 int`).not.toMatch(/^int/);
+      expect(ddl, `${table}.${col}`).toContain("`" + col + "` bigint unsigned");
     }
-    // 反向：不许出现"表里还留着 int 型 projectId/trackId/videoTrackId"
-    for (const table of new Set(FK_COLUMNS.map(([t]) => t))) {
+    // 反向：机械清单里的列名在**任何**表里都不得再是 `int`（同名整数列宽度必须一致）。
+    // ⚠ 只对"该表这一列确实是整数族"的表判 —— `id` 这个名字在 `memories` 里是 varchar(191) 主键
+    //   （TEXT 主键 → ERROR 1170 的既有限制），拿它比 bigint 是**假红**。
+    const derivedNames = [...new Set(mechanicallyDerived.map(([, c]) => c))];
+    for (const table of new Set(mechanicallyDerived.map(([t]) => t))) {
       const ddl = await ddlFor(table);
-      expect(ddl, `${table} 不得再有 int 型 projectId/trackId/videoTrackId`).not.toMatch(/`(projectId|trackId|videoTrackId)` int\b/);
+      for (const col of derivedNames) {
+        if (!ddl.includes("`" + col + "`")) continue;
+        const type = colType(ddl, col);
+        if (!/^(tinyint|smallint|mediumint|int|integer|bigint)\b/.test(type)) continue;
+        expect(type, `${table}.${col} 不得是 int`).toBe("bigint unsigned");
+      }
     }
   });
 

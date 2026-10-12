@@ -72,6 +72,15 @@ pnpm.cmd dev
 - ⚠ 本机的 sqlite 回归网**证明不了**"全新 MySQL 库的结构对不对"：它建的是全新 sqlite 库，漏一列会两边**一致地错**。
   `apps/api/scripts/gen-schema-migration.cjs`（只读 dev 库、把"现状真有哪些列"打出来、不写任何文件）是防止手写迁移漏列的
   机械闸门；逐表核对口径与结论见 `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-3-report.md`。
+- ⚠ 上一行的闸门只守"**列在不在**"，守不住"**类型装不装得下**"（`int` 列装 `Date.now()` 毫秒值、
+  `varchar(255)` 装 10 万字符的 JSON —— 这两种在 sqlite 上都看不出来：严格模式直接 `Out of range` /
+  `Data too long`，非严格模式**静默夹断**（写坏数据））。这条由 `apps/api/tests/migration-column-fit.test.ts`
+  机械守：**老库逐列实测值域**（`apps/api/scripts/gen-legacy-column-stats.cjs` 只读记录到
+  `apps/api/tests/fixtures/legacy-column-stats.json`，含源库 sha256；老库快照不入库，所以 CI 上判据仍然非空转）
+  vs `001_schema` 编译出的 MySQL 类型上界 / 字符上限，判定复用生产函数 `outOfRangeValues` / `oversizeValues`。
+  **加列 / 改类型 / 换老库快照时必须让它绿**；另外同名整数列（`projectId` / `userId` …）在整个 schema 里
+  必须只有一种 mysql 类型 —— 否则"装同一批毫秒值"的列里必然有一张表装不下。理由与实据见
+  `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-6-report.md` 的「修复轮 1」。
 - 常用命令都在 **`apps/api` 下跑**（`tsx` 只装在 `@miwo/api` 的依赖里，在仓库裸跑会 `ERR_MODULE_NOT_FOUND`）：
   `pnpm.cmd run db:migrate` / `db:migrate:status` / `db:migrate:down`；`MIWO_DB_DRIVER=mysql` 时连 MySQL。
   ⚠ `--down` / `--redo` **会重建所有表、破坏数据**：先在一次性库上试（把 `MIWO_DATA_DIR` 指到 `%TEMP%` 下的空目录）。

@@ -300,26 +300,34 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
 
   it("超长值：sqlite 只登记（不阻断、不截断）；mysql 阻断（【Ruling 34/41 ②】）", async () => {
     const long = "x".repeat(300);
+    // ⚠ 修复轮 2：`o_agentWorkData.data` 已放宽为 longtext（老库实测最长 103,624 字符，
+    //   varchar(255) 会让真 MySQL 直接 `Data too long`）→ 它**不再**是有长度上限的列，
+    //   所以"超长值的判据与处置"改用**仍是 varchar(255)** 的 `key` 来验（判据强度不变），
+    //   并额外断言放宽后的 `data` 不再被判超长。
     const fixture = writeExport("oversize", [
       {
         name: "o_agentWorkData",
         columns: ["id", "projectId", "episodesId", "key", "data", "createTime", "updateTime"],
-        rows: [{ id: 1, projectId: 1791385147125, episodesId: 1, key: "productionAgent", data: long, createTime: 1, updateTime: 2 }],
+        rows: [{ id: 1, projectId: 1791385147125, episodesId: 1, key: long, data: long, createTime: 1, updateTime: 2 }],
       },
     ]);
     const dst = await migrated("target");
     const plans = await plansFromManifest(dst, fixture.manifest);
-    const found = oversizeValues(plans[0], [{ data: long }]);
+    const found = oversizeValues(plans[0], [{ key: long, data: long }]);
     expect(found).toHaveLength(1);
+    expect(found[0].column).toBe("key");
     expect(found[0].declaredLength).toBe(255);
     expect(found[0].maxChars).toBe(300);
+    // 修复轮 2 的反向断言：`data` 放宽到 longtext 后，连 103,624 字符都不再算超长
+    expect(oversizeValues(plans[0], [{ data: "x".repeat(103624) }])).toHaveLength(0);
 
     const res = await importExport({ dst, dir: fixture.dir, apply: true, log: () => {} });
     expect(res.applied).toBe(true);
     expect(res.oversize).toHaveLength(1);
     // sqlite 不强制 varchar 长度 → 不阻断、也不截断（真 MySQL 会 Data too long，见下）
     expect(res.blocking.filter((b) => b.kind === "oversize-value")).toHaveLength(0);
-    const row = (await dst("o_agentWorkData").where("id", 1).first()) as { data: string };
+    const row = (await dst("o_agentWorkData").where("id", 1).first()) as { key: string; data: string };
+    expect(row.key.length).toBe(300);
     expect(row.data.length).toBe(300);
     await dst.destroy();
 

@@ -1,0 +1,1604 @@
+{
+  "note": "老库（未入库的快照）逐列实测值域，由 apps/api/scripts/gen-legacy-column-stats.cjs 机械生成，请勿手工编辑。 重新记录：cd apps/api && node scripts/gen-legacy-column-stats.cjs --write",
+  "source": {
+    "path": "apps/api/data/db2.sqlite",
+    "sha256": "44716850b443f53524c1046afac4ecfbc6c21cc35c8da3a329781031b09c4ef2",
+    "bytes": 2998272,
+    "tables": 29,
+    "columns": 219,
+    "rows": 2408
+  },
+  "stats": {
+    "memories": {
+      "id": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 36
+      },
+      "isolationKey": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 31
+      },
+      "type": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 7
+      },
+      "role": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 21
+      },
+      "name": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 4
+      },
+      "content": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 10892
+      },
+      "embedding": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 8089
+      },
+      "relatedMessageIds": {
+        "declared": "TEXT",
+        "rows": 92,
+        "min": null,
+        "max": null,
+        "maxChars": 391
+      },
+      "summarized": {
+        "declared": "INTEGER",
+        "rows": 92,
+        "min": 0,
+        "max": 1,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 92,
+        "min": 1790519265887,
+        "max": 1791581662747,
+        "maxChars": null
+      }
+    },
+    "o_agentDeploy": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 19,
+        "min": 1,
+        "max": 19,
+        "maxChars": null
+      },
+      "model": {
+        "declared": "VARCHAR(255)",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": 11
+      },
+      "key": {
+        "declared": "VARCHAR(255)",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": 36
+      },
+      "modelName": {
+        "declared": "VARCHAR(255)",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": 18
+      },
+      "vendorId": {
+        "declared": "TEXT",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": 6
+      },
+      "desc": {
+        "declared": "VARCHAR(255)",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": 44
+      },
+      "name": {
+        "declared": "VARCHAR(255)",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": 12
+      },
+      "temperature": {
+        "declared": "INTEGER",
+        "rows": 19,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "maxOutputTokens": {
+        "declared": "INTEGER",
+        "rows": 19,
+        "min": 0,
+        "max": 0,
+        "maxChars": null
+      },
+      "disabled": {
+        "declared": "BOOLEAN",
+        "rows": 19,
+        "min": 0,
+        "max": 1,
+        "maxChars": null
+      },
+      "type": {
+        "declared": "VARCHAR(255)",
+        "rows": 19,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_agentWorkData": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1,
+        "max": 8,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "episodesId": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1,
+        "max": 8,
+        "maxChars": null
+      },
+      "key": {
+        "declared": "VARCHAR(255)",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 16
+      },
+      "data": {
+        "declared": "VARCHAR(255)",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 103624
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1791581109988,
+        "max": 1791581109988,
+        "maxChars": null
+      },
+      "updateTime": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1791581626788,
+        "max": 1791741159298,
+        "maxChars": null
+      }
+    },
+    "o_artStyle": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "name": {
+        "declared": "VARCHAR(255)",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "fileUrl": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "label": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "prompt": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_assets": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": 1,
+        "max": 108,
+        "maxChars": null
+      },
+      "name": {
+        "declared": "TEXT",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": 53
+      },
+      "prompt": {
+        "declared": "TEXT",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": 1115
+      },
+      "remark": {
+        "declared": "TEXT",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "type": {
+        "declared": "TEXT",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": 5
+      },
+      "describe": {
+        "declared": "TEXT",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": 68
+      },
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "imageId": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": 1,
+        "max": 58,
+        "maxChars": null
+      },
+      "assetsId": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": 83,
+        "max": 83,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "flowId": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "startTime": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": 1790518719476,
+        "max": 1791484689208,
+        "maxChars": null
+      },
+      "promptState": {
+        "declared": "VARCHAR(255)",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": 3
+      },
+      "audioBindState": {
+        "declared": "INTEGER",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "promptErrorReason": {
+        "declared": "TEXT",
+        "rows": 108,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_assets2Storyboard": {
+      "storyboardId": {
+        "declared": "INTEGER",
+        "rows": 520,
+        "min": 1,
+        "max": 116,
+        "maxChars": null
+      },
+      "assetId": {
+        "declared": "INTEGER",
+        "rows": 520,
+        "min": 1,
+        "max": 98,
+        "maxChars": null
+      }
+    },
+    "o_assetsRole2Audio": {
+      "assetsRoleId": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "assetsAudioId": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_event": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "name": {
+        "declared": "VARCHAR(255)",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "detail": {
+        "declared": "VARCHAR(255)",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_eventChapter": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "eventId": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "novelId": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_image": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 58,
+        "min": 1,
+        "max": 58,
+        "maxChars": null
+      },
+      "filePath": {
+        "declared": "TEXT",
+        "rows": 58,
+        "min": null,
+        "max": null,
+        "maxChars": 61
+      },
+      "type": {
+        "declared": "TEXT",
+        "rows": 58,
+        "min": null,
+        "max": null,
+        "maxChars": 5
+      },
+      "assetsId": {
+        "declared": "INTEGER",
+        "rows": 58,
+        "min": 1,
+        "max": 83,
+        "maxChars": null
+      },
+      "model": {
+        "declared": "TEXT",
+        "rows": 58,
+        "min": null,
+        "max": null,
+        "maxChars": 22
+      },
+      "resolution": {
+        "declared": "TEXT",
+        "rows": 58,
+        "min": null,
+        "max": null,
+        "maxChars": 2
+      },
+      "state": {
+        "declared": "TEXT",
+        "rows": 58,
+        "min": null,
+        "max": null,
+        "maxChars": 4
+      },
+      "errorReason": {
+        "declared": "TEXT",
+        "rows": 58,
+        "min": null,
+        "max": null,
+        "maxChars": 307
+      }
+    },
+    "o_imageFlow": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "flowData": {
+        "declared": "TEXT",
+        "rows": 1,
+        "min": null,
+        "max": null,
+        "maxChars": 1628
+      }
+    },
+    "o_modelPrompt": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "vendorId": {
+        "declared": "VARCHAR(255)",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "model": {
+        "declared": "VARCHAR(255)",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "fileName": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "path": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_novel": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "chapterIndex": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "reel": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "chapter": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "chapterData": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "eventState": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "event": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "errorReason": {
+        "declared": "TEXT",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 0,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_project": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "projectType": {
+        "declared": "VARCHAR(255)",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 6
+      },
+      "imageModel": {
+        "declared": "VARCHAR(255)",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 29
+      },
+      "imageQuality": {
+        "declared": "VARCHAR(255)",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 2
+      },
+      "videoModel": {
+        "declared": "VARCHAR(255)",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 37
+      },
+      "name": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 6
+      },
+      "intro": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 3
+      },
+      "type": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 3
+      },
+      "artStyle": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 5
+      },
+      "directorManual": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "mode": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 61
+      },
+      "videoRatio": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 4
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "userId": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "targetCountry": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 8
+      }
+    },
+    "o_prompt": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 4,
+        "min": 1,
+        "max": 4,
+        "maxChars": null
+      },
+      "name": {
+        "declared": "VARCHAR(255)",
+        "rows": 4,
+        "min": null,
+        "max": null,
+        "maxChars": 7
+      },
+      "type": {
+        "declared": "VARCHAR(255)",
+        "rows": 4,
+        "min": null,
+        "max": null,
+        "maxChars": 21
+      },
+      "data": {
+        "declared": "TEXT",
+        "rows": 4,
+        "min": null,
+        "max": null,
+        "maxChars": 20982
+      },
+      "useData": {
+        "declared": "TEXT",
+        "rows": 4,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      }
+    },
+    "o_script": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1,
+        "max": 8,
+        "maxChars": null
+      },
+      "name": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 32
+      },
+      "content": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 5879
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "extractState": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1790518689287,
+        "max": 1791580957494,
+        "maxChars": null
+      },
+      "errorReason": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "sourceVideo": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 62
+      },
+      "sortIndex": {
+        "declared": "INTEGER",
+        "rows": 8,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "coverPath": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 33
+      },
+      "brief": {
+        "declared": "TEXT",
+        "rows": 8,
+        "min": null,
+        "max": null,
+        "maxChars": 116
+      }
+    },
+    "o_scriptAssets": {
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1,
+        "max": 8,
+        "maxChars": null
+      },
+      "assetId": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1,
+        "max": 108,
+        "maxChars": null
+      }
+    },
+    "o_segment": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 215,
+        "max": 325,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 1791385147125,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 7,
+        "max": 8,
+        "maxChars": null
+      },
+      "segmentIndex": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 1,
+        "max": 31,
+        "maxChars": null
+      },
+      "sceneIndex": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 0,
+        "max": 9,
+        "maxChars": null
+      },
+      "sceneTitle": {
+        "declared": "TEXT",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": 20
+      },
+      "duration": {
+        "declared": "FLOAT",
+        "rows": 57,
+        "min": 4,
+        "max": 15,
+        "maxChars": null
+      },
+      "videoDesc": {
+        "declared": "TEXT",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": 600
+      },
+      "state": {
+        "declared": "TEXT",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": 3
+      },
+      "prompt": {
+        "declared": "TEXT",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": 717
+      },
+      "videoId": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "selectVideoId": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 1791581627506,
+        "max": 1791740897325,
+        "maxChars": null
+      },
+      "updateTime": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 1791581627506,
+        "max": 1791740897325,
+        "maxChars": null
+      },
+      "reason": {
+        "declared": "TEXT",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "videoDuration": {
+        "declared": "FLOAT",
+        "rows": 57,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "manual": {
+        "declared": "INTEGER",
+        "rows": 57,
+        "min": 0,
+        "max": 1,
+        "maxChars": null
+      }
+    },
+    "o_setting": {
+      "key": {
+        "declared": "TEXT",
+        "rows": 12,
+        "min": null,
+        "max": null,
+        "maxChars": 24
+      },
+      "value": {
+        "declared": "TEXT",
+        "rows": 12,
+        "min": null,
+        "max": null,
+        "maxChars": 47
+      }
+    },
+    "o_shot": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 598,
+        "max": 837,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 1791385147125,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 7,
+        "max": 8,
+        "maxChars": null
+      },
+      "sceneIndex": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 0,
+        "max": 9,
+        "maxChars": null
+      },
+      "sceneTitle": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 20
+      },
+      "segmentIndex": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 1,
+        "max": 31,
+        "maxChars": null
+      },
+      "segmentId": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 215,
+        "max": 325,
+        "maxChars": null
+      },
+      "shotIndex": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 1,
+        "max": 4,
+        "maxChars": null
+      },
+      "duration": {
+        "declared": "FLOAT",
+        "rows": 134,
+        "min": 2,
+        "max": 8,
+        "maxChars": null
+      },
+      "shotSize": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 18
+      },
+      "camera": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 15
+      },
+      "light": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 45
+      },
+      "action": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 107
+      },
+      "dialogue": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 87
+      },
+      "sfx": {
+        "declared": "TEXT",
+        "rows": 134,
+        "min": null,
+        "max": null,
+        "maxChars": 31
+      },
+      "revision": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 1791581627506,
+        "max": 1791740897325,
+        "maxChars": null
+      },
+      "updateTime": {
+        "declared": "INTEGER",
+        "rows": 134,
+        "min": 1791581627506,
+        "max": 1791740897325,
+        "maxChars": null
+      }
+    },
+    "o_shotAssets": {
+      "shotId": {
+        "declared": "INTEGER",
+        "rows": 926,
+        "min": 598,
+        "max": 837,
+        "maxChars": null
+      },
+      "assetId": {
+        "declared": "INTEGER",
+        "rows": 926,
+        "min": 74,
+        "max": 108,
+        "maxChars": null
+      }
+    },
+    "o_skillAttribution": {
+      "skillId": {
+        "declared": "TEXT",
+        "rows": 14,
+        "min": null,
+        "max": null,
+        "maxChars": 32
+      },
+      "attribution": {
+        "declared": "TEXT",
+        "rows": 14,
+        "min": null,
+        "max": null,
+        "maxChars": 29
+      }
+    },
+    "o_skillList": {
+      "id": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 32
+      },
+      "md5": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 32
+      },
+      "path": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 38
+      },
+      "name": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 28
+      },
+      "description": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 115
+      },
+      "embedding": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 8088
+      },
+      "type": {
+        "declared": "TEXT",
+        "rows": 21,
+        "min": null,
+        "max": null,
+        "maxChars": 10
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 21,
+        "min": 1774447310118,
+        "max": 1774452119499,
+        "maxChars": null
+      },
+      "updateTime": {
+        "declared": "INTEGER",
+        "rows": 21,
+        "min": 1774447310118,
+        "max": 1774452140873,
+        "maxChars": null
+      },
+      "state": {
+        "declared": "INTEGER",
+        "rows": 21,
+        "min": -1,
+        "max": 1,
+        "maxChars": null
+      }
+    },
+    "o_storyboard": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1,
+        "max": 116,
+        "maxChars": null
+      },
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1,
+        "max": 7,
+        "maxChars": null
+      },
+      "prompt": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 0
+      },
+      "filePath": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 63
+      },
+      "duration": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 2
+      },
+      "state": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 3
+      },
+      "trackId": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1790520170404,
+        "max": 1791392243171,
+        "maxChars": null
+      },
+      "reason": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "track": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 36
+      },
+      "videoDesc": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 917
+      },
+      "shouldGenerateImage": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 0,
+        "max": 1,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "flowId": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "index": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 0,
+        "max": 24,
+        "maxChars": null
+      },
+      "createTime": {
+        "declared": "INTEGER",
+        "rows": 116,
+        "min": 1790520170277,
+        "max": 1791392243006,
+        "maxChars": null
+      },
+      "sourceRange": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 77
+      },
+      "clipPath": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 40
+      },
+      "originDialogue": {
+        "declared": "TEXT",
+        "rows": 116,
+        "min": null,
+        "max": null,
+        "maxChars": 251
+      }
+    },
+    "o_tasks": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 61,
+        "min": 1,
+        "max": 61,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 61,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "taskClass": {
+        "declared": "VARCHAR(255)",
+        "rows": 61,
+        "min": null,
+        "max": null,
+        "maxChars": 7
+      },
+      "relatedObjects": {
+        "declared": "VARCHAR(255)",
+        "rows": 61,
+        "min": null,
+        "max": null,
+        "maxChars": 614
+      },
+      "model": {
+        "declared": "VARCHAR(255)",
+        "rows": 61,
+        "min": null,
+        "max": null,
+        "maxChars": 22
+      },
+      "describe": {
+        "declared": "TEXT",
+        "rows": 61,
+        "min": null,
+        "max": null,
+        "maxChars": 1128
+      },
+      "state": {
+        "declared": "VARCHAR(255)",
+        "rows": 61,
+        "min": null,
+        "max": null,
+        "maxChars": 4
+      },
+      "startTime": {
+        "declared": "INTEGER",
+        "rows": 61,
+        "min": 1790518919899,
+        "max": 1791582301019,
+        "maxChars": null
+      },
+      "reason": {
+        "declared": "TEXT",
+        "rows": 61,
+        "min": null,
+        "max": null,
+        "maxChars": 307
+      }
+    },
+    "o_user": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "name": {
+        "declared": "TEXT",
+        "rows": 1,
+        "min": null,
+        "max": null,
+        "maxChars": 5
+      },
+      "password": {
+        "declared": "TEXT",
+        "rows": 1,
+        "min": null,
+        "max": null,
+        "maxChars": 8
+      }
+    },
+    "o_vendorConfig": {
+      "id": {
+        "declared": "VARCHAR(255)",
+        "rows": 13,
+        "min": null,
+        "max": null,
+        "maxChars": 13
+      },
+      "inputValues": {
+        "declared": "TEXT",
+        "rows": 13,
+        "min": null,
+        "max": null,
+        "maxChars": 127
+      },
+      "models": {
+        "declared": "TEXT",
+        "rows": 13,
+        "min": null,
+        "max": null,
+        "maxChars": 77
+      },
+      "enable": {
+        "declared": "INTEGER",
+        "rows": 13,
+        "min": 0,
+        "max": 1,
+        "maxChars": null
+      }
+    },
+    "o_video": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      },
+      "filePath": {
+        "declared": "TEXT",
+        "rows": 1,
+        "min": null,
+        "max": null,
+        "maxChars": 61
+      },
+      "errorReason": {
+        "declared": "TEXT",
+        "rows": 1,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "time": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 1791582300907,
+        "max": 1791582300907,
+        "maxChars": null
+      },
+      "state": {
+        "declared": "TEXT",
+        "rows": 1,
+        "min": null,
+        "max": null,
+        "maxChars": 4
+      },
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 7,
+        "max": 7,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 1791385147125,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "videoTrackId": {
+        "declared": "INTEGER",
+        "rows": 1,
+        "min": 1,
+        "max": 1,
+        "maxChars": null
+      }
+    },
+    "o_videoTrack": {
+      "id": {
+        "declared": "INTEGER",
+        "rows": 110,
+        "min": 1790520170404,
+        "max": 1791392243171,
+        "maxChars": null
+      },
+      "videoId": {
+        "declared": "INTEGER",
+        "rows": 110,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "projectId": {
+        "declared": "INTEGER",
+        "rows": 110,
+        "min": 1790518568661,
+        "max": 1791385147125,
+        "maxChars": null
+      },
+      "scriptId": {
+        "declared": "INTEGER",
+        "rows": 110,
+        "min": 1,
+        "max": 7,
+        "maxChars": null
+      },
+      "state": {
+        "declared": "TEXT",
+        "rows": 110,
+        "min": null,
+        "max": null,
+        "maxChars": 3
+      },
+      "reason": {
+        "declared": "TEXT",
+        "rows": 110,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "prompt": {
+        "declared": "TEXT",
+        "rows": 110,
+        "min": null,
+        "max": null,
+        "maxChars": 1465
+      },
+      "selectVideoId": {
+        "declared": "INTEGER",
+        "rows": 110,
+        "min": null,
+        "max": null,
+        "maxChars": null
+      },
+      "duration": {
+        "declared": "INTEGER",
+        "rows": 110,
+        "min": 4,
+        "max": 15,
+        "maxChars": null
+      }
+    }
+  }
+}
