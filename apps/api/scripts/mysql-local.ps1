@@ -86,16 +86,92 @@ switch ($Action) {
     }
   }
   "stop" {
-    # Graceful shutdown first: mysqladmin shutdown (root has no password after --initialize-insecure).
+    # NEVER kill every mysqld on the machine.
+    # The whole reason this portable instance exists on port 3307 is that 3306 may already be
+    # taken by ANOTHER MySQL on this box (see the README table); a bare
+    # `Get-Process mysqld | Stop-Process -Force` would force-kill that unrelated instance and
+    # any user data it is serving. Identify OUR server instead:
+    #   - our port comes from $port (3307) below;
+    #   - our basedir comes from $ini, which we also pin by command line below.
+    # Order: graceful first (mysqladmin shutdown, root has no password after --initialize-insecure),
+    # then, if OUR pid is still alive, force only that pid.
+
+    $own = @()
+    try {
+      $own = @(Get-CimInstance Win32_Process -Filter "Name='mysqld.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and ($_.CommandLine -like "*$ini*") })
+    } catch {
+      $own = @()
+    }
+    if ($own.Count -eq 0) {
+      # Fall back to whoever listens on OUR port (needs no elevation and is PID-exact).
+      try {
+        $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+      } catch {
+        $conns = @()
+      }
+      foreach ($c in $conns) {
+        $own += [pscustomobject]@{ ProcessId = $c.OwningProcess; CommandLine = "" }
+      }
+    }
+
+    if ($own.Count -eq 0) {
+      Write-Host "not running: no mysqld for $ini and nothing listening on 127.0.0.1:$port"
+      Write-Host "  (a mysqld belonging to ANOTHER instance was NOT touched)"
+      break
+    }
+
+    $pids = @($own | ForEach-Object { $_.ProcessId } | Sort-Object -Unique)
+    Write-Host ("stopping our mysqld: pid " + ($pids -join ", ") + " (options file $ini, port $port)")
+
+    # Graceful shutdown first.
     $admin = Join-Path $mysql "bin\mysqladmin.exe"
     if (Test-Path $admin) { & $admin --protocol=TCP --host=127.0.0.1 --port=$port --user=root shutdown 2>$null }
-    Start-Sleep -Seconds 2
-    Get-Process mysqld -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Write-Host "stopped"
+
+    for ($i = 0; $i -lt 30; $i++) {
+      Start-Sleep -Milliseconds 500
+      $alive = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+      if ($alive.Count -eq 0) { break }
+    }
+    $alive = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    if ($alive.Count -gt 0) {
+      Write-Host ("graceful shutdown did not finish; forcing only our pid(s) " + ($alive -join ", "))
+      foreach ($p in $alive) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
+      Start-Sleep -Seconds 1
+    }
+
+    $left = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    $listening = Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+    if ($left.Count -eq 0 -and -not $listening) {
+      Write-Host ("stopped: pid " + ($pids -join ", ") + " is gone and 127.0.0.1:$port is free")
+    } else {
+      Write-Host ("WARNING: still alive (pid " + ($left -join ", ") + "), 127.0.0.1:$port listening=$listening")
+    }
   }
   "status" {
     $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
     Write-Host ("listening=" + $ok)
+    if ($ok) {
+      try {
+        $conn = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)[0]
+        if ($conn) {
+          $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+          Write-Host ("  pid=" + $conn.OwningProcess + " path=" + ($(if ($proc) { $proc.Path } else { "?" })))
+        }
+      } catch {
+        Write-Host "  (could not resolve the owning process; Get-NetTCPConnection unavailable?)"
+      }
+    }
+    # Report every other mysqld on this box too, so a bare "listening=True" is never mistaken
+    # for "the only MySQL here". We never touch these.
+    $others = @()
+    try {
+      $others = @(Get-CimInstance Win32_Process -Filter "Name='mysqld.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { -not ($_.CommandLine -and ($_.CommandLine -like "*$ini*")) })
+    } catch {
+      $others = @()
+    }
+    foreach ($o in $others) { Write-Host ("  other mysqld on this box (NOT ours, untouched): pid=" + $o.ProcessId) }
   }
   "createdb" {
     # root (no password after --initialize-insecure) creates the databases and the app account.

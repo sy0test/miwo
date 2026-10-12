@@ -125,9 +125,38 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       // ⚠ 这条用例的前提是 `o_artStyle` 是**刚建出来的空表**：MySQL 的 AUTO_INCREMENT 计数器
       //    不会因为 DELETE 归零，所以必须先让迁移把它重建一次（本文件的第 2 条用例刚做过往返），
       //    再用 `ALTER TABLE ... AUTO_INCREMENT = 1` 显式归零 —— 否则单行 insert 的 id 不是 1。
+      // ⚠⚠ 修复轮 1：**顺序必须是先 `del()` 再 `ALTER`**，反过来是错的。
+      //    实测（InnoDB）：**非空**表上 `ALTER TABLE ... AUTO_INCREMENT = 1` 会被钉到
+      //    `max(id)+1`（InnoDB 不允许把计数器降到已有行之下），此后 `del()` **不会**把计数器降回来
+      //    → 单行 insert 拿到 4 而不是 1，`single[0] !== 1`。
+      //    旧写法（ALTER 在前、del 在后）**今天通过只是因为上一条用例的 up/down 往返恰好把
+      //    `o_artStyle` 留成空表**（该表无种子，`002_platform_seed` 不碰它）——
+      //    即"结论依赖另一条用例的副作用"，属脆弱的假绿。先删后置零把这个前提去掉了：
+      //    无论进来时表里有多少行，`del()` 清空后计数器一定能降到 1。
+      // ⚠ 断言顺序也按同一口径排：**先证明表里有行、且计数器已被钉高**，再 del + 置零。
+      //    反过来写（先 del 再断言）的话，"进来时本来就是空表"与"del 真的清空了"看起来一模一样，
+      //    这条护栏会退化成空转 —— 那样即便哪天 `del()` 被删掉也不会红。
       await runMigrations(db);
-      await db.raw("ALTER TABLE o_artStyle AUTO_INCREMENT = 1");
+
+      // 1) 从**非空**状态起步：把计数器钉到 4（InnoDB 允许"不低于 max(id)+1"的值）。
+      await db("o_artStyle").insert([{ name: "seed1" }, { name: "seed2" }, { name: "seed3" }]);
+      const rowsBeforeDel = Number(((await db("o_artStyle").count({ n: "*" }).first()) as { n: number | string }).n);
+      expect(rowsBeforeDel, "起点必须是非空表，否则下面的 del() 是空转").toBeGreaterThan(0);
+      await db.raw("ALTER TABLE o_artStyle AUTO_INCREMENT = 4");
+      const pinnedAutoInc = Number(
+        (
+          (await db.raw(
+            "SELECT AUTO_INCREMENT AS a FROM information_schema.tables WHERE table_schema = database() AND table_name = 'o_artStyle'",
+          )) as any
+        )[0][0].a,
+      );
+      expect(pinnedAutoInc, "非空表上的 AUTO_INCREMENT 必须被钉在 max(id)+1 之上").toBeGreaterThanOrEqual(4);
+
+      // 2) 先清空，再把计数器显式归零 —— 只有这个顺序才能真的降到 1。
+      //    （反向顺序的实测红案见 task-7 报告「修复轮 1」：`expected 4 to be 1`。）
       await db("o_artStyle").del();
+      await db.raw("ALTER TABLE o_artStyle AUTO_INCREMENT = 1");
+
       const single = await db("o_artStyle").insert({ name: "a" });
       expect(single[0]).toBe(1);
       const multi = await db("o_artStyle").insert([{ name: "b" }, { name: "c" }]);

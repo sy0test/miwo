@@ -16,10 +16,29 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import knexFactory from "knex";
 import { types } from "@/db/dialect";
 import schema from "@/db/migrations/001_schema";
+
+/**
+ * `scripts/schema-limits.cjs` 是 **CJS**，这里用 `createRequire` 同步 require。
+ * ⚠ 不能用 `import ... from "@/..."` 或相对 ESM import：那是 `.cjs`，
+ *    而且它在 vitest 的模块图里必须与导出脚本运行时拿到的是**同一份实现**。
+ * ⚠ 基准取 `process.cwd()`：vitest 会把测试文件打包到临时目录，
+ *    `import.meta.url` 与 `__dirname` 都不再是指向 `apps/api` 的那一个；
+ *    而本套件的运行前提本来就是"在 apps/api 下跑"（见 vitest.config.ts 的 `@` 别名同理）。
+ */
+const nodeRequire = createRequire(process.cwd() + "/vitest-probe.js");
+const { deriveTargetLimits, MAX_LENGTH } = nodeRequire("./scripts/schema-limits.cjs") as {
+  deriveTargetLimits: (o: {
+    knexFactory: unknown;
+    migrationPath?: string;
+    schema?: { up: (k: unknown) => Promise<void> };
+  }) => Promise<Record<string, number | symbol>>;
+  MAX_LENGTH: symbol;
+};
 
 const mysql = knexFactory({ client: "mysql2", connection: { host: "127.0.0.1", user: "x", database: "miwo" } });
 
@@ -134,7 +153,37 @@ interface KeyRef {
   hasPrefix: boolean;
 }
 
-/** 从编译出来的 DDL 里**机械**抽出所有 key 规格（primary key / add index / add unique）引用的列。 */
+/**
+ * 从编译出来的 DDL 里**机械**抽出所有 key 规格引用的列。
+ *
+ * 实现方式是**按深度 0 的逗号把 `create table` 的表体切成片段**，再逐段判别：每个片段
+ * 要么是"表级约束"（`primary key (...)`），要么是"列定义"（`` `col` 类型 修饰... ``）。
+ * 不用正则直接扫整段表体：`primary key` 在**列定义内部**也出现（形状 2），
+ * 用正则回溯去区分这两种位置非常容易写出"把逗号一起吃掉再吐出一条假 ref"的坑
+ * （修复轮 1 实测踩过一次）。括号内的逗号（`varchar(191)` 不会，但 `decimal(8,2)` 会）
+ * 在括号深度里，不会被切开。
+ *
+ * ⚠ 覆盖面（修复轮 1 实测，**不是**估计值）——knex 3.3.0 实际产出的全部 3 种形状，
+ *   缺任何一种都会让本文件的核心断言在**真 MySQL 上仍然报 1170** 的情况下假绿：
+ *   1. **表级主键**：``,primary key (`id`)``（多列复合主键也是这个形状，
+ *      例：`o_assets2Storyboard` 的 `primary key (`storyboardId`, `assetId`)`）。
+ *   2. **列属性主键**：`` `id` bigint unsigned not null auto_increment primary key,``
+ *      —— **没有括号**。`t.pk(T)`（`bigIncrements`）与 `T.bigInteger("id").unsigned().primary()`
+ *      都编译成这样；27 张 create 里 **20 张**是它（只有 3 张走表级主键、4 张走复合主键）。
+ *      旧正则只认形状 1 → 实测 27 张 create 里 **只有 9 张**被抽到，
+ *      `o_artStyle` / `o_agentDeploy` / `o_prompt` / `o_modelPrompt` **一条 key ref 都没有**。
+ *   3. **alter 追加的索引**：``alter table `t` add index `n`(`c`)`` 与
+ *      ``alter table `t` add unique `n`(`a`, `b`)`` —— 注意 `add unique` 后面**没有 `index` 这个词**。
+ *      26 条 alter 里有 **2 条**是 `add unique`（`o_agentWorkData` 的
+ *      `o_agentworkdata_pid_epid_key_unique`、`o_segment` 的 `o_segment_scriptid_segmentindex_unique`），
+ *      旧正则要求 `add (?:unique )?index` → 这两条整体漏掉，于是 `o_agentWorkData` 的
+ *      `projectId` / `episodesId` / `key` **三列一次都没被检查过**（`key` 恰好是 varchar(255)，
+ *      所以当时是真绿；换成 text 就漏判）。
+ *
+ * 实测覆盖增量（修复轮 1，同一份 DDL，用**旧抽取函数**逐字跑出来的对照）：
+ *   旧 = **44** 条 ref / 23 张表 / 4 张表无 ref；新 = **67** 条 ref / 27 张表 / 0 张无 ref。
+ *   这 44 也是覆盖护栏 `toBeGreaterThan(60)` 的取值依据 —— 下限卡在旧(44)与新(67)之间。
+ */
 function keyRefsOf(stmts: string[]): KeyRef[] {
   const out: KeyRef[] = [];
   const push = (table: string, index: string, raw: string): void => {
@@ -145,11 +194,35 @@ function keyRefsOf(stmts: string[]): KeyRef[] {
   for (const s of stmts) {
     const create = /^create table `([^`]+)` \(([\s\S]*)\)(?: default character set [a-z0-9_]+)?$/.exec(s);
     if (create) {
-      const pk = /primary key \(([^)]*)\)/.exec(create[2]);
-      if (pk) for (const c of pk[1].split(",")) push(create[1], "primary key", c);
+      const [, table, body] = create;
+      const parts: string[] = [];
+      let depth = 0;
+      let start = 0;
+      for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+        else if (ch === "," && depth === 0) {
+          parts.push(body.slice(start, i));
+          start = i + 1;
+        }
+      }
+      parts.push(body.slice(start));
+      for (const raw of parts) {
+        const part = raw.trim();
+        // 形状 1：表级主键（含多列复合）
+        if (/^primary key\b/i.test(part)) {
+          for (const c of (part.match(/\(([^)]*)\)/)?.[1] ?? "").split(",")) push(table, "primary key", c);
+          continue;
+        }
+        // 形状 2：列属性主键（**没有括号**，且整段就该是"列名 + 类型 + 修饰"）
+        const col = /^`([^`]+)`\s+([\s\S]+)$/.exec(part);
+        if (col && /(?:^|\s)primary key(?:\s|$)/i.test(col[2])) push(table, "primary key (列属性)", col[1]);
+      }
       continue;
     }
-    const alter = /^alter table `([^`]+)` add (?:unique )?index `([^`]+)`\(([^)]*)\)$/.exec(s);
+    // 形状 3：alter 追加索引 / 唯一键（`add unique` 不带 `index` 一词）
+    const alter = /^alter table `([^`]+)` add (?:unique )?(?:index )?`([^`]+)`\(([^)]*)\)$/.exec(s);
     if (alter) for (const c of alter[3].split(",")) push(alter[1], alter[2], c);
   }
   return out;
@@ -276,30 +349,136 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     //    key specification without a key length`（errno 1170），**整个 001_schema 迁移失败**。
     //    上面的「memories.isolationKey 是 varchar」只钉住了**那一个列名**：同一个反例（同一条规则、
     //    同一个索引、相邻的那一列）完全逃逸。手写清单必然漏，所以这里改成**机械扫描**：
-    //    从编译出来的全部 DDL 里抽出每一条 key 规格（primary key / add index / add unique）的列，
-    //    再逐列抠类型 —— 加新索引时不需要维护任何清单。
+    //    从编译出来的全部 DDL 里抽出每一条 key 规格的列，再逐列抠类型 —— 加新索引时不需要维护任何清单。
+    //    ⚠ 修复轮 1：`keyRefsOf` 的抽取面当时**窄于它声称的范围**（只认表级 `primary key (` 与
+    //    `add (unique )?index`）→ 实测漏掉 20 张表的列属性主键与 2 条 `add unique`
+    //    （`o_agentWorkData` 的 `key` 列一次都没被检查过）。形状清单见 `keyRefsOf` 的注释。
     //    ⚠ 为什么静态断言也值得有：1170 是**服务端**的语义校验，SQL 串本身完全合法，
     //    所以"没连过真 MySQL"时它是唯一能提前发现的手段（真连的断言在
     //    `tests/mysql-integration.test.ts`，门控 MIWO_TEST_MYSQL=1）。
     const stmts = await allDdl();
     const bad = scanKeyedTextColumns(stmts);
-    // 覆盖护栏：正则失效时 bad=[] 与 keyRefs=[] 会同为空 → 假绿。键规格实测 >40 条。
-    expect(countKeyRefs(stmts)).toBeGreaterThan(30);
+    // 覆盖护栏：正则失效时 bad=[] 与 keyRefs=[] 会同为空 → 假绿。
+    // ⚠ 实测值（修复轮 1）：**67** 条 key ref / 27 张表全部至少 1 条。旧抽取面只有 44 条 / 23 张表。
+    //   60 这条下限正好卡在旧抽取面（44）与新抽取面（67）之间 —— 抽取面一旦退回旧形状，这里先红。
+    expect(countKeyRefs(stmts)).toBeGreaterThan(60);
     expect(bad).toEqual([]);
 
-    // 判别力自证（在**合成 DDL** 上跑同一个谓词）：把 type 换回 longtext 必须被判违规；
-    // 带 key 前缀长度（`type`(20)）的写法是 MySQL 允许的，不得误报。
+    // 判别力自证（在**合成 DDL** 上跑同一个谓词）。五条分别钉住 `keyRefsOf` 的每一种形状，
+    // 以及"同一形状的负例"——负例是必需的：只加正例时，"抽取面变宽后误报/漏报"两种退化都不会被发现。
+    // ① 表级主键 + text 列 → 违规（这是 Task 7 真连抓到的那个 1170 原型）
     expect(
       scanKeyedTextColumns([
         "create table `t` (`type` longtext not null, primary key (`type`)) default character set utf8mb4",
       ])
     ).toHaveLength(1);
+    // ② **text 列 + 列属性 `primary key`** → 违规。
+    //    ⚠ 注意负例要构造得准：这一条必须是"**text 列自己**带列属性 primary key"。
+    //    写成"`id` bigint ... primary key, `type` longtext"是**错的合成负例** —— 那种 DDL 里
+    //    `type` 压根不在任何 key 规格里（合法的），断言它红等于要求误报。（本修复轮踩过这个坑。）
+    expect(
+      scanKeyedTextColumns([
+        "create table `t` (`id` bigint unsigned not null auto_increment primary key, `type` longtext primary key) default character set utf8mb4",
+      ])
+    ).toHaveLength(1);
+    // ③ **text 列 + `add unique`（没有 `index` 一词）** → 违规
+    expect(
+      scanKeyedTextColumns([
+        "create table `t` (`id` bigint unsigned not null auto_increment primary key, `type` longtext not null) default character set utf8mb4",
+        "alter table `t` add unique `t_type_unique`(`type`)",
+      ])
+    ).toHaveLength(1);
+    // ④ 带 key 前缀长度（`type`(20)）是 MySQL 允许的写法，不得误报（三种形状里最容易被抽到的就是它）
     expect(
       scanKeyedTextColumns([
         "create table `t` (`id` bigint unsigned not null auto_increment primary key, `type` longtext not null) default character set utf8mb4",
         "alter table `t` add index `t_type_index`(`type`(20))",
       ])
     ).toHaveLength(0);
+    // ⑤ 复合索引里**只有前缀列是 text**（`add unique ... (`isolationKey`, `type`)`）→ 必须仍然抓到 `type`。
+    //    这就是 memories 的真实形状：前缀列是 varchar（合法），后面那一列才是违规列；
+    //    抽取面只抓"第一列"或只抓"带前缀长度的列"都会在这里假绿。
+    expect(
+      scanKeyedTextColumns([
+        "create table `t` (`isolationKey` varchar(191) not null, `type` longtext not null) default character set utf8mb4",
+        "alter table `t` add unique `t_isolationkey_type_unique`(`isolationKey`, `type`)",
+      ])
+    ).toHaveLength(1);
+  });
+
+  /**
+   * `scripts/export-sqlite.cjs` 的目标侧长度上限**只能来自 `001_schema`**（修复轮 1）。
+   *
+   * 修复的 bug：那张上限表原来是**手写常量**，`o_agentWorkData.data: 255` 在 `e76f46f` 把那列
+   * 改成 `t.text()`（mysql `longtext`）之后没被同步删掉 → 导出报告一直打印
+   * `⚠ o_agentWorkData.data：上限 255 字符（001_schema 收窄后的上限）… 5 行超长`
+   * 这条**陈旧告警**。手写常量与 schema 之间没有机械联系 ⇒ 必然漂移。
+   *
+   * 现在上限由 `scripts/schema-limits.cjs` 的 `deriveTargetLimits()` 从 schema 编译出的 DDL
+   * 机械推导（导出脚本只读它，不再有任何手写上限）。这条用例做两件事：
+   *   ① **漂移即红**：推导结果必须逐键等于下面的期望表；
+   *   ② **哨兵语义**：目标侧是 `longtext` 家族的列必须是 `MAX_LENGTH`（不是某个数字），
+   *      这样导出侧才知道"这列不做超长判定"，`o_agentWorkData.data` 才不会再被报成超长。
+   */
+  it("导出脚本的目标侧长度上限是从 001_schema 机械推导的（漂移即红，o_agentWorkData.data 必须无数字上限）", async () => {
+    const limits = await deriveTargetLimits({
+      // ⚠ 直接注入 vitest 已经 import 的那份 schema，而不是让 schema-limits.cjs 去 require
+      //    那个 `.ts`：vitest 的模块图里 `require` 一个 `.ts` 会走 vitest 自己的解析器，
+      //    而 `@/db/dialect` 这条别名在那条 CJS require 链上解析不了
+      //    （实测 `ERR_MODULE_NOT_FOUND: Cannot find package '@/db'`）。
+      //    生产路径（`node --import=tsx scripts/export-sqlite.cjs`）走的是 migrationPath，tsx 认得别名。
+      schema: schema as unknown as { up: (k: unknown) => Promise<void> },
+      knexFactory: knexFactory,
+    });
+    const narrow = (v: number | symbol | undefined): number | "MAX_LENGTH" | undefined =>
+      typeof v === "number" ? v : v === MAX_LENGTH ? "MAX_LENGTH" : undefined;
+    const got: Record<string, number | "MAX_LENGTH"> = {};
+    for (const [k, v] of Object.entries(limits)) {
+      const n = narrow(v);
+      if (n !== undefined) got[k] = n;
+    }
+
+    // ① 修复轮 1 的那条陈旧条目（本用例存在的直接理由）：
+    //    `o_agentWorkData.data` 已经是 `t.text()`（mysql `longtext`），**绝不能**再是 255。
+    expect(narrow(limits["o_agentWorkData.data"]), "o_agentWorkData.data 的目标侧上限").toBe("MAX_LENGTH");
+    // 同一根因的第二个形状：`o_tasks.relatedObjects` 是 `t.text()`，源库却声明着 varchar(255)；
+    // 目标侧无数字上限 ⇒ 导出脚本对它不再产生 oversize 记录（老版本会报"上限 255 / 2 行超长"）。
+    expect(narrow(limits["o_tasks.relatedObjects"]), "o_tasks.relatedObjects 的目标侧上限").toBe("MAX_LENGTH");
+    // 修复轮 1 把这两列的 varchar 收窄改回了 TEXT（长路径不得被截断）→ 必须也是 MAX_LENGTH
+    expect(narrow(limits["o_modelPrompt.fileName"])).toBe("MAX_LENGTH");
+    expect(narrow(limits["o_modelPrompt.path"])).toBe("MAX_LENGTH");
+
+    // ② 反向的机械判据：**有数字上限的列就是 schema 里那 25 个 `T.string(...)` / `t.vstr(...)`**，
+    //    一个不多、一个不少。这条比"抽查几个 key"强：任何"把 varchar 悄悄改成 text"（或反过来）
+    //    都会在这里红，而且报出**多/少了哪一列**。
+    const BOUNDED: Array<[string, number]> = [
+      ["memories.id", 191], ["memories.isolationKey", 191], ["memories.type", 191],
+      ["o_agentDeploy.desc", 255], ["o_agentDeploy.key", 255], ["o_agentDeploy.model", 255],
+      ["o_agentDeploy.modelName", 255], ["o_agentDeploy.name", 255], ["o_agentDeploy.type", 255],
+      ["o_agentWorkData.key", 255],
+      ["o_artStyle.name", 255],
+      ["o_assets.promptState", 255],
+      ["o_event.detail", 255], ["o_event.name", 255],
+      ["o_modelPrompt.model", 255], ["o_modelPrompt.vendorId", 255],
+      ["o_project.imageModel", 255], ["o_project.imageQuality", 255], ["o_project.projectType", 255],
+      ["o_project.videoModel", 255],
+      ["o_prompt.name", 255], ["o_prompt.type", 255],
+      ["o_setting.key", 191],
+      ["o_tasks.model", 255], ["o_tasks.state", 255], ["o_tasks.taskClass", 255],
+      ["o_vendorConfig.id", 191],
+    ];
+    expect(BOUNDED.length, "有数字上限的列数（机械推导的实测值）").toBe(27);
+    const expectedBounded: Record<string, number> = {};
+    for (const [k, v] of BOUNDED) expectedBounded[k] = v;
+    const gotBounded: Record<string, number> = {};
+    for (const [k, v] of Object.entries(got)) if (typeof v === "number") gotBounded[k] = v;
+    expect(gotBounded).toEqual(expectedBounded);
+    // 同一份清单再逐条钉一次，失败时报出具体列名（上面整表比对只给差集）
+    for (const [k, v] of BOUNDED) expect(got[k], `${k} 的目标侧上限`).toBe(v);
+
+    // ③ 覆盖护栏：推导整体失效（例如 schema 没注入成功、DDL 解析全空）时上面每一条都会
+    //    报 undefined，但那种"全 undefined"最好在这里一眼看出来：实测 109 条列。
+    expect(Object.keys(got).length).toBeGreaterThan(100);
   });
 
   it("o_agentWorkData 的唯一键出现在 DDL 里", async () => {

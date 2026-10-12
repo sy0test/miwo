@@ -86,17 +86,32 @@ pnpm.cmd dev
 
 **一次性安装（幂等，已存在就跳过）**
 
+> ⚠ 下面这段**必须**整段带着 `Test-Path` 守卫跑：解压出来的 `mysqld.exe` 已经在时**直接跳过**下载
+> （zip 有 281 MB）。没有守卫的版本每次都会**重下 281 MB**，而且 `Move-Item` 到**已存在**的
+> `$tools\mysql` 会直接失败（`Cannot create a file when that file already exists`）——
+> 即"幂等"标签是假的。守卫判据用 `mysqld.exe` 而不是 `$tools\mysql` 目录本身：
+> 上次失败留下的空目录/半解压目录不该被当成"装好了"。
+
 ```powershell
 $ProgressPreference = 'SilentlyContinue'
 $tools = "D:\sy_workspace\.tools"
 $zip   = "$tools\mysql-8.4.11-winx64.zip"
 New-Item -ItemType Directory -Force -Path $tools | Out-Null
-Invoke-WebRequest -Uri "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip" -OutFile $zip -TimeoutSec 1800
-Expand-Archive -LiteralPath $zip -DestinationPath "$tools\mysql-unzip" -Force
-Move-Item "$tools\mysql-unzip\mysql-8.4.11-winx64" "$tools\mysql"
-Remove-Item -Recurse -Force "$tools\mysql-unzip"
+if (-not (Test-Path "$tools\mysql\bin\mysqld.exe")) {
+  Invoke-WebRequest -Uri "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip" -OutFile $zip -TimeoutSec 1800
+  Expand-Archive -LiteralPath $zip -DestinationPath "$tools\mysql-unzip" -Force
+  Move-Item "$tools\mysql-unzip\mysql-8.4.11-winx64" "$tools\mysql"
+  Remove-Item -Recurse -Force "$tools\mysql-unzip"
+} else {
+  Write-Host "already installed: $tools\mysql\bin\mysqld.exe"
+}
 & "$tools\mysql\bin\mysqld.exe" --version
 ```
+
+⚠ `my.ini` **不在**上面这段里，必须**另行落盘**：`-Action init`（`--initialize-insecure`）会
+`--defaults-file="$ini"` 读它，而 `mysql-local.ps1` 在文件不存在时**直接 throw**
+（`options file not found: ...\my.ini`）。顺序是：先照下一节把 `D:\sy_workspace\.tools\my.ini` 写出来
+（**纯 ASCII**，内容见下），再跑 `-Action init`。
 
 **`D:\sy_workspace\.tools\my.ini`**（**纯 ASCII**；`mysql-local.ps1` 假定它已存在）
 
