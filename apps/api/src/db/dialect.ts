@@ -1,0 +1,92 @@
+/**
+ * 方言判定与 MySQL 侧的类型工具（spec §5.1 / §5.3）。
+ *
+ * 为什么需要这一层：迁移代码要在 **sqlite（本机与回归网）** 与 **mysql（目标）** 两个方言下
+ * 逐字跑同一份 up/down。两边的差异集中在四处：
+ *   1. 26 张表的主键：sqlite 的 `t.increments()` 已同时表达"自增 + 主键"，
+ *      而 mysql 必须是 `bigint unsigned auto_increment`（spec §5.3 要求 BIGINT UNSIGNED）；
+ *      `t.bigIncrements()` 恰好两边都对 —— 实测 sqlite 生成
+ *      `integer not null primary key autoincrement`，mysql 生成
+ *      `bigint unsigned not null auto_increment primary key`（见 Task 3 的静态断言）。
+ *   2. 文本主键 / 被索引的文本列：sqlite 用 TEXT 可以作主键，**MySQL 会报 ERROR 1170**
+ *      （BLOB/TEXT column used in key specification without a key length）→ 必须 varchar。
+ *   3. 普通大文本：mysql 的 TEXT 只有 64 KB（`o_prompt.data` 单行就有 20982 字符，
+ *      `o_project.intro` / `o_script.content` 都可能超），用 LONGTEXT。
+ *   4. 布尔：两个方言都不能直接吃 JS boolean 作 DDL 默认值，统一用 0/1 的 tinyint。
+ *
+ * ⚠ `useNullAsDefault` **只对 sqlite 有效**（sqlite 的 insert 缺列时它才是最省事的默认值策略，
+ *    上游行为如此）；若把它传给 mysql 客户端，knex 会在插件参数校验时报错。见 src/db/connect.ts。
+ */
+import type { Knex } from "knex";
+
+export type Dialect = "sqlite" | "mysql";
+
+/** 从 knex 实例或 `knex.client` 判定方言。两类取值都可能：`sqlite3` / `better-sqlite3` / `mysql2` / `mysql`。 */
+export function sqldialect(knexOrClient: unknown): Dialect {
+  const anyObj = knexOrClient as any;
+  let raw: unknown = anyObj?.client?.dialect ?? anyObj?.dialect;
+  if (!raw) {
+    const client = anyObj?.client;
+    raw = typeof client === "string" ? client : client?.config?.client;
+  }
+  if (!raw && anyObj?.config?.client) raw = anyObj.config.client;
+  const s = String(raw ?? "").toLowerCase();
+  if (s.includes("sqlite")) return "sqlite";
+  if (s.includes("mysql") || s.includes("maria")) return "mysql";
+  throw new Error(`[db] 无法判定方言，client=${JSON.stringify(raw)}。本项目的迁移只支持 sqlite 与 mysql（spec §5.1）`);
+}
+
+export interface MysqlTypes {
+  /** 26 张表的主键。sqlite 与 mysql 都生成"自增 + 主键"，但类型是 integer vs bigint unsigned。 */
+  pk(t: Knex.CreateTableBuilder, name?: string): void;
+  /**
+   * 会被索引或作主键的文本列 → MySQL `varchar(len)`。
+   * `o_skillList.id` / `o_skillAttribution.{skillId,attribution}` / `memories.id` / `o_setting.key`
+   * 都必须走它（TEXT 主键在 MySQL 报 ERROR 1170）。
+   */
+  vstr(t: Knex.CreateTableBuilder, name: string, len?: number): Knex.ColumnBuilder;
+  /** 普通大文本 → MySQL `longtext`（TEXT 的 64 KB 上限会被 o_prompt.data 之类直接顶穿）。 */
+  text(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  /** 32 位整数，列名与现状一致（projectId / scriptId / assetsId / …）。 */
+  u32(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  /** 64 位无符号整数（`userId` 这类将来指向 `o_user.id` 的列，避免 §5.3 的窄类型隐患）。 */
+  u64(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  floatCol(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  boolCol(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  /** 全库统一毫秒时间戳（现状如此，spec §5.3「时区」一行明确保持不变）。 */
+  nowMs(): number;
+}
+
+export function types(knexOrClient: unknown): MysqlTypes {
+  const d = sqldialect(knexOrClient);
+  const isMysql = d === "mysql";
+  return {
+    pk(t, name = "id") {
+      // 两边都用 bigIncrements：sqlite → integer primary key autoincrement；
+      // mysql → bigint unsigned not null auto_increment primary key。
+      t.bigIncrements(name);
+    },
+    vstr(t, name, len = 191) {
+      // 191 是 utf8mb4 下 767 字节索引前缀限制的历史安全值；本项目的键都很短。
+      return t.string(name, len);
+    },
+    text(t, name) {
+      return isMysql ? t.text(name, "longtext") : t.text(name);
+    },
+    u32(t, name) {
+      return t.integer(name);
+    },
+    u64(t, name) {
+      return isMysql ? t.bigInteger(name).unsigned() : t.integer(name);
+    },
+    floatCol(t, name) {
+      return t.float(name);
+    },
+    boolCol(t, name) {
+      return t.tinyint(name);
+    },
+    nowMs() {
+      return Date.now();
+    },
+  };
+}

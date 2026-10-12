@@ -2,38 +2,28 @@ import { readFile, writeFile } from "fs/promises";
 import getPath from "@/utils/getPath";
 import fs from "fs";
 import path from "path";
-import knex from "knex";
 import initDB from "@/lib/initDB";
-// import fixDB from "@/lib/fixDB";
 import type { DB } from "@/types/database";
 import crypto from "crypto";
 import fixDB from "@/lib/fixDB";
 import { config } from "@/config";
+import { createKnex } from "@/db/connect";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
 
-const dbPath = getPath("db2.sqlite");
-console.log("数据库目录:", dbPath);
-const dbDir = path.dirname(dbPath);
-
-// 确保数据库目录存在
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+// SQLite 需要文件先存在；MySQL 不需要任何本地文件准备。
+if (config.db.driver === "sqlite") {
+  const dbPath = config.db.file;
+  console.log("数据库文件:", dbPath);
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+  if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, "");
 }
 
-// 创建空数据库文件
-if (!fs.existsSync(dbPath)) {
-  fs.writeFileSync(dbPath, "");
-}
-
-const db = knex({
-  client: "better-sqlite3",
-  connection: {
-    filename: dbPath,
-  },
-  useNullAsDefault: true,
-});
+// 连接装配统一走 src/db/connect.ts（spec §5.1）：client 由 config.db.driver 决定。
+// `useNullAsDefault` 只在 sqlite 分支加，见 connect.ts。
+const db = createKnex();
 
 /**
  * 类型生成的完成信号（Task 10 Step 0d）。
