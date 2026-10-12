@@ -85,6 +85,80 @@ describe("001_schema 在 sqlite 下真跑", () => {
     await db.destroy();
   });
 
+  it("毫秒时间戳列在 sqlite 下原样存取（12 张表 / 15 列；只在真 MySQL 靠 bigint 兜住）", async () => {
+    // 修复轮 1：这些列原来被种成 `T.integer` → mysql `int`，装不下 `Date.now()` 的毫秒值
+    // （int 上限 2147483647；种子/现状库里是 1774447310118 这种）。
+    // sqlite 侧的 INTEGER 本来就是 64 位，**看不见问题** —— 所以这条用例的价值不是"抓 sqlite 的错"，
+    // 而是把"列清单 + 毫秒值原样读回 number（不被降精度/不被断言成 string）"钉住，
+    // 免得下一次有人把它改回 int 时只在真 MySQL 才炸。
+    const MS_COLUMNS: Array<[string, string]> = [
+      ["o_project", "createTime"],
+      ["o_tasks", "startTime"],
+      ["o_novel", "createTime"],
+      ["o_event", "createTime"],
+      ["o_script", "createTime"],
+      ["o_assets", "startTime"],
+      ["o_storyboard", "createTime"],
+      ["o_agentWorkData", "createTime"],
+      ["o_agentWorkData", "updateTime"],
+      ["o_video", "time"],
+      ["o_segment", "createTime"],
+      ["o_segment", "updateTime"],
+      ["o_shot", "createTime"],
+      ["o_shot", "updateTime"],
+      ["memories", "createTime"],
+    ];
+    expect(MS_COLUMNS.length).toBe(15);
+    expect(new Set(MS_COLUMNS.map(([t]) => t)).size).toBe(12);
+    const db = freshDb("mscols");
+    await db.migrate.latest({ migrationSource: makeMigrationSource() });
+    const ms = 1791582300907; // 实测 dev 库里的量级（> int 上限）
+    let n = 0;
+    for (const [table, col] of MS_COLUMNS) {
+      // ⚠ 两张表的主键**不是**自增：o_project.id 由代码给 Date.now()、memories.id 是 varchar(191)。
+      //    其余 10 张表都是自增主键，只填时间列即可。
+      const extra =
+        table === "o_project" ? { id: 1791385000000 + n++ } :
+        table === "memories" ? { id: "ms-" + n++, isolationKey: "k", type: "message", content: "c" } : {};
+      const [id] = await db(table).insert({ [col]: ms, ...extra } as any);
+      const row: any = extra.id
+        ? await db(table).where("id", (extra as any).id).first()
+        : await db(table).where("id", id).first();
+      expect(row[col], `${table}.${col}`).toBe(ms);
+      expect(typeof row[col], `${table}.${col} 必须是 number`).toBe("number");
+    }
+    // 顺带钉住 sqlite 侧的列声明类型（`t.ms()` → `bigint`；见 dialect.ts 的 ms()）
+    const info: any[] = await db.raw("PRAGMA table_info(o_shot)");
+    const createTime = info.find((c) => c.name === "createTime");
+    expect(String(createTime.type).toLowerCase()).toBe("bigint");
+    await db.destroy();
+  });
+
+  it("Date.now() 型 id 在 sqlite 下也能带值插入（o_project.id / o_videoTrack.id + 外键列）", async () => {
+    // 修复轮 1 的第二组：这两个 id 的取值不是自增小整数，而是 `Date.now()`（见 001_schema.ts 顶部注释）。
+    // sqlite 侧 `integer primary key` 本来就允许显式给值；这条把"显式给毫秒 id + 外键跟着写"钉住，
+    // 免得下次有人为了"统一自增"把显式 id 去掉（那是 Phase 1b 的事，且会改语义）。
+    const db = freshDb("msid");
+    await db.migrate.latest({ migrationSource: makeMigrationSource() });
+    const pid = 1791385147125;
+    const tid = 1791392243171;
+    await db("o_project").insert({ id: pid, createTime: pid });
+    await db("o_tasks").insert({ projectId: pid, startTime: pid });
+    await db("o_script").insert({ projectId: pid });
+    await db("o_assets").insert({ projectId: pid, startTime: pid });
+    await db("o_storyboard").insert({ projectId: pid, trackId: tid, createTime: pid });
+    await db("o_videoTrack").insert({ id: tid, projectId: pid, duration: 5 });
+    await db("o_video").insert({ projectId: pid, videoTrackId: tid, time: pid });
+    const joined = await db("o_video")
+      .join("o_project", "o_project.id", "o_video.projectId")
+      .join("o_videoTrack", "o_videoTrack.id", "o_video.videoTrackId")
+      .select("o_video.time as time", "o_project.id as pid", "o_videoTrack.id as tid")
+      .first();
+    expect(joined).toMatchObject({ time: pid, pid, tid });
+    expect((await db("o_tasks").first()).projectId).toBe(pid);
+    await db.destroy();
+  });
+
   it("⚠ 语义差异记录：批量 insert 的返回值在 mysql 是首行 id、sqlite 是末行 rowid", async () => {
     // 这条**不是**要修行为，而是把 spec §5.3「35 处 insert 语义复核」的差异钉成可执行的文档。
     // 现状代码里 `const [id] = await db(x).insert([...])` 多为单行插入 → 两边一致；

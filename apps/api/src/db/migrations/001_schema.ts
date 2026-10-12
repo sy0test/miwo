@@ -17,6 +17,19 @@
  *   - o_agentWorkData 补唯一键 (projectId, episodesId, key)（§5.3）
  *   - o_project.directorManual / o_modelPrompt.{fileName,path} / o_agentDeploy.type 是现状库里
  *     由 fixDB 补出来的列，**必须进基线**（否则全新 MySQL 库少列 → 启动期 unknown column）
+ *   - **15 个毫秒时间戳列走 `t.ms()`（mysql `bigint unsigned`），不是 `integer`**（修复轮 1）：
+ *     现状全库时间戳是 `Date.now()` 的毫秒值（实测 1774447310118 / 1791741159298 这类），
+ *     MySQL 的 `int` 上限 2147483647 会在写入时直接报越界；sqlite 的 INTEGER 是 64 位，
+ *     所以这个缺陷**只在真 MySQL 暴露**。清单见 `tests/migration-ddl-mysql.test.ts` 的
+ *     「毫秒时间戳列」用例（12 张表 / 15 列）与本节各表的 `t.ms(...)` 调用点。
+ *   - **`o_project.id` / `o_videoTrack.id` 及其 10 个外键列走 `t.u64()`，不是 `integer`**（修复轮 1）：
+ *     这两个 id 由代码用 `Date.now()` 显式给（`routes/project/addProject.ts:29`、`utils/redraw.ts:711`），
+ *     **本身就是毫秒值**；装它们的 `projectId` / `trackId` / `videoTrackId` 因此也必须 64 位。
+ *     同一根因、同一证据（实测 dev 库 `o_project.id` = 1791385147125），清单见
+ *     `tests/migration-ddl-mysql.test.ts` 的「id / 外键列也是 Date.now()」用例。
+ *     去掉那些显式 `Date.now()` 属 Phase 1b 的 35 处 insert 语义复核，本阶段**不动调用点**。
+ *   - **o_modelPrompt.fileName / path 保持 TEXT（修复轮 1）**：现状库是 TEXT（initDB.ts:411-412），
+ *     收窄成 varchar(255) 会让超长路径在 MySQL 报 `Data too long`；这两列无索引需求（见表内注释）。
  *
  * ⚠ 迁移纪律（见根 README.md 的「迁移纪律」）：schema 迁移**只允许**用 schema builder
  *   （`knex.schema.createTable` / `dropTableIfExists` / `alterTable`），不得出现 `knex.raw` 或查询调用 ——
@@ -41,7 +54,12 @@ export default {
     });
 
     await knex.schema.createTable("o_project", (T) => {
-      t.pk(T);
+      // ⚠ **不能**用 `t.pk(T)`：现状 `id` 由代码显式给 `Date.now()`（`routes/project/addProject.ts:29`），
+      //    所以它必须能装毫秒值 → `bigint unsigned`（spec §5.3 的目标类型正好就是它）。
+      //    自增只是"没给值时"的兜底（现状同理：sqlite 侧 `integer primary key` 也允许显式给值）。
+      //    ⚠ 去掉 `Date.now()` 这个显式 id 属 Phase 1b 的 35 处 insert 语义复核，本阶段**不动调用点**。
+      //    断言：`tests/migration-ddl-mysql.test.ts` 的「id / 外键列也是 Date.now()」用例。
+      T.bigInteger("id").unsigned().primary();
       T.string("projectType");
       T.string("imageModel");
       T.string("imageQuality");
@@ -54,7 +72,7 @@ export default {
       t.text(T, "directorManual");
       t.text(T, "mode");
       t.text(T, "videoRatio");
-      T.integer("createTime");
+      t.ms(T, "createTime");
       t.u64(T, "userId");              // 已有列（initDB.ts:47），保持
       t.text(T, "targetCountry");
       T.index(["userId"], "o_project_userid_index");
@@ -90,13 +108,13 @@ export default {
 
     await knex.schema.createTable("o_tasks", (T) => {
       t.pk(T);
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）→ 不能用 int
       T.string("taskClass");
       T.string("relatedObjects");
       T.string("model");
       t.text(T, "describe");
       T.string("state");
-      T.integer("startTime");
+      t.ms(T, "startTime");
       t.text(T, "reason");
       t.u64(T, "userId");              // 新增（§6.2）
       T.index(["userId"], "o_tasks_userid_index");
@@ -115,8 +133,15 @@ export default {
       t.pk(T);
       T.string("vendorId");
       T.string("model");
-      T.string("fileName");            // fixDB 补过
-      T.string("path");                // fixDB 补过
+      // ⚠ 这两列是**长文本路径**，不能收窄成 varchar(255)：
+      //   initDB.ts:411-412 建表时用的是 `table.text(...)`（现状库 PRAGMA 也确认是 TEXT），
+      //   而 fixDB.ts:113-114 的 addColumn 用的是 `string` —— 谁先跑到就是谁的类型（本机现状是 TEXT）。
+      //   收窄成 varchar(255) 会让超过 255 字符的路径在 MySQL 严格模式下直接
+      //   `Data too long for column`（sqlite 侧完全看不出问题）→ 属"保留现有功能"原则下的回归。
+      //   **无索引需求**：这两列没有任何 where/orderBy/索引（全仓唯一读写点
+      //   `routes/setting/modelMap/bindingPrompt.ts` 只按 model+vendorId 查），所以可以安全用 TEXT。
+      t.text(T, "fileName");           // fixDB 补过；现状库为 TEXT
+      t.text(T, "path");               // fixDB 补过；现状库为 TEXT
     });
 
     // ---------- 小说 / 事件 ----------
@@ -126,11 +151,11 @@ export default {
       t.text(T, "reel");
       t.text(T, "chapter");
       t.text(T, "chapterData");
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("eventState");
       t.text(T, "event");
       t.text(T, "errorReason");
-      T.integer("createTime");
+      t.ms(T, "createTime");
       t.u64(T, "userId");
       T.index(["userId"], "o_novel_userid_index");
     });
@@ -139,7 +164,7 @@ export default {
       t.pk(T);
       T.string("name");
       T.string("detail");
-      T.integer("createTime");
+      t.ms(T, "createTime");
       // ⚠ 现状这张表**没有任何归属列**（spec 附录 A）。补 userId 后回填要经
       //    o_eventChapter → o_novel → o_project（§6.2）；回填归 Phase 1b。
       t.u64(T, "userId");
@@ -159,9 +184,9 @@ export default {
       t.pk(T);
       t.text(T, "name");
       t.text(T, "content");
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("extractState");
-      T.integer("createTime");
+      t.ms(T, "createTime");
       t.text(T, "errorReason");
       t.text(T, "sourceVideo");
       T.integer("sortIndex");
@@ -181,9 +206,9 @@ export default {
       T.integer("scriptId");
       T.integer("imageId");
       T.integer("assetsId");
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("flowId");
-      T.integer("startTime");
+      t.ms(T, "startTime");
       T.string("promptState");
       T.integer("audioBindState");
       t.text(T, "promptErrorReason");
@@ -212,15 +237,18 @@ export default {
       t.text(T, "filePath");
       t.text(T, "duration");
       t.text(T, "state");
-      T.integer("trackId");
+      // ⚠ trackId 装的是轨道 id：v1 下是 `o_videoTrack.id`（`utils/redraw.ts:711` 用
+      //    `Date.now() + seq` 显式给 → **毫秒值**），v2 下是 `o_segment.id`（自增 bigint）。
+      //    两种取值都超 int → 必须 u64。
+      t.u64(T, "trackId");
       t.text(T, "reason");
       t.text(T, "track");
       t.text(T, "videoDesc");
       T.integer("shouldGenerateImage");
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("flowId");
       T.integer("index");
-      T.integer("createTime");
+      t.ms(T, "createTime");
       t.text(T, "sourceRange");
       t.text(T, "clipPath");
       t.text(T, "originDialogue");
@@ -230,12 +258,12 @@ export default {
 
     await knex.schema.createTable("o_agentWorkData", (T) => {
       t.pk(T);
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("episodesId");
       T.string("key");
       T.string("data");
-      T.integer("createTime");
-      T.integer("updateTime");
+      t.ms(T, "createTime");
+      t.ms(T, "updateTime");
       t.u64(T, "userId");
       T.index(["userId"], "o_agentworkdata_userid_index");
       // spec §5.3：补唯一约束（saveFlowData.ts:31 的注释已指出缺唯一键）
@@ -247,25 +275,29 @@ export default {
       t.pk(T);
       t.text(T, "filePath");
       t.text(T, "errorReason");
-      T.integer("time");
+      t.ms(T, "time");                 // 写入端是 `time: Date.now()`（generateVideo.ts:94 / batchGenerateVideo.ts:96）
       t.text(T, "state");
       T.integer("scriptId");
-      T.integer("projectId");
-      T.integer("videoTrackId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
+      t.u64(T, "videoTrackId");        // = o_videoTrack.id（Date.now() 毫秒值）
       t.u64(T, "userId");
       T.index(["userId"], "o_video_userid_index");
     });
 
     await knex.schema.createTable("o_videoTrack", (T) => {
+      // ⚠ 这里的 `id` 虽然是自增主键，但**现状代码会显式给它 `Date.now()`**
+      //    （`utils/redraw.ts:711` 的 `trackId = Date.now() + seq++` → `insert({ id: trackId, ... })`）→
+      //    `t.pk(T)` 编译出的 mysql `bigint unsigned` 正好装得下；改成 int 会直接炸。
+      //    去掉那个显式 id 属 Phase 1b（本阶段不动调用点）。
       t.pk(T);
       T.integer("videoId");
-      T.integer("projectId");
+      t.u64(T, "projectId");           // = o_project.id（Date.now() 毫秒值）
       T.integer("scriptId");
       t.text(T, "state");
       t.text(T, "reason");
       t.text(T, "prompt");
       T.integer("selectVideoId");
-      T.integer("duration");
+      T.integer("duration");           // 秒数（实测 4..15），不是毫秒 → 保持 int
       t.u64(T, "userId");
       T.index(["userId"], "o_videotrack_userid_index");
     });
@@ -334,8 +366,8 @@ export default {
       t.text(T, "prompt");
       T.integer("videoId");
       T.integer("selectVideoId");
-      T.integer("createTime");
-      T.integer("updateTime");
+      t.ms(T, "createTime");
+      t.ms(T, "updateTime");
       t.text(T, "reason");
       T.float("videoDuration");
       T.integer("manual").notNullable().defaultTo(0);
@@ -362,8 +394,8 @@ export default {
       t.text(T, "dialogue");
       t.text(T, "sfx");
       T.integer("revision");
-      T.integer("createTime");
-      T.integer("updateTime");
+      t.ms(T, "createTime");
+      t.ms(T, "updateTime");
       t.u64(T, "userId");
       T.index(["scriptId", "segmentIndex", "shotIndex"], "o_shot_script_seg_shot_index");
       T.index(["userId"], "o_shot_userid_index");
@@ -384,7 +416,7 @@ export default {
       t.text(T, "embedding");
       t.text(T, "relatedMessageIds");
       T.integer("summarized").defaultTo(0);
-      T.integer("createTime").notNullable();
+      t.ms(T, "createTime").notNullable();
       t.u64(T, "userId");
       T.index(["isolationKey", "summarized"], "memories_isolationkey_summarized_index");
       T.index(["isolationKey", "type"], "memories_isolationkey_type_index");

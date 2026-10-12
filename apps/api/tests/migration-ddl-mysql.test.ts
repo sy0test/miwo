@@ -21,6 +21,24 @@ import schema from "@/db/migrations/001_schema";
 
 const mysql = knexFactory({ client: "mysql2", connection: { host: "127.0.0.1", user: "x", database: "miwo" } });
 
+/**
+ * 从一段 `create table ...` / `alter table ...` 文本里抠出**某个列的完整类型定义**（不含列名，
+ * 也不含 `not null` / `default` 这些后缀）。
+ * ⚠ **不要**用 `toContain("\`createTime\` bigint unsigned")` 当唯一的判别手段：`int` 是
+ * `bigint unsigned` 的**子串**，而 `toContain("\`createTime\` int")` 又会被 `bigint` 里的 `int` 命中 ——
+ * 用 `toContain` 判"不是 int"是假的。抠出类型段后整段比对才是真判别。
+ */
+function colType(ddl: string, col: string): string {
+  const m = new RegExp("`" + col + "`\\s+([^,()]+(?:\\([^)]*\\))?(?:\\s+unsigned)?)").exec(ddl);
+  if (!m) throw new Error(`DDL 里找不到列 \`${col}\`：${ddl}`);
+  let ty = m[1].trim();
+  for (const suffix of [" not null", " null", " auto_increment", " primary key", " default"]) {
+    const i = ty.indexOf(suffix);
+    if (i >= 0) ty = ty.slice(0, i);
+  }
+  return ty.trim();
+}
+
 /** 用 mysql2 方言把一段 schema builder 回调编译成 SQL 串（不发起任何连接）。 */
 function ddlOf(build: (t: any) => void): string {
   return mysql.schema.createTable("probe", (t) => build(t)).toSQL().map((s) => s.sql).join("\n");
@@ -65,6 +83,15 @@ describe("dialect 的 mysql 分支（Task 1 遗留的未锁定代码）", () => 
     expect(ddl).toContain("`projectId` int");
   });
 
+  it("ms() 生成 bigint unsigned（毫秒时间戳列；int 装不下 Date.now()）", () => {
+    const ddl = ddlOf((t) => { types(mysql).ms(t, "createTime"); });
+    expect(ddl).toContain("`createTime` bigint unsigned");
+    // ⚠ 判别力所在：`int` **是** `bigint unsigned` 的子串，所以必须把类型段抠出来整段比对，
+    //    否则"改成 int"这个回归会被这条断言放过（修复轮 1 的红绿实验就依赖它变红）。
+    expect(colType(ddl, "createTime")).toBe("bigint unsigned");
+    expect(colType(ddl, "createTime")).not.toMatch(/^int/);
+  });
+
   it("text() 生成 longtext（TEXT 的 64 KB 会被 o_prompt.data 顶穿）", () => {
     const ddl = ddlOf((t) => { types(mysql).text(t, "data"); });
     expect(ddl).toContain("`data` longtext");
@@ -87,9 +114,15 @@ describe("dialect 的 mysql 分支（Task 1 遗留的未锁定代码）", () => 
 });
 
 describe("MySQL DDL 静态断言（spec §5.3）", () => {
-  it("o_project 主键是 bigint unsigned auto_increment", async () => {
+  it("o_project 主键是 bigint unsigned、且**不带自增**（值由代码给 Date.now()，见下一组用例）", async () => {
     const ddl = await ddlFor("o_project");
-    expect(ddl).toMatch(/`id` bigint unsigned not null auto_increment/);
+    expect(ddl).toMatch(/`id` bigint unsigned/);
+    expect(ddl).toMatch(/primary key \(`id`\)/);
+    // ⚠ 修复轮 1 前这里断言的是 `auto_increment`（t.pk(T)）。改成"不自增"是因为
+    //   `routes/project/addProject.ts:29` 一直显式给 `id: Date.now()`（实测值 1791385147125）——
+    //   带着 auto_increment 也**不会报错**（MySQL 允许显式给值），但会把这个事实藏起来，
+    //   于是下一个人很容易顺手把 id 列改回 `int`（那才是真的炸）。显式断言"不自增"把语义钉死。
+    expect(ddl.split("\n")[0]).not.toContain("auto_increment");
   });
 
   it("26 张表里凡是有自增主键的表都用 bigint unsigned（抽查 5 张）", async () => {
@@ -161,6 +194,104 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     // 抽查两张"现状完全没有归属列"的表，确认索引名就是迁移里写的那个
     expect(await ddlFor("o_event")).toContain("add index `o_event_userid_index`(`userId`)");
     expect(await ddlFor("o_shotAssets")).toContain("add index `o_shotassets_userid_shotid_index`(`userId`, `shotId`)");
+  });
+
+  it("毫秒时间戳列全部编译成 bigint unsigned（12 张表 / 15 列，逐列抠类型段）", async () => {
+    // ⚠ 为什么这组断言必须是"逐列 + 整段类型"而不是 `toContain`：
+    //   `int` 是 `bigint unsigned` 的子串 → `toContain("`createTime` int")` 会被 `bigint` 命中，
+    //   于是"被改回 int"这个**真回归**不会被发现。`colType()` 抠出类型段后整段比才判得动。
+    // 实据：现状库/种子里这些列存的是 `Date.now()` 毫秒值（种子 1774447310118，dev 库最大 1791741159298），
+    //       MySQL `int`（有符号上限 2147483647）直接装不下 —— 属"只在真 MySQL 才暴露"。
+    const MS_COLUMNS: Array<[string, string]> = [
+      ["o_project", "createTime"],
+      ["o_tasks", "startTime"],
+      ["o_novel", "createTime"],
+      ["o_event", "createTime"],
+      ["o_script", "createTime"],
+      ["o_assets", "startTime"],
+      ["o_storyboard", "createTime"],
+      ["o_agentWorkData", "createTime"],
+      ["o_agentWorkData", "updateTime"],
+      ["o_video", "time"],
+      ["o_segment", "createTime"],
+      ["o_segment", "updateTime"],
+      ["o_shot", "createTime"],
+      ["o_shot", "updateTime"],
+      ["memories", "createTime"],
+    ];
+    expect(MS_COLUMNS.length).toBe(15);
+    expect(new Set(MS_COLUMNS.map(([t]) => t)).size).toBe(12);
+    const seen = new Set<string>();
+    for (const [table, col] of MS_COLUMNS) {
+      const ddl = await ddlFor(table);
+      const type = colType(ddl, col);
+      expect(type, `${table}.${col} 必须是 bigint unsigned`).toBe("bigint unsigned");
+      expect(type, `${table}.${col} 不得退化成 int`).not.toMatch(/^int/);
+      expect(ddl, `${table}.${col}`).toContain("`" + col + "` bigint unsigned");
+      seen.add(table + "." + col);
+    }
+    expect(seen.size).toBe(15);
+    // 反向判别力：口径是"这 15 列"，别再出现 `T.integer` 的同名列（例如两张表同名 createTime 只改了一张）
+    for (const table of new Set(MS_COLUMNS.map(([t]) => t))) {
+      const ddl = await ddlFor(table);
+      expect(ddl, `${table} 里不得再有 int 型的 createTime/updateTime/time`).not.toMatch(/`(createTime|updateTime|time)` int\b/);
+    }
+  });
+
+  it("o_modelPrompt.fileName / path 编译成 text（长路径不得被 varchar(255) 截断）", async () => {
+    const ddl = await ddlFor("o_modelPrompt");
+    // 现状库这两列是 TEXT（initDB.ts:411-412 用 table.text 建表；PRAGMA 实测 TEXT）。
+    // 收窄成 varchar(255) → MySQL 严格模式下超长路径 `Data too long for column`。
+    expect(colType(ddl, "fileName")).toBe("longtext");
+    expect(colType(ddl, "path")).toBe("longtext");
+    // ⚠ 判别力所在：不能用 `not.toMatch(/varchar/)` 当主判别 —— DDL 同一行里 vendorId/model
+    //    本来就是 varchar(255)，那会**假红**；必须按列抠。
+    expect(colType(ddl, "fileName"), "fileName 不得是 varchar").not.toMatch(/^varchar/);
+    expect(colType(ddl, "path"), "path 不得是 varchar").not.toMatch(/^varchar/);
+    expect(ddl).toContain("`fileName` longtext");
+    expect(ddl).toContain("`path` longtext");
+  });
+
+  it("id / 外键列也是 Date.now()：o_project.id + o_videoTrack.id + 10 个外键列 → bigint unsigned", async () => {
+    // 同一根因的第二组：`o_project.id` 与 `o_videoTrack.id` **由代码用 `Date.now()` 显式给**
+    //   （routes/project/addProject.ts:29 `id: Date.now()`；utils/redraw.ts:711 `trackId = Date.now() + seq++`），
+    //   所以它们**不是**"自增小整数"，而是毫秒值（实测 dev 库 `o_project.id` = 1791385147125 > int 上限）。
+    //   装它们的 projectId / trackId / videoTrackId 列因此必须一起 64 位，否则全库外键全部写不进去。
+    // ⚠ `o_project.id` **不带 auto_increment**：值由代码给；带自增也不会错，但会掩盖"代码显式给 id"这件事，
+    //   所以这里显式断言它没有 —— 与 `o_user.id` 的处理同源（Phase 1c 才重建）。
+    const project = await ddlFor("o_project");
+    expect(colType(project, "id")).toBe("bigint unsigned");
+    expect(project.split("\n")[0]).toContain("primary key");
+    expect(project.split("\n")[0], "o_project.id 不该由 DDL 自增（值由代码给）").not.toContain("auto_increment");
+
+    const track = await ddlFor("o_videoTrack");
+    expect(colType(track, "id")).toBe("bigint unsigned");
+    expect(track).toContain("`id` bigint unsigned not null auto_increment");
+
+    const FK_COLUMNS: Array<[string, string]> = [
+      ["o_tasks", "projectId"],
+      ["o_novel", "projectId"],
+      ["o_script", "projectId"],
+      ["o_assets", "projectId"],
+      ["o_storyboard", "projectId"],
+      ["o_storyboard", "trackId"],
+      ["o_agentWorkData", "projectId"],
+      ["o_video", "projectId"],
+      ["o_video", "videoTrackId"],
+      ["o_videoTrack", "projectId"],
+    ];
+    expect(FK_COLUMNS.length).toBe(10);
+    for (const [table, col] of FK_COLUMNS) {
+      const ddl = await ddlFor(table);
+      const type = colType(ddl, col);
+      expect(type, `${table}.${col} 必须 bigint unsigned`).toBe("bigint unsigned");
+      expect(type, `${table}.${col} 不得退化成 int`).not.toMatch(/^int/);
+    }
+    // 反向：不许出现"表里还留着 int 型 projectId/trackId/videoTrackId"
+    for (const table of new Set(FK_COLUMNS.map(([t]) => t))) {
+      const ddl = await ddlFor(table);
+      expect(ddl, `${table} 不得再有 int 型 projectId/trackId/videoTrackId`).not.toMatch(/`(projectId|trackId|videoTrackId)` int\b/);
+    }
   });
 
   it("o_skillList / o_skillAttribution 不被创建，但要被 dropTableIfExists（幂等清理老库）", async () => {

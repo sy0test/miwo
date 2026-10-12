@@ -54,8 +54,29 @@ export interface MysqlTypes {
   text(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
   /** 32 位整数，列名与现状一致（projectId / scriptId / assetsId / …）。 */
   u32(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
-  /** 64 位无符号整数（`userId` 这类将来指向 `o_user.id` 的列，避免 §5.3 的窄类型隐患）。 */
+  /**
+   * 64 位无符号整数（`userId` 这类将来指向 `o_user.id` 的列，避免 §5.3 的窄类型隐患）。
+   *
+   * ⚠ **凡是会装 `o_project.id` / `o_videoTrack.id` 的列也必须走它**（不是 `u32`）：
+   *    这两个 id 由代码用 `Date.now()` 显式给（`routes/project/addProject.ts:29`、
+   *    `utils/redraw.ts:711`），**本身就是毫秒值**（实测 dev 库最大 1791385147125），
+   *    MySQL 的 `int` 装不下 —— 于是 `o_task.projectId` / `o_assets.startTime` 之类的
+   *    外键列会先于时间列炸。实测清单见 `tests/migration-ddl-mysql.test.ts` 的
+   *    「id / 外键列也是 Date.now()」用例。
+   */
   u64(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  /**
+   * 毫秒时间戳列（`createTime` / `updateTime` / `startTime` / `o_video.time`）。
+   *
+   * ⚠ **不能是 `integer` / `u32`**：全库时间戳口径是 `Date.now()` 的毫秒值（现状如此，
+   *    spec §5.3「时区」一行明确保持不变），而 MySQL 的 `int` 上限是 2147483647 ——
+   *    毫秒值在 **1970-01-25** 就顶穿了。现状种子/数据里这类值形如 `1774447310118`
+   *    （`apps/api/src/lib/initDB.ts` 的 `memories` 种子、以及本机 dev 库里每张表的
+   *    `createTime`），**只在真 MySQL 才暴露**（sqlite 的 INTEGER 是 64 位，看不出问题）。
+   *    类型是同 `u64` 的 `bigint unsigned`（sqlite 侧退化为 `bigint`，仍是 INTEGER 亲和，
+   *    实测毫秒值原样读回 number）。
+   */
+  ms(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
   floatCol(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
   boolCol(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
   /** 全库统一毫秒时间戳（现状如此，spec §5.3「时区」一行明确保持不变）。 */
@@ -83,6 +104,12 @@ export function types(knexOrClient: unknown): MysqlTypes {
     },
     u64(t, name) {
       return isMysql ? t.bigInteger(name).unsigned() : t.integer(name);
+    },
+    ms(t, name) {
+      // mysql → `bigint unsigned`（毫秒值必然超 int）；sqlite → `bigint`（INTEGER 亲和，64 位）。
+      // 断言见 `tests/migration-ddl-mysql.test.ts`（mysql 静态编译）与
+      // `tests/migration-schema.test.ts`（sqlite 真跑：毫秒值原样读回）。
+      return isMysql ? t.bigInteger(name).unsigned() : t.bigInteger(name);
     },
     floatCol(t, name) {
       return t.float(name);
