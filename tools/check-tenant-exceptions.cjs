@@ -23,6 +23,13 @@
  *      清单是 `--record` 用自身扫描结果写出来的，拿旧记录来比会让"新增未登记裸 db 导入"恒为空
  *      （恒真假绿，只有手工改 JSON 才触发）。`found.directDbImports` 才是"代码里现在有什么"。
  *
+ *   3. `scanScope.tsFilesScanned` —— 与**本次扫描结果**（`found.files`）比较。
+ *      ⚠ 这一条是补上的：此前它只是 `--record` 顺手写下的数字，check 模式**从不比对**它，
+ *      于是报告里"234 → 239 是 Task 4 新增的 .ts"这类说法既无从核实、也不会有任何门禁反应
+ *      （实测归因还是错的：Task 4 没有往 `apps/api/src` 加 `.ts`）。现在它是一条真判据：
+ *      往 `apps/api/src` 加一个 `.ts`（不含 `.d.ts`）而没重跑 `--record` 就红。
+ *      —— 口径与 `directDbImports` 一致："清单必须是上一次 `--record` 的逐项快照"。
+ *
  * 用法：
  *   node tools/check-tenant-exceptions.cjs            # 门禁：清单必须与代码逐条一致，且每条都已确认
  *   node tools/check-tenant-exceptions.cjs --record   # 重新机械扫描并写回清单（保留已有的人工标注）
@@ -225,6 +232,16 @@ const declaredKnown = ((inv.scanScope || {}).excludedKnownDirectDbImports || [])
 if (JSON.stringify(declaredKnown) !== JSON.stringify(KNOWN_DIRECT_DB.slice().sort())) {
   failures.push(
     `scanScope.excludedKnownDirectDbImports 与脚本内置白名单不一致：\n      清单 ${declaredKnown.join(", ")}\n      脚本 ${KNOWN_DIRECT_DB.slice().sort().join(", ")}`,
+  );
+}
+// ⚠ scanScope.tsFilesScanned 必须**真的参与校验**，否则它就是"看起来被校验"的装饰字段
+//   （此前正是这样：报告拿它当"本 Task 新增了 .ts"的证据，而 check 模式从不读它）。
+//   它是 walk(apps/api/src, *.ts 去掉 *.d.ts).length —— 本次扫描的**范围**快照：
+//   加了新 .ts 却不重跑 --record，就说明清单的扫描范围没跟上代码，必须重录。
+const declaredScanned = (inv.scanScope || {}).tsFilesScanned;
+if (declaredScanned !== found.files) {
+  failures.push(
+    `scanScope.tsFilesScanned 与本次扫描不一致：清单 ${declaredScanned}，代码 ${found.files}（apps/api/src 下的 .ts 文件集合变了，清单已过期，请重跑 --record）`,
   );
 }
 // ⚠ 必须用 found.directDbImports（**本次扫描结果**），不能用 inv.directDbImports（清单里的旧记录）：

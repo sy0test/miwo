@@ -311,7 +311,13 @@ async function checkBootAndApi() {
    * 所以这里改用 `os.tmpdir()` 下的空目录，**绝不读也不写** `apps/api/data/db2.sqlite`。
    *
    * 目录里只需要两样东西：
-   *   1. 空库 → 应用启动时自己跑迁移（`001_schema` + `002_platform_seed`）；
+   *   1. 空库 → **本步只证"空库可迁移 + 可启动"**，不证启动顺序：
+   *      下面 `db:migrate` 已经用**同一个** `MIWO_DATA_DIR` / `bootEnv` 先跑过一次，
+   *      所以应用启动时那次 `migrate.latest()` 必然是 **no-op**（`applied=[]`、连"已应用迁移"
+   *      那行日志都不会出现）—— **C 步不构成"迁移完成 → 才监听端口"的运行期证据**。
+   *      启动顺序的运行期证据在 Task 4 Step 5 的一次性实验里（对同一目录启动两次、25ms 轮询比对
+   *      "迁移日志"与"端口可连"的先后：t+1515ms vs t+2128ms）。该实验脚本是一次性的、跑完即删，
+   *      原文见 `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-4-report.md` §3。
    *   2. `vendor/` `skills/` `modelPrompt/` 三个**只读静态资产目录**（`configHealth` 的
    *      "vendor 13 / skills 31" 两条断言与启动期读取依赖它们；**不复制** `db2.sqlite`）。
    *

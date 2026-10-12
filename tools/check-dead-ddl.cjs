@@ -13,9 +13,20 @@
  *
  * WHAT it checks: start at `apps/api/src/app.ts` (= the non-Electron entry; it calls
  *   `startServe()` at module level) and walk the **static import graph** via `@/...` and
- *   relative specifiers. In every reachable module, strip comments and string literals and
- *   then look for the bare identifiers `initDB` / `fixDB`. Any hit outside the explicit
- *   exemption list = failure (exit 1).
+ *   relative specifiers. Two independent ways of naming the retired routines are caught:
+ *
+ *     (a) bare identifiers `initDB` / `fixDB` in real code (comments AND string literals
+ *         stripped) - i.e. `import initDB`, `initDB(`, `fixDB(`;
+ *     (b) **string-specifier edges**: any specifier that resolves to
+ *         `<...>/lib/initDB.ts` / `<...>/lib/fixDB.ts` - i.e. `require("@/lib/fixDB")`,
+ *         `import("@/lib/initDB")` and the side-effect form `import "@/lib/initDB"`.
+ *
+ *   (b) is not redundant: `lib/fixDB.ts` / `lib/initDB.ts` carry **no code-level bare
+ *   identifier of their own**, so "pull the module into the graph with a specifier" would
+ *   otherwise produce zero hits. That form is exactly the coupling this gate exists to
+ *   prevent (a module-level `import "@/lib/initDB"` is re-evaluated on every boot).
+ *
+ *   Any hit outside the explicit exemption list = failure (exit 1).
  *
  * WHY "reachable modules" and not "files that run code at import time":
  *   Every module on the chain above is *evaluated* during boot (CJS `require` semantics),
@@ -25,8 +36,10 @@
  *   one a reviewer can verify by hand.
  *
  * Exemptions mirror tools/check-brand.cjs's style: per file, with a reason, and each one
- * must REALLY hit (its declared `min` occurrence count) or the gate turns red - so a stale
- * exemption (e.g. after Phase 1b deletes those routes) cannot survive unnoticed.
+ * must hit **exactly** its declared `count` occurrences or the gate turns red - both a
+ * shrunken count (stale exemption, e.g. after Phase 1b deletes those routes) and a grown
+ * count (an exemption silently hiding MORE than it declares) are failures. There is no
+ * "at least N" slack, so the list can never become a blanket whitelist.
  *
  * A module that cannot be resolved is reported as a WARNING (`unresolved`), never as a
  * silent skip, so a review can see exactly what was not covered.
@@ -34,9 +47,13 @@
  * Usage: node tools/check-dead-ddl.cjs
  * Exit 0 = pass, 1 = fail.
  *
- * SELF-TEST (proof the gate has discriminating power; see Task 4 report):
- *   temporarily add `import fixDB from "@/lib/fixDB";` to apps/api/src/utils/db.ts
- *   -> exit 1 listing that line; restore byte-for-byte (sha256) -> exit 0.
+ * SELF-TEST (proof the gate has discriminating power; see the Task 4 report "修复轮 1"):
+ *   for each of the three specifier forms, temporarily add it to
+ *   apps/api/src/utils/db.ts  -> exit 1 listing that file:line;
+ *   restore byte-for-byte (sha256) -> exit 0.
+ *     1. require("@/lib/fixDB");
+ *     2. import("@/lib/initDB");
+ *     3. import "@/lib/initDB";      (side-effect import - evaluated on every boot)
  */
 "use strict";
 const fs = require("fs");
@@ -48,8 +65,13 @@ const SRC = path.join(API, "src");
 const ENTRY = path.join(SRC, "app.ts");
 
 /** Bare identifiers that must not appear in the boot chain. Covers `import initDB`,
- *  `import { db } ... initDB(`, `require("@/lib/fixDB")` and the `import EDGE` form. */
+ *  `import { db } ... initDB(`, and any other code-level naming. */
 const FORBIDDEN = /\binitDB\b|\bfixDB\b/g;
+
+/** The retired modules themselves: a specifier resolving to one of these files is an
+ *  import-graph edge into the retired startup DDL/DML, whatever the binding looks like
+ *  (`require(...)`, `import(...)`, side-effect `import "..."`). See the header, point (b). */
+const FORBIDDEN_LIB_RE = /lib[\\/](initDB|fixDB)\.ts$/;
 
 /** Extensions tried when resolving a specifier (Node CJS + tsx). `.d.ts` is included on
  *  purpose: several boot-chain modules import types from `@/types/database` and
@@ -58,7 +80,9 @@ const FORBIDDEN = /\binitDB\b|\bfixDB\b/g;
 const EXTS = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".d.ts"];
 
 /**
- * Explicit exemptions. Every entry must actually hit at least `min` occurrences.
+ * Explicit exemptions. Every entry must hit **exactly** `count` occurrences - no more, no
+ * less (see the header). A `count` that is too high = stale exemption; too low = the
+ * exemption would silently hide an extra occurrence.
  *
  * NOTE (honest scope): the four route modules below are *reachable* from app.ts because
  * `src/router.ts` statically imports every route (it is a generated file). Task 4 removed
@@ -71,25 +95,25 @@ const EXTS = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".d.ts"];
 const EXEMPTIONS = [
   {
     file: "apps/api/src/routes/other/deleteAllData.ts",
-    min: 2,
+    count: 2,
     reason:
       "POST /other/deleteAllData is the user-triggered 'wipe every table' endpoint: it imports initDB and calls initDB(db, true) inside the request handler. Phase 1b deletes the route (it is unauthenticated); Phase 1a must not touch route code.",
   },
   {
     file: "apps/api/src/routes/setting/dbConfig/clearData.ts",
-    min: 2,
+    count: 2,
     reason:
       "GET /setting/dbConfig/clearData drops all tables then calls initDB(db) to rebuild them - request-triggered, not boot-triggered. Phase 1b reworks it (see tenant-exceptions.json); Phase 1a must not touch route code.",
   },
   {
     file: "apps/api/src/routes/setting/dbConfig/importData.ts",
-    min: 2,
+    count: 2,
     reason:
       "POST /setting/dbConfig/importData drops all tables, calls initDB(db) and then imports rows - request-triggered, not boot-triggered. Phase 1b reworks it; Phase 1a must not touch route code.",
   },
   {
     file: "apps/api/src/routes/setting/dev/getSwitchAiDevTool.ts",
-    min: 1,
+    count: 1,
     reason:
       "GET /setting/dev/getSwitchAiDevTool imports initDB but NEVER calls it (dead import). Recorded here so the gate is honest about the current state; removing the dead import is a 1-line cleanup that belongs with the Phase 1b route work.",
   },
@@ -180,8 +204,17 @@ function resolveSpec(fromFile, spec) {
 const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(|\brequire\s*\(\s*|\bimport\s+)["']([^"']+)["']/g;
 
 // ---- walk the graph starting at src/app.ts ----
+/** Line number (1-based) of a character offset; newline-preserving blanking keeps offsets exact. */
+function lineAt(src, offset) {
+  let line = 1;
+  for (let i = 0; i < offset && i < src.length; i++) if (src[i] === "\n") line++;
+  return line;
+}
+
 const reachable = [];
 const seen = new Set();
+/** Hits found via the *specifier* itself (header point (b)), keyed by `file:line`. */
+const specifierHits = [];
 const queue = [ENTRY];
 if (!fs.existsSync(ENTRY)) {
   failures.push("entry module is missing: apps/api/src/app.ts");
@@ -194,14 +227,31 @@ if (!fs.existsSync(ENTRY)) {
     const raw = fs.readFileSync(file, "utf8");
     const { comments } = scan(raw);
     const graphText = blankRanges(raw, comments); // comments gone, strings KEPT (specifiers live there)
+    const rawLines = raw.split(/\r?\n/);
     SPEC_RE.lastIndex = 0;
     let m;
     while ((m = SPEC_RE.exec(graphText))) {
       const spec = m[1];
       if (!spec.startsWith("@/") && !spec.startsWith(".")) continue;
       const target = resolveSpec(file, spec);
-      if (target) queue.push(target);
-      else warnings.push(`unresolved specifier "${spec}" in ${rel(file)} (not scanned)`);
+      if (!target) {
+        warnings.push(`unresolved specifier "${spec}" in ${rel(file)} (not scanned)`);
+        continue;
+      }
+      // (b) string-specifier edge into a retired module: counted even when the module
+      // carries no bare identifier of its own (that is the whole point - see header).
+      const lib = FORBIDDEN_LIB_RE.exec(target);
+      if (lib) {
+        const line = lineAt(graphText, m.index + m[0].length - 1 - spec.length);
+        specifierHits.push({
+          file: rel(file),
+          line,
+          token: lib[1],
+          text: (rawLines[line - 1] || "").trim(),
+          via: "specifier " + JSON.stringify(spec),
+        });
+      }
+      queue.push(target);
     }
   }
 }
@@ -232,15 +282,25 @@ for (const file of reachable) {
   });
 }
 
-// ---- apply exemptions; each must really hit ----
+// ---- merge the specifier-only edges found during the graph walk ----
+// A line already caught by a bare identifier is NOT counted twice: the exemption `count`
+// means "number of coupling sites in this file", so one `import initDB from "@/lib/initDB"`
+// stays one hit (it is caught by both detectors, but it is a single site).
+for (const h of specifierHits) {
+  if (hits.some((c) => c.file === h.file && c.line === h.line)) continue;
+  hits.push(h);
+}
+
+// ---- apply exemptions; each must hit EXACTLY its declared count ----
 const covered = new Set();
 for (const ex of EXEMPTIONS) {
   const mine = hits.filter((h) => h.file === ex.file);
-  if (mine.length < ex.min) {
-    failures.push(
-      `exemption is stale: ${ex.file} declares min=${ex.min} occurrence(s) of initDB/fixDB but only ${mine.length} found ` +
-        `(${mine.length === 0 ? "file no longer references them" : "count shrank"}) -> delete or fix the exemption`,
-    );
+  if (mine.length !== ex.count) {
+    const how =
+      mine.length < ex.count
+        ? `only ${mine.length} found (${mine.length === 0 ? "file no longer references them" : "count shrank"}) -> delete or fix the exemption`
+        : `${mine.length} found -> the exemption would hide ${mine.length - ex.count} occurrence(s) more than it declares; fix the count or drop the extra reference`;
+    failures.push(`exemption count mismatch: ${ex.file} declares count=${ex.count} occurrence(s) of initDB/fixDB but ${how}`);
     continue;
   }
   for (const h of mine) covered.add(`${h.file}:${h.line}:${h.token}`);
@@ -248,7 +308,9 @@ for (const ex of EXEMPTIONS) {
 
 const unexplained = hits.filter((h) => !covered.has(`${h.file}:${h.line}:${h.token}`));
 
-// ---- guard: an exemption must not hide MORE than it declares (no blanket whitelist) ----
+// ---- guard: no silent exemptions (empty reason) ----
+// The "must not hide MORE than it declares" half of this guard lives in the count check
+// above (`mine.length !== ex.count`), which is exact in BOTH directions.
 for (const ex of EXEMPTIONS) {
   if (!ex.reason || !String(ex.reason).trim()) failures.push(`exemption for ${ex.file} has no reason (silent exemptions are not allowed)`);
 }
@@ -265,6 +327,7 @@ if (failures.length) {
   console.error("check-dead-ddl FAILED: the boot chain (from apps/api/src/app.ts) must not use initDB/fixDB.");
   console.error("  The every-boot DDL/DML side effects were replaced by src/db/connect.ts connect() + src/db/migrations/.");
   console.error("  Two routines stay in the repo only for verify-phase0.cjs's artifact assertion (deleted in Phase 1c).");
+  console.error("  Both the bare identifier and any specifier resolving to lib/initDB.ts / lib/fixDB.ts count as coupling.");
   for (const f of failures) console.error("  - " + f);
   console.error(`  scanned: ${reachable.length} reachable module(s) from apps/api/src/app.ts`);
   process.exit(1);

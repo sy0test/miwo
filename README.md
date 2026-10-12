@@ -120,12 +120,18 @@ pnpm.cmd dev
 
 ### `db:repair-stuck`（人工清除"卡在生成中"的残留行）
 
+> **这是 Phase 1d 队列租约超时落地之前的临时手段**，不是长期机制。
+> **登记落点就是本节**（根 `README.md`）：脚本挂在 `apps/api/package.json`
+> （`tsx` 只装在 `@miwo/api`，根 `package.json` 里跑不了 `--import=tsx`）。
+> ⚠ 计划文本里写的 `apps/api/README-db.md` **全仓不存在**，旧引用一律以本节为准。
+
 ```powershell
 cd apps\api
 pnpm.cmd run db:repair-stuck                          # 默认 dry-run；默认只列"超过 1 小时没更新"的行
 pnpm.cmd run db:repair-stuck --apply                  # 真的改判成"生成失败"，并写失败原因
 pnpm.cmd run db:repair-stuck -- --older-than=30m      # 改窗口（30m / 6h / 2d / 3600000）
 pnpm.cmd run db:repair-stuck -- --older-than=2026-10-12T00:00:00Z   # ⚠ 绝对时间**就是** cutoff 本身
+pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒窗口（= 1h）
 ```
 
 - **默认 dry-run**（只打印 表名/id/state/时间，不写库），`--apply` 才写；**幂等**（改判过的行不再是"生成中"，再跑是 0 行）。
