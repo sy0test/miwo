@@ -34,6 +34,12 @@ apps/api/data/db2.sqlite
 apps/api/data/db2.sqlite-*
 apps/api/data/version.txt
 
+# Phase 1a：数据搬迁的中间产物（导出物 / 导入报告 / 比对报告），绝不入库。
+# ⚠ 导出物里含**真凭据**（老库 `o_vendorConfig` 的 inputValues 存着 API key）与全部业务数据，
+#    必须当成密钥对待：只留在本机、用完删。上面的 `.tmp-*` 已经覆盖它，这里显式再写一条，
+#    免得日后有人收紧那条通配规则时把它放进来。
+apps/api/.tmp-migrate/
+
 # 构建/部署临时
 .tmp-build/
 .tmp-esbuild/

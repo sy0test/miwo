@@ -107,6 +107,13 @@ const EXEMPTIONS = [
       "旧仓库 sha256 基线的记录工具；8 条基线的键就是旧仓库里 8 个文件的**绝对路径**，路径里必然含真实目录名。",
   },
   {
+    scope: "apps/api/scripts/export-sqlite.cjs",
+    match: "ToonFlow",
+    min: 3,
+    reason:
+      "搬迁脚本必须**硬拒绝**用户机正在使用的真实库 `%APPDATA%\\ToonFlow\\data\\db2.sqlite`（连只读打开都不做），所以要按真实目录名写出这条路径：注释里的说明、`path.join(process.env.APPDATA, \"ToonFlow\", \"data\")` 的安全闸门、以及拒绝时的报错文案，共 3 处。这是**机器上的绝对路径**（用户机数据目录名，由已部署的旧系统决定，本仓库改不了），不是本项目品牌文案。⚠ 不要为了绕开本门禁把目录名拆成两段字符串拼接 —— 那等于静默豁免，下一个人看不出这里有例外（同 `verify-phase0.cjs` 那条豁免的口径）。",
+  },
+  {
     scope: "tools/record-legacy-freeze.cjs",
     match: { re: "toonflow-(?:web|upstream)" },
     min: 1,

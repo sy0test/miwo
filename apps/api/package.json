@@ -23,6 +23,9 @@
     "db:migrate:down": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --down",
     "db:repair-stuck": "node --env-file-if-exists=.env --import=tsx scripts/db-repair-stuck.ts",
     "db:generate": "node --import=tsx scripts/db-generate.ts",
+    "db:export": "node scripts/export-sqlite.cjs",
+    "db:import": "node scripts/import-mysql.cjs",
+    "db:compare": "node scripts/compare-db.cjs",
     "debug:ai": "npx @ai-sdk/devtools",
     "license": "node scripts/license.ts",
     "vendor2json": "node scripts/vendor2json.ts"

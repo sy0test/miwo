@@ -106,6 +106,68 @@ pnpm.cmd dev
     `MIWO_JWT_SECRET`（`src/app.ts` 的鉴权中间件在库里没有 `tokenKey` 行时回退到它）。把密钥从库里搬进配置
     正是 spec §6.2 / Phase 1c 的方向，所以"新库里没有 tokenKey"是**预期状态**。
 
+### 真实数据搬迁（导出 → 导入 → 比对）与**回滚语义**
+
+> 登记落点就是本节（根 `README.md`）**与** `apps/api/src/db/legacy/import.ts` 的文件头 ——
+> 这条约束必须随代码走：`.superpowers/` 里的计划文本是 git-ignored 的，不能作为唯一载体。
+> 三个脚本挂在 `apps/api/package.json`（`tsx` 只装在 `@miwo/api`，根 `package.json` 里跑不了 `--import=tsx`）。
+
+```powershell
+cd apps\api
+pnpm.cmd run db:export                              # SQLite → .tmp-migrate/export/*.ndjson + manifest.json
+$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:import            # dry-run（默认不写）
+$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:import -- --apply # 真的写
+pnpm.cmd run db:compare                             # 行数 + 抽样单元格深比较
+```
+
+- **搬迁链三步**：`scripts/export-sqlite.cjs`（只读源库 → NDJSON + manifest）→
+  `scripts/import-mysql.cjs`（默认 dry-run；`--apply` 才写）→ `scripts/compare-db.cjs`（比对）。
+  导入的核心逻辑在 `src/db/legacy/import.ts`（可单测，见 `tests/legacy-import.test.ts`）。
+- ⚠ **导出对源库只读**：脚本以 `{ readonly: true }` 打开 SQLite，并断言**导出前后源库 sha256 相等**、
+  未新出现 `-wal`/`-shm`/`-journal` 伴随文件；不满足就退出码 1。
+  `apps/api/data/db2.sqlite` 的 sha256 是硬约束，任何验收都不许改写它。
+- ⚠ **用户机真实库（`%APPDATA%\ToonFlow\data\db2.sqlite`）不在搬迁范围**：脚本对它**硬拒绝**
+  （连只读打开都不做）。搬迁只针对仓库里的 dev 库快照。
+- ⚠ **导出物是机密**：`o_vendorConfig.inputValues` 里存着真 API key。所以导出目录
+  `apps/api/.tmp-migrate/` 被 gitignore（见 `.gitignore` 的说明），用完即删。
+- **导入的四条硬闸门**（任一不满足即拒绝，见 `import.ts` 的 `preflightImport`）：
+  ① manifest 的 `duplicates` / `badIds` 必须为空；② 目标库必须已有全部表；
+  ③ 目标库的**业务表必须全空**（四张平台种子表例外，见下）；④ **目标列表示不了的值**在 MySQL 目标下阻断。
+- ⚠ **两条"只在真 MySQL 暴露"的真实缺口**（Task 6 实跑体检结果，处置需拍板；`001_schema` 本 Task 不改）：
+  1. **超长文本**：老库 `o_agentWorkData.data`（productionAgent 的 JSON）**最大 103,624 字符 / 5 行超 255**、
+     `o_tasks.relatedObjects` **最大 614 字符 / 2 行超 255**，而 `001_schema` 里这两列是 `varchar(255)` ——
+     sqlite 不强制长度所以看不出问题，**真 MySQL 严格模式会 `Data too long for column`**。
+  2. **越界数值**：`o_segment.projectId` / `o_shot.projectId` 在 `001_schema` 里是 `int`，
+     而老库这两列存的是 `o_project.id`（= `Date.now()` 毫秒值，实测 **1791385147125**）——
+     MySQL 的 `int` 上限 2147483647 → 严格模式 `Out of range value`，非严格模式**静默夹断**（数据损坏）。
+     sqlite 的 INTEGER 是 64 位，本机永远看不出问题。
+  3. `memories.isolationKey` 收窄到 `varchar(191)`（老库 TEXT）：实测最大 31 字符 → **安全**。
+  - 这两类都在**写入之前**由 `preflightImport` 报出来（`oversize-value` / `numeric-overflow`）：
+    sqlite 目标只登记（不阻断），MySQL 目标阻断。`--allow-oversize` 是"已确认可丢"的显式开关
+    —— **整行丢弃并逐条登记，绝不截断、绝不夹断**（`expectedAbsent` 里可逐条复核）。
+
+**导入与回滚的语义（Task 5 交接条款，改导入策略前先读这里）**
+
+1. **导入必须"跳过已存在"，不得 upsert / replace / 清表重灌。**
+   四张平台表（`o_prompt` / `o_agentDeploy` / `o_setting` / `o_vendorConfig`）在 `002` 之后
+   **已经有行**：同身份键（`type` / `key` / `key` / `id`）的行一律跳过 —— 包括内容不同的那些
+   （导入报告会给出 `skippedDifferent` 计数，**不静默**）。
+   `o_agentWorkData`（唯一键）与 `o_segment`（唯一键）在导入前必须查重，重复即拒绝。
+2. **`o_setting.tokenKey` 绝不导回目标库**：老库那一行留在老库里（见上一条的断言）。
+3. **回滚语义**：`002_platform_seed` 的 `down` 只删"与仓库种子**逐字节相同**"的行 ——
+   - 002 插的、此后没人改过的行 → 被删；**导入进来的行 → 保留**；
+   - 所以"先跑 002 → 再导入 → 再 rollback"**不会误删任何导入数据**，但留下的也不是"空库"：
+     平台表里会剩导入的那几行。要重做一遍，就让目标库回到"迁移刚建好 + 002 已跑"的状态，
+     **不要**为了"回滚干净"手工 `TRUNCATE` 平台表；
+   - 反向顺序（**先导入、后跑 002**）：002 按身份键跳过已导入的同键行、只补缺失的键；
+     这些被跳过的行在 `down` 时**不会**被删（内容不同）—— 这正是修复 3 要的方向。
+   - 回归网：`apps/api/tests/migration-seed.test.ts` 的「down 不误伤 Task 6 先导入的同键老数据」；
+     `apps/api/tests/legacy-import.test.ts` 的种子表用例。改动导入策略时它们会红。
+4. ⚠ **本机没有 MySQL 服务端**：导入/比对逻辑在 sqlite↔sqlite 上全覆盖，但
+   "真 MySQL 的类型/字符集/严格模式行为"**未验证**（由 Task 8 的 MySQL 集成测试补端到端证据）。
+   与方言相关的判断（超长值是否阻断）被抽成纯函数 `oversizeBlocks()` 单独断言。
+
+
 ### 启动期副作用的两条语义变化（Phase 1a / Task 4 盖章登记）
 
 删掉旧 `fixDB` 在**每次启动**时做的两件无条件副作用后，行为**有意**变成：
