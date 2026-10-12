@@ -447,7 +447,16 @@ export default {
       //    `${projectId}:${agentType}:${episodesId}`（spec §6.2 说 Phase 1b 会加 userId 前缀），
       //    191 字符对现有值（实测 ≈ 40 字符）有充足余量。
       t.vstr(T, "isolationKey").notNullable();
-      t.text(T, "type").notNullable();
+      // ⚠ **同 isolationKey，也必须是 varchar**：`type` 也出现在复合索引
+      //    `memories_isolationkey_type_index(isolationKey, type)` 里 —— 上一句注释写下的规则对
+      //    **每一个被索引的列**都成立，不只对前缀列。实据（Task 7 首次真连本机 MySQL 8.4.11）：
+      //    `t.text()` 在 mysql 侧编译成 `longtext` → 服务端直接拒绝
+      //    `alter table memories add index ... - BLOB/TEXT column 'type' used in key specification
+      //    without a key length`（ER_BLOB_KEY_WITHOUT_LENGTH，errno 1170），**整个 001 迁移失败**。
+      //    静态 DDL 编译（`tests/migration-ddl-mysql.test.ts` 的假 knex）看不到这条：1170 是
+      //    **服务端**的语义校验，SQL 串本身完全合法。所以同文件加了机械断言
+      //    「任何被索引/主键引用的列都不得是 text/longtext」——它不依赖任何手工清单。
+      t.vstr(T, "type").notNullable();
       t.text(T, "role");
       t.text(T, "name");
       t.text(T, "content").notNullable();

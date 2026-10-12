@@ -56,6 +56,179 @@ pnpm.cmd dev
   是第 5 个决策点），Task 12 必做 5 已改为 `config.env === "dev"`。`NODE_ENV` 现在只由 `config.ts:135` **派生写出**，供 Express/knex 等生态代码读。
 - 部署文件与容器 Node 版本要求见 [`deploy/README.md`](deploy/README.md)；一致性由 `node tools/check-deploy-config.cjs` 保证。
 
+## 数据层手册（Phase 1a）
+
+> 本节由 **Task 7** 起草（Task 12 定稿）。下面每一段输出都是**本机实测原文**（Windows / MySQL **8.4.11** / 端口 **3307**）。
+> ⚠ 计划文本里写的 `apps/api/README-db.md` **全仓不存在**：数据层的登记落点一律是根 `README.md`（本节 + 下面「迁移纪律」「真实数据搬迁」「启动期副作用」「`db:repair-stuck`」几节）。
+
+### 0. 现在的启动序列
+
+连接 → `migrate.latest()` → 监听端口。**迁移失败即 fail-fast 退出**（`utils/db.ts` 的 `dbReady` 是唯一消费者，`src/db/connect.ts` 的 `connect()` 在探活失败时给出可操作的报错）。
+
+### 1. 本机 MySQL（免安装，不用 Docker）
+
+| 项 | 实测值 |
+|---|---|
+| zip URL | `https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip`（HEAD **200**、`Content-Length: 281191914`、`Content-Type: application/zip`） |
+| 下载体积 | **281,191,914 B**（sha256 `A492371D687D2BAB088B0062581144A0044B8964BAEFDF4FAA579292B423D25C`） |
+| 版本 | `mysqld  Ver 8.4.11 for Win64 on x86_64 (MySQL Community Server - GPL)` |
+| basedir | `D:\sy_workspace\.tools\mysql`（**仓库外**，`check-copy` 的体积/索引断言看不到它，也绝不会被误提交） |
+| datadir | `D:\sy_workspace\.tools\mysql-data`（**仓库外**；绝不放进 `apps/api/data`，那会被打进 Docker 上下文） |
+| tmpdir | `D:\sy_workspace\.tools\mysql-tmp`（**必须显式设**，见下） |
+| 端口 | **3307**（避开 3306 可能被占） |
+| 账号 | `root` **无口令**（`--initialize-insecure`，仅本机 127.0.0.1）+ 应用账号 `miwo`/`miwo` |
+| 系统服务 | **无**。不注册 Windows 服务、**不开机自启**：`start` 起一个隐藏子进程，`stop` 关掉 |
+
+⚠ **tmpdir 必须显式设**（本机实测）：用默认配置时 InnoDB 在 `%TEMP%` 建临时文件失败 ——
+`[ERROR] [MY-012576] [InnoDB] Unable to create temporary file inside "C:\Users\…\AppData\Local\Temp"; errno: 13`
+（该目录对本 shell 是可写的，所以这不是普通的权限问题）→ `--initialize-insecure` 直接中止。
+把 `tmpdir` 指到我们自己的目录即可。
+
+**一次性安装（幂等，已存在就跳过）**
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+$tools = "D:\sy_workspace\.tools"
+$zip   = "$tools\mysql-8.4.11-winx64.zip"
+New-Item -ItemType Directory -Force -Path $tools | Out-Null
+Invoke-WebRequest -Uri "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip" -OutFile $zip -TimeoutSec 1800
+Expand-Archive -LiteralPath $zip -DestinationPath "$tools\mysql-unzip" -Force
+Move-Item "$tools\mysql-unzip\mysql-8.4.11-winx64" "$tools\mysql"
+Remove-Item -Recurse -Force "$tools\mysql-unzip"
+& "$tools\mysql\bin\mysqld.exe" --version
+```
+
+**`D:\sy_workspace\.tools\my.ini`**（**纯 ASCII**；`mysql-local.ps1` 假定它已存在）
+
+```ini
+[mysqld]
+port=3307
+basedir=D:/sy_workspace/.tools/mysql
+datadir=D:/sy_workspace/.tools/mysql-data
+tmpdir=D:/sy_workspace/.tools/mysql-tmp
+character-set-server=utf8mb4
+collation-server=utf8mb4_0900_ai_ci
+default-time-zone=+08:00
+log-error=D:/sy_workspace/.tools/mysql-data/error.log
+# local development: loopback only
+bind-address=127.0.0.1
+mysqlx=OFF
+
+[client]
+port=3307
+default-character-set=utf8mb4
+```
+
+**起停 / 建库**（脚本在 `apps/api/scripts/mysql-local.ps1`；**纯 ASCII**，因为 PowerShell 5.1 按 ANSI 读 `.ps1`）
+
+```powershell
+cd D:\sy_workspace\code\miwo
+powershell -ExecutionPolicy Bypass -File apps\api\scripts\mysql-local.ps1 -Action init      # 只跑一次
+powershell -ExecutionPolicy Bypass -File apps\api\scripts\mysql-local.ps1 -Action start
+powershell -ExecutionPolicy Bypass -File apps\api\scripts\mysql-local.ps1 -Action status
+powershell -ExecutionPolicy Bypass -File apps\api\scripts\mysql-local.ps1 -Action createdb  # miwo_test + miwo + 账号
+powershell -ExecutionPolicy Bypass -File apps\api\scripts\mysql-local.ps1 -Action cli       # 交互式 mysql 客户端
+powershell -ExecutionPolicy Bypass -File apps\api\scripts\mysql-local.ps1 -Action stop      # 跑完请停掉，别留常驻进程
+```
+
+实测输出：
+
+```text
+> -Action init      : initialize exit=0   （--console 把初始化日志打到终端；root@localhost is created with an empty password）
+> -Action start     : mysql is listening on 127.0.0.1:3307
+> -Action status    : listening=True
+> -Action createdb  : createdb exit=0 ; db=miwo_test and miwo ; user=miwo
+```
+
+**本机 MySQL 的两种跑法**
+
+```powershell
+cd D:\sy_workspace\code\miwo\apps\api
+$env:MIWO_ENV="dev"; $env:MIWO_PORT="10599"; $env:MIWO_HOST="127.0.0.1"
+$env:MIWO_DATA_DIR="$PWD\data"; $env:MIWO_JWT_SECRET="dev-only-secret-at-least-32-bytes-long"
+$env:MIWO_DB_DRIVER="mysql"; $env:MIWO_DB_HOST="127.0.0.1"; $env:MIWO_DB_PORT="3307"
+$env:MIWO_DB_USER="miwo"; $env:MIWO_DB_PASSWORD="miwo"; $env:MIWO_DB_NAME="miwo_test"
+pnpm.cmd run db:migrate:status
+pnpm.cmd run db:migrate
+```
+
+⚠ **不新增任何 `MIWO_*` 连接变量**：上面这些变量在 `config.ts` 里**本来就有**；MySQL 的连接级不变式
+（`charset=utf8mb4` / `timezone=+08:00` / `supportBigNumbers` / `bigNumberStrings` / `connectTimeout=5000`）
+是**项目策略**、写死在 `src/db/connect.ts` 的 `DBCONFIG` 里，不开放成旋钮。
+
+### 2. 迁移操作手册
+
+#### 新增一条迁移
+1. `pnpm.cmd run db:generate -- <kebab-case>`（生成 `NNN_<name>.ts`）
+2. 把新文件 import 进 `src/db/migrations/index.ts` 的 `MIGRATIONS`（**必须手工加、且必须追加到末尾** —— 脚本不会替你改；
+   `MIGRATIONS` 的顺序就是执行顺序，`tests/migrations.test.ts` 只断言了清单↔文件一一对应）
+3. `up` 只写结构；种子写"只插不改"
+4. `down` 必须能精确撤销 `up`
+5. `pnpm.cmd run db:migrate:status` 看状态 → `db:migrate` 应用
+
+#### 迁移纪律（违反会有人踩坑）
+- **幂等**：迁移系统层面靠 `knex_migrations` 跳过；`createTable` 不要加 `hasTable` 守卫（会掩盖结构漂移）。
+  但"清理老库"的动作（`dropTableIfExists`）必须用 `*IfExists` 形式。
+- **`up` 必须用传入的 `trx`**，不能用外层 `db`（实测会 `KnexTimeoutError`）。
+- **schema 迁移只允许用 schema builder**（不能 `raw`、不能查表）—— 这样 mysql 侧的静态断言才能收集到完整 DDL。
+- **种子里绝不写 UPDATE。**
+- **不许在 `up` 里 import app 的业务模块**（迁移要能在最小依赖下跑）。
+- ⚠ **`--status` 也会写库**：`migrationStatus()` 先调 `migrate.list()`，它的 `ensureTable` 会建
+  `knex_migrations` + `knex_migrations_lock` → 只读账号跑 `--status` 会失败。
+- ⚠ **库里出现清单外的迁移行时，`--status`/`--down`/`--redo` 全部硬报错**
+  （knex 的 `validateMigrationList`：`The migration directory is corrupt, the following files are missing: …`）
+  → 回退代码版本后**连 `--down` 都不可用**（只能手改 `knex_migrations` 或先恢复代码）。
+
+#### 回滚
+- `pnpm.cmd run db:migrate:down`（回滚最近一批）
+- `node --import=tsx scripts/db-migrate.ts --down --all`（全回滚；⚠ 必须在 `apps/api` 下跑，`tsx` 只装在 `@miwo/api`）
+- ⚠ 回滚会 drop 表；先备份（`db:export` 或直接拷库）
+
+### 3. 老 sqlite 库怎么办
+
+**不要在已有的 29 张表的老库上原地跑 `001_schema`** —— 它会 `createTable` 撞"表已存在"（症状与处置见下一节）。
+正确路径（Task 6 的工具链）：
+
+1. `scripts/export-sqlite.cjs`（导出 NDJSON + manifest，含查重与 id 越界检查）
+2. 目标库先跑迁移到最新（空库）
+3. `scripts/import-mysql.cjs --apply`（进空库校验 + 列交集 + id 保真）
+4. `scripts/compare-db.cjs`（行数 + 抽样比对）
+5. 回滚：`db:migrate:down --all`（或从 `.db-backups` 恢复 sqlite）
+
+### 4. 本阶段已知的语义变化（不是 bug）
+
+- 重启后**不再**把 `state='生成中'` 自动改判为失败（旧 `fixDB.ts` 已删除）→ Phase 1d 的队列租约超时接管；
+  过渡期用 `pnpm.cmd run db:repair-stuck`。
+- `o_prompt` 不再被启动期覆写（运营改动会保留）。
+- `o_skillList` / `o_skillAttribution` 不再创建（迁移会 drop 掉老库里的这两张）。
+- `userId` 列已建出但**未回填**（回填归 Phase 1b）。
+- 全新库的 JWT 密钥来自配置 `MIWO_JWT_SECRET`（`o_setting.tokenKey` 不进新库）。
+
+### 5. 测试
+
+- 默认（无 MySQL）：`pnpm test` —— 所有 sqlite 用例 + **MySQL 集成用例 skip**
+- 真 MySQL：先 `mysql-local.ps1 -Action start|createdb`，然后
+  `$env:MIWO_TEST_MYSQL="1"; pnpm test`（或只跑 `pnpm.cmd exec vitest run tests/mysql-integration.test.ts`）
+- 慢用例（约 60s）：`$env:MIWO_TEST_SLOW="1"`
+
+⚠ `MIWO_TEST_MYSQL` 是**测试门控**，不是应用配置：它**不进** `apps/api/.env.example`、
+**不进** `deploy/`、也不在 `tools/check-deploy-config.cjs` 的白名单里（`check-deploy-config` 会红）。
+
+### 6. MySQL 特有行为（Task 7 首次真连的实测记录）
+
+| 观察 | 实测输出 |
+|---|---|
+| 服务端字符集 / 排序规则 / 时区 | `utf8mb4` / `utf8mb4_0900_ai_ci` / `+08:00`（`@@version` 8.4.11） |
+| `sql_mode` | `ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`（**严格模式**：超长/越界会报错而不是静默夹断） |
+| 表名大小写 | `@@lower_case_table_names = 1`（Windows）→ **表名按小写存储**：DDL 里是 `o_agentWorkData`，`information_schema` 回读 `o_agentworkdata`。Linux CI 上是 0。**比较表名要大小写归一** |
+| `FLOAT(M,D)` 废弃 | `T.float()` → `float(8,2)`；建表时服务端给 `Warning 1681 Specifying number of digits for floating point data types is deprecated and will be removed in a future release.`（**只是 warning**，DDL 成功；库里现有 3 列：`o_segment.duration`/`videoDuration`、`o_shot.duration`） |
+| 被索引的列不能是 TEXT | `t.text()` 在 mysql 是 `longtext`，**不能**出现在 primary key/index/unique 里（`ERROR 1170 ER_BLOB_KEY_WITHOUT_LENGTH`）→ 必须 `t.vstr()`（`varchar(191)`）。**静态 DDL 编译看不出这条**（SQL 串合法，是服务端语义校验）；`tests/migration-ddl-mysql.test.ts` 现在有一条机械断言兜它 |
+| 保留字 | 本库列名与 MySQL 保留字的交集恰好 4 个：`DESC` / `DESCRIBE` / `INDEX` / `KEY`（= `o_agentDeploy.desc`、各表的 `key`）。knex 一律用反引号包裹 → 不受影响。裸写 `SELECT desc FROM o_agentDeploy` 报 `ERROR 1064` |
+| `ALTER TABLE … ADD UNIQUE` 撞重复行 | `ERROR 1062 (23000) Duplicate entry '1791385147125-7-productionAgent' for key '…'`。**该 ALTER 是原子的**：唯一键没建出来、**两行都还在**（无部分写入）。所以"老库有重复行"必须在**导入前**查重拦下（Task 6 的 `preflightImport` 正是这么做的），而不是指望迁移报错 |
+| `bigint unsigned` 读回的 JS 类型 | **`number`**（不是 string）—— `supportBigNumbers:true` + `bigNumberStrings:false` 生效，`o_project.id = 1791385147125` 原样往返；只对 **> 2^53-1** 的值不安全（本项目的 id 都是 `Date.now()` 毫秒值，离 2^53 很远） |
+| 批量 insert 的 `insertId` | 单行 → `[1]`；两行 → `[2]`（**首行**的 id，sqlite 会是末行 3）。`tests/mysql-integration.test.ts` 把这条差异钉住了 |
+| `knex_migrations*` | `knex_migrations`（`id int unsigned auto_increment`，knex 内部实现）+ `knex_migrations_lock` 是**两张基础设施表**，不在 27 张业务表里 → Phase 1b 的 `policies.ts` 必须显式声明它们，否则 fail-closed 的策略检查会在任何碰它们的代码上报错 |
+
 ## 迁移纪律（spec §5.2）
 
 - 迁移清单是 `apps/api/src/db/migrations/index.ts` 的 `MIGRATIONS`（**顺序即执行顺序**），每条迁移对应同目录下一个

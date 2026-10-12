@@ -105,6 +105,90 @@ async function ddlFor(table: string): Promise<string> {
   return filtered.join("\n");
 }
 
+/** **全部** DDL 语句（27 张 create table + 各表的 add index/unique），顺序即迁移里的执行顺序。 */
+async function allDdl(): Promise<string[]> {
+  const stmts: string[] = [];
+  const collector: any = {
+    client: mysql.client,
+    schema: {
+      createTable: (name: string, cb: any) => {
+        for (const s of mysql.schema.createTable(name, cb).toSQL()) stmts.push(s.sql);
+        return Promise.resolve();
+      },
+      dropTableIfExists: () => Promise.resolve(),
+    },
+    raw: () => Promise.resolve(),
+  };
+  await (schema as any).up(collector);
+  return stmts;
+}
+
+/** MySQL 里**不给 key 前缀长度就不能进 key 规格**的类型（`text`/`blob` 家族）。 */
+const KEY_UNSAFE_TYPE = /^(?:tiny|medium|long)?(?:text|blob)$/i;
+
+interface KeyRef {
+  table: string;
+  index: string;
+  col: string;
+  /** `col`(N) 这种带 key 前缀长度的写法：MySQL 允许 text 这样建索引，不算违规。 */
+  hasPrefix: boolean;
+}
+
+/** 从编译出来的 DDL 里**机械**抽出所有 key 规格（primary key / add index / add unique）引用的列。 */
+function keyRefsOf(stmts: string[]): KeyRef[] {
+  const out: KeyRef[] = [];
+  const push = (table: string, index: string, raw: string): void => {
+    const hasPrefix = /\(\s*\d+\s*\)\s*$/.test(raw);
+    const col = raw.replace(/\(\s*\d+\s*\)\s*$/, "").trim().replace(/^`|`$/g, "");
+    if (col) out.push({ table, index, col, hasPrefix });
+  };
+  for (const s of stmts) {
+    const create = /^create table `([^`]+)` \(([\s\S]*)\)(?: default character set [a-z0-9_]+)?$/.exec(s);
+    if (create) {
+      const pk = /primary key \(([^)]*)\)/.exec(create[2]);
+      if (pk) for (const c of pk[1].split(",")) push(create[1], "primary key", c);
+      continue;
+    }
+    const alter = /^alter table `([^`]+)` add (?:unique )?index `([^`]+)`\(([^)]*)\)$/.exec(s);
+    if (alter) for (const c of alter[3].split(",")) push(alter[1], alter[2], c);
+  }
+  return out;
+}
+
+function countKeyRefs(stmts: string[]): number {
+  return keyRefsOf(stmts).length;
+}
+
+/**
+ * 机械判据：返回"被 key 规格引用、类型是 text/blob 家族、又没给 key 前缀长度"的列。
+ * 空数组 = 全部合法；任何一条非空都会让真 MySQL 报 **ER_BLOB_KEY_WITHOUT_LENGTH (1170)**。
+ */
+function scanKeyedTextColumns(stmts: string[]): string[] {
+  const ddlByTable = new Map<string, string>();
+  for (const s of stmts) {
+    const m = /^create table `([^`]+)`/.exec(s);
+    if (m) ddlByTable.set(m[1], s);
+  }
+  const bad: string[] = [];
+  for (const ref of keyRefsOf(stmts)) {
+    if (ref.hasPrefix) continue; // `col`(N) 是合法的 text 索引写法
+    const ddl = ddlByTable.get(ref.table);
+    if (!ddl) {
+      bad.push(`${ref.table}.${ref.col}: 找不到对应的 create table`);
+      continue;
+    }
+    let ty: string;
+    try {
+      ty = colType(ddl, ref.col);
+    } catch {
+      bad.push(`${ref.table}.${ref.col}: DDL 里找不到该列`);
+      continue;
+    }
+    if (KEY_UNSAFE_TYPE.test(ty)) bad.push(`${ref.table}.${ref.col} 是 ${ty}，却出现在 ${ref.index} 里`);
+  }
+  return bad.sort();
+}
+
 describe("dialect 的 mysql 分支（Task 1 遗留的未锁定代码）", () => {
   it("pk() 生成 bigint unsigned auto_increment 主键", () => {
     const ddl = ddlOf((t) => types(mysql).pk(t));
@@ -183,6 +267,39 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     const ddl = await ddlFor("memories");
     const line = ddl.split("\n").find((l) => l.includes("`isolationKey`"))!;
     expect(line).toMatch(/varchar\(191\)/);
+  });
+
+  it("任何被索引/主键引用的列都不得是 text/longtext（真 MySQL 会 ER_BLOB_KEY_WITHOUT_LENGTH 1170）", async () => {
+    // ⚠ 这条断言的来历（Task 7 首次真连 MySQL 时抓到）：`memories.type` 是 `t.text()`
+    //    （mysql 侧编译成 `longtext`），而它出现在复合索引 `memories_isolationkey_type_index` 里 ——
+    //    服务端直接拒绝：`alter table memories add index ... - BLOB/TEXT column 'type' used in
+    //    key specification without a key length`（errno 1170），**整个 001_schema 迁移失败**。
+    //    上面的「memories.isolationKey 是 varchar」只钉住了**那一个列名**：同一个反例（同一条规则、
+    //    同一个索引、相邻的那一列）完全逃逸。手写清单必然漏，所以这里改成**机械扫描**：
+    //    从编译出来的全部 DDL 里抽出每一条 key 规格（primary key / add index / add unique）的列，
+    //    再逐列抠类型 —— 加新索引时不需要维护任何清单。
+    //    ⚠ 为什么静态断言也值得有：1170 是**服务端**的语义校验，SQL 串本身完全合法，
+    //    所以"没连过真 MySQL"时它是唯一能提前发现的手段（真连的断言在
+    //    `tests/mysql-integration.test.ts`，门控 MIWO_TEST_MYSQL=1）。
+    const stmts = await allDdl();
+    const bad = scanKeyedTextColumns(stmts);
+    // 覆盖护栏：正则失效时 bad=[] 与 keyRefs=[] 会同为空 → 假绿。键规格实测 >40 条。
+    expect(countKeyRefs(stmts)).toBeGreaterThan(30);
+    expect(bad).toEqual([]);
+
+    // 判别力自证（在**合成 DDL** 上跑同一个谓词）：把 type 换回 longtext 必须被判违规；
+    // 带 key 前缀长度（`type`(20)）的写法是 MySQL 允许的，不得误报。
+    expect(
+      scanKeyedTextColumns([
+        "create table `t` (`type` longtext not null, primary key (`type`)) default character set utf8mb4",
+      ])
+    ).toHaveLength(1);
+    expect(
+      scanKeyedTextColumns([
+        "create table `t` (`id` bigint unsigned not null auto_increment primary key, `type` longtext not null) default character set utf8mb4",
+        "alter table `t` add index `t_type_index`(`type`(20))",
+      ])
+    ).toHaveLength(0);
   });
 
   it("o_agentWorkData 的唯一键出现在 DDL 里", async () => {

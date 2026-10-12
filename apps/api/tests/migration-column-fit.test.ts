@@ -267,9 +267,15 @@ describe("机械体检：老库实测值域 vs 001_schema 的 MySQL 目标类型
     // 数变了就说明目标 schema 或解析逻辑变了，先核对再改这些数（别顺手放开）。
     expect(totalTargetColumns).toBe(226);
     expect(checkedInt).toBe(47);
-    expect(checkedVarchar).toBe(26);
+    // 26 → 27（Task 7）：`memories.type` 由 `t.text()`（longtext，无上界）改成 `t.vstr()`
+    // （varchar(191)，有界 → 落进 checkedVarchar 桶）。原因是真 MySQL 拒绝
+    // `longtext` 出现在 key 规格里（ERROR 1170），见 `001_schema.ts` 该列的注释与
+    // `tests/migration-ddl-mysql.test.ts` 的机械断言。总数 226 与 checkedInt 47 不变，
+    // 所以 `unbounded` 同步 153 → 152（47+27+0+152 = 226）。
+    // ⚠ 这条断言在 Task 7 真的红了并逼出这次核对 —— 它按设计工作。
+    expect(checkedVarchar).toBe(27);
     expect(noSourceEvidence).toBe(0);
-    expect(unbounded).toBe(153);
+    expect(unbounded).toBe(152);
     expect(checkedInt + checkedVarchar + noSourceEvidence + unbounded).toBe(totalTargetColumns);
     expect(fixture.source.sha256, "fixture 来源变了：若确为重新记录，请同步更新这一行").toBe(
       "44716850b443f53524c1046afac4ecfbc6c21cc35c8da3a329781031b09c4ef2"
