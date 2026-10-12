@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-12T21:38:14.566Z",
+  "generatedAt": "2026-10-12T22:31:37.726Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 241,
+    "tsFilesScanned": 242,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)",
     "bypassFiles": "直接命名导入裸 db：import { db } from \"@/utils/db\"（spec 附录 B.1 的判据）",
@@ -21,7 +21,7 @@
     "apps/api/src/lib/fixDB.ts": {
       "count": 1,
       "lines": [
-        169
+        172
       ],
       "tables": [
         "o_vendorConfig"

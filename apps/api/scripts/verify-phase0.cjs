@@ -47,6 +47,34 @@ const SEED_DIR = path.join(API_ROOT, "src", "db", "migrations", "seed");
 //    而不是"文件说什么就是什么"。002 侧还有一道（缺失/0 行直接抛错），两道互为约束。
 const SEED_EXPECT = { "o_prompt.ndjson": 4, "o_agentDeploy.ndjson": 19, "o_setting.platform.ndjson": 4, "o_vendorConfig.templates.ndjson": 8 };
 
+/**
+ * 迁移名册的**唯一真相**：`src/db/migrations/index.ts` 的 `MIGRATIONS` 数组。
+ *
+ * ⚠ 这里**刻意不写死** `["001_schema", "002_platform_seed"]`：Task 10 往数组末尾追加了
+ *    `003_vendor_asset_sync`，写死的清单会把"追加一个合法迁移"误报成验收失败
+ *    （实测：Phase 0 第一次跑就是 `实际 ["001_schema","002_platform_seed","003_vendor_asset_sync"]`）。
+ *    **不削弱断言**：仍然要求库里 `knex_migrations` 的名字集合与数组**逐个相等**（含顺序），
+ *    而且下面还断言"解析出的名册非空"——否则解析失败会退化成 0 === 0 恒真（同 SEED_EXPECT 的教训）。
+ *    解析的是 `index.ts` 里 import 进来的标识符 + 数组里的元素，新增迁移照样被这条覆盖。
+ */
+function expectedMigrationNames() {
+  const src = fs.readFileSync(path.join(API_ROOT, "src", "db", "migrations", "index.ts"), "utf8");
+  const imported = new Map();
+  for (const line of src.split(/\r?\n/)) {
+    const m = /^import\s+(\w+)\s+from\s+["']@\/db\/migrations\/(\d{3}_[A-Za-z0-9_]+)["']/.exec(line.trim());
+    if (m) imported.set(m[1], m[2]);
+  }
+  const arr = /export\s+const\s+MIGRATIONS\s*:\s*Migration\[\]\s*=\s*\[([\s\S]*?)\n\];/.exec(src);
+  if (!arr) return [];
+  const body = arr[1].replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/.*$/gm, " ");
+  return body
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => /^\w+$/.test(x))
+    .map((x) => imported.get(x))
+    .filter(Boolean);
+}
+
 const G_FREEZE = "A 旧仓库冻结";
 const G_FILES = "B 构件存在";
 const G_BOOT = "C 应用能起";
@@ -277,8 +305,20 @@ function inspectMigratedDb(dbFile) {
 
     db = new Database(dbFile, { readonly: true });
     const applied = db.prepare("SELECT name FROM knex_migrations ORDER BY name").all().map((r) => r.name);
-    const want = ["001_schema", "002_platform_seed"];
-    record(G_BOOT, `迁移名册 = ${want.join(" + ")}`, JSON.stringify(applied) === JSON.stringify(want), `实际 ${JSON.stringify(applied)}`);
+    // ⚠ 期望值来自 `MIGRATIONS`（源码真相）而不是写死的清单；解析失败必须响亮地红，不能 0 === 0 恒真。
+    //    两边都按名字排序后比**集合**："库里恰好是这套名册、不多不少"才是这条要断言的事；
+    //    执行顺序由 `tests/migrations.test.ts` 的 `n1).toEqual(NAMES)` 与幂等用例钉住（那里是顺序敏感的）。
+    const want = expectedMigrationNames().sort();
+    if (!record(G_BOOT, "能从 src/db/migrations/index.ts 解析出非空迁移名册", want.length > 0, `解析到 ${JSON.stringify(want)}`)) {
+      /* 已记失败，继续跑后面的断言（后面的结论仍然要打印出来） */
+    }
+    const appliedSorted = [...applied].sort();
+    record(
+      G_BOOT,
+      `迁移名册 = ${want.join(" + ") || "(空)"}`,
+      want.length > 0 && JSON.stringify(appliedSorted) === JSON.stringify(want),
+      `实际 ${JSON.stringify(applied)}`,
+    );
 
     // ---- o_prompt：行数 + **排序后的 type 集合**都要与导出文件一致 ----
     // ⚠ 原来标签写的是"type 同集合"、实际只比了行数：行数相等而 type 换了（例如种错表 / 种串了行）

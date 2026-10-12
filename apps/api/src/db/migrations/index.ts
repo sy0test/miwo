@@ -15,6 +15,7 @@
 import type { Knex } from "knex";
 import schema from "@/db/migrations/001_schema";
 import platformSeed from "@/db/migrations/002_platform_seed";
+import vendorAssetSync from "@/db/migrations/003_vendor_asset_sync";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -30,7 +31,11 @@ export const MIGRATIONS: Migration[] = [
   // Task 5 产出 002_platform_seed（平台种子：只插不改；o_prompt / o_agentDeploy /
   // o_setting 平台键 / o_vendorConfig 8 个空模板；**不 seed tokenKey**）
   platformSeed,
-  // Task 6 会在这里追加 003_legacy_vendor_merge（仅在需要把旧供应商行合并进 miwo 时）
+  // Task 10 产出 003_vendor_asset_sync（适配器版本对账；**只报告不写盘**，down 是 no-op）。
+  // 它接手的是旧 `fixDB.ts` 的"按版本号重写 data/vendor/*.ts"分支：重写这件事被**删除**，
+  // 只保留"把 vendor.json 模板版本与磁盘适配器版本比出来"的报告能力（Phase 0 的 \r\n 假红灯
+  // 由此被**构造性消除** —— 没有任何路径会把模板回写进仓库文件）。
+  vendorAssetSync,
 ];
 
 /**
