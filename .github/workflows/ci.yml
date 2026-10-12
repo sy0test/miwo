@@ -1,8 +1,8 @@
-# miwo CI 骨架（Phase 0 / Task 11）
+# miwo CI 骨架（Phase 0 / Task 11；Phase 1a / Task 9 追加 mysql job 与「迁移幂等（sqlite）」）
 #
-# 两个 job 的命令顺序都是**硬约束**，改动前先读这里：
+# 三个 job 的命令顺序都是**硬约束**，改动前先读这里：
 #
-#   api：仓库检查 → 路由生成（幂等）→ 类型检查 → 单测 → 后端打包
+#   api：仓库检查 → 路由生成（幂等）→ 迁移幂等（sqlite）→ 类型检查 → 单测 → 后端打包
 #     · 仓库检查放在最前面是**快速失败**（fail fast）：它们只读 git 索引与源码、秒级完成，
 #       任何一条红了就没必要再花几分钟跑 generate/typecheck/test/build。
 #     · ⚠ 这个顺序**与 `apps/web/dist` 无关**。`tools/check-copy.cjs` 把 `apps/web/dist` 放进
@@ -15,6 +15,27 @@
 #       环境里零防漂移（谁改了 join/raw/裸 db 导入都不会被发现）。
 #     · 本 job **不启动应用**（不跑 `dev` / `start`）：端到端启动验证属 Task 13。
 #     · `pnpm install --frozen-lockfile` 是硬依赖：锁文件已入库（Task 5 实测可 frozen 安装）。
+#
+#   mysql：MySQL 8.4 service container → 迁移验收（8 条断言）→ 集成测试（**不允许 skipped**）
+#     · **为什么这个 job 必须存在**：Phase 0 的遗留缺口是"CI 里没有任何非 sqlite 路径"。
+#       `tests/mysql-integration.test.ts` 由 `MIWO_TEST_MYSQL=1` 门控（没这个变量整个文件 skip），
+#       所以 **job 级 env 必须显式设它**，否则"唯一的自动化环境里 MySQL 分支从来没被跑到"
+#       —— 这正是 Phase 0 抓过的"唯一事务守卫永不执行"（Ruling 26）的同族坑。
+#       `tools/check-ci-yaml.cjs` 现在把这条钉死（含 `MIWO_TEST_MYSQL` 必须恰好等于 "1"）。
+#     · **为什么用 service container 而不是"装一个 mysql"**：GitHub runner 上装 MySQL 要
+#       sudo/apt，慢且脆；`services:` 是官方支持的做法。就绪由 service 自己的
+#       `--health-cmd`（image 自带的 `mysqladmin ping`）保证：runner 等到 healthy 才开始跑 steps，
+#       所以**不需要**（也不该有）一个依赖 runner 上 `mysqladmin` 客户端的前置"等就绪"步骤
+#       —— runner 镜像不带 mysql 客户端是常态，加那种步骤比不加更脆。
+#     · **口令纪律（Ruling 107）**：绝不复用本机那种"root 无口令"的实例。这里用
+#       `MYSQL_ROOT_PASSWORD` + `MYSQL_DATABASE` + 专用账号，并把连接口令经 job 级 `env`
+#       传给应用；service 容器只活在本次 job 的网络命名空间里，3306 不对外暴露。
+#     · ⚠ **本 job 从未在真 GitHub runner 上跑过**（仓库无 remote，Phase 0 ledger 已如实记录）。
+#       现有证据是：① `tools/check-ci-yaml.cjs` 的结构断言；② 本机用**同一组环境变量 + 同一组
+#       命令**跑通（apps/api/scripts/verify-mysql-migration.cjs 8/8 + vitest 7 passed / 0 skipped）；
+#       ③ 明确声明"真 runner 未验证"。不要把这条写成已验证。
+#     · 与 mysql job 一一对应的本机脚本是 `apps/api/scripts/verify-mysql-migration.cjs`
+#       （8 条断言；含"空库/空源直接红"的空转护栏，见该文件头）。
 #
 #   web：build-only（vite build）→ check-no-shadow
 #     · **Phase 0 刻意不对 apps/web 做类型检查 —— 这个 job 不跑 `vue-tsc`。**
@@ -83,6 +104,21 @@ jobs:
       - name: 路由生成（幂等）
         working-directory: apps/api
         run: node --import=tsx scripts/generate-router.ts
+      # Phase 1a / Task 9：让 sqlite 侧的迁移**往返**也在 CI 里被跑到（up 幂等 → down --all → up）。
+      # MIWO_DATA_DIR 指到 runner.temp：迁移会在那里建一个一次性的 db2.sqlite，绝不碰仓库里的 data/。
+      - name: 迁移幂等（sqlite）
+        working-directory: apps/api
+        env:
+          MIWO_ENV: dev
+          MIWO_PORT: "10599"
+          MIWO_HOST: 127.0.0.1
+          MIWO_DATA_DIR: ${{ runner.temp }}/miwo-ci-data
+          MIWO_JWT_SECRET: ci-only-secret-at-least-32-bytes-long-0000
+        run: |
+          node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts
+          node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts
+          node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --down --all
+          node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts
       - name: 类型检查
         run: pnpm --filter @miwo/api run typecheck
       - name: 单测
@@ -105,3 +141,64 @@ jobs:
         run: pnpm --filter @miwo/web run build-only
       - name: 构建后守卫：源码树不得出现会遮蔽 vite.config.ts 的文件
         run: node tools/check-no-shadow.cjs
+
+  # ---------------------------------------------------------------------------
+  # mysql job：让 **MySQL 分支真的被跑到**（Phase 0 的遗留缺口：CI 从未跑过任何非 sqlite 路径）。
+  # 设计理由（service container / healthcheck / 口令纪律 / 真 runner 未验证）见文件头 `mysql：` 一节。
+  # ---------------------------------------------------------------------------
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        # 与本机实测的 8.4.11 同一 major；5.x 的 collation/严格模式差异会让断言失去意义。
+        image: mysql:8.4
+        env:
+          # ⚠【Ruling 107】口令是**必需**的：绝不复用本机那种 root 无口令的实例。
+          MYSQL_ROOT_PASSWORD: root-ci-password
+          MYSQL_DATABASE: miwo_test
+          MYSQL_USER: miwo
+          MYSQL_PASSWORD: miwo
+        ports:
+          - 3306:3306
+        # 就绪由本 healthcheck 保证：runner 会在 healthy 之后才开始跑 steps。
+        # 用 image 自带的 mysqladmin（runner 的宿主镜像**不一定**有 mysql 客户端，
+        # 所以刻意**不**加"等 MySQL 就绪"的 step —— 那会依赖一个不存在的工具）。
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot-ci-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      MIWO_ENV: dev
+      MIWO_PORT: "10599"
+      MIWO_HOST: 127.0.0.1
+      MIWO_DATA_DIR: ${{ runner.temp }}/miwo-ci-mysql-data
+      MIWO_JWT_SECRET: ci-only-secret-at-least-32-bytes-long-0000
+      MIWO_DB_DRIVER: mysql
+      MIWO_DB_HOST: 127.0.0.1
+      MIWO_DB_PORT: "3306"
+      MIWO_DB_USER: miwo
+      MIWO_DB_PASSWORD: miwo
+      MIWO_DB_NAME: miwo_test
+      # ⚠ 这一行是**整个 job 的要点**（Ruling 26 的"必须显式设置"）：少了它，
+      #    tests/mysql-integration.test.ts 的 describe.skipIf 会把 7 条用例全部 skip，
+      #    job 依然**全绿** —— 那就是"唯一自动化环境里从没跑到 MySQL 分支"。
+      #    tools/check-ci-yaml.cjs 断言它存在且恰好是 "1"。
+      MIWO_TEST_MYSQL: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: MySQL 迁移验收（8 条断言；空库直接红）
+        working-directory: apps/api
+        run: node scripts/verify-mysql-migration.cjs
+      - name: MySQL 集成测试（不允许 skipped）
+        working-directory: apps/api
+        run: pnpm exec vitest run tests/mysql-integration.test.ts --reporter=verbose
+        # 这里不写 `|| true`、也不写 continue-on-error —— 掩盖不是通过。
+        # 与上面 verify 脚本的断言 8 是**两条独立**的护栏：脚本内部用 require.resolve 解析
+        # vitest 入口并断言"0 skipped"；这一步是 CI 层面的同一份测试再跑一次（verbose 便于看用例名）。

@@ -20,7 +20,13 @@
  *      README 的留档同时存在，见第 6 条；
  *   6. `README.md` 的「已知问题 / Known issues」小节仍在、且**小节内**写明 `vue-tsc`、**47 条 / 17 个文件**
  *      的关键数字、以及 `Phase 3` 的**恢复条件**：防止"把红的步骤删掉、把原因也一起删掉"这种掩盖式通过
- *      （全文匹配的旧断言可以被任意一处无关文字满足，等于没守）。
+ *      （全文匹配的旧断言可以被任意一处无关文字满足，等于没守）；
+ *   7. 【Phase 1a / Task 9】`mysql` job 必须存在，且必须**真的跑** MySQL 分支：
+ *      有 `services.mysql`（镜像 `mysql:8.x`、含 `--health-cmd`、含口令类 env、有 ports）、
+ *      job 级 env 里 `MIWO_DB_DRIVER=mysql` 且 **`MIWO_TEST_MYSQL="1"`**、steps 里含
+ *      `verify-mysql-migration.cjs` 与 `mysql-integration.test.ts`、且**不得**出现 `continue-on-error`。
+ *      为什么：`tests/mysql-integration.test.ts` 由 `MIWO_TEST_MYSQL=1` 门控，缺 job 或缺这个变量
+ *      **两种情况都是全绿** —— 那正是 Phase 0 抓过的"唯一事务守卫永不执行"（Ruling 26）的同族坑。
  *
  * 用法：node tools/check-ci-yaml.cjs
  */
@@ -29,8 +35,20 @@ const path = require("path");
 const YAML = require("yaml");
 
 const p = path.resolve(__dirname, "..", ".github", "workflows", "ci.yml");
-const doc = YAML.parse(fs.readFileSync(p, "utf8"));
+const src = fs.readFileSync(p, "utf8");
 const failures = [];
+
+// ⚠ YAML 解析失败必须**显式报错**（而不是让 `YAML.parse` 的 stack trace 直接砸出来）：
+//    "结构被改坏"本身就是一条真实失败（GitHub 会让整个 workflow 静默不运行），
+//    而一条说得清的报错才能让人区分"文件坏了"与"某条断言不满足"。
+let doc = null;
+try {
+  doc = YAML.parse(src);
+} catch (e) {
+  console.error("check-ci-yaml 失败：");
+  console.error("  - .github/workflows/ci.yml 不是合法 YAML，整份 workflow 会静默不运行：" + e.message.split("\n")[0]);
+  process.exit(1);
+}
 
 function check(cond, msg) {
   if (!cond) failures.push(msg);
@@ -151,6 +169,64 @@ if (webJob) {
       "check-copy 把 dist 放在 `mustNotBeTracked`（查 git 索引，不是磁盘存在性），构建后跑同样安全；" +
       "旧版这条断言给的理由是**事实错误**（Task 12 必做 3 已修正）",
   );
+}
+
+// ---- Phase 1a / Task 9：mysql job 必须真实存在且**真的跑** MySQL 分支 ----
+// 为什么这段断言存在（Ruling 26 的同族坑）：`tests/mysql-integration.test.ts` 由
+// `MIWO_TEST_MYSQL=1` 门控（`describe.skipIf` 的等价写法），**没这个变量整个文件 skip**。
+// 于是"CI 里没有 mysql job"和"有 job 但没设 MIWO_TEST_MYSQL"这两种情况**都是全绿**的，
+// 而 MySQL 分支在唯一的自动化环境里一次都没被跑到 —— 正是 Phase 0 抓过的
+// "唯一的事务守卫永不执行"。所以这里不只断言 job 存在，还把镜像/健康检查/env/steps 逐项钉死。
+const mysqlJob = (doc.jobs || {}).mysql || null;
+if (!mysqlJob) {
+  failures.push("ci.yml 缺少 mysql job：Phase 1a 的 MySQL 分支必须在 CI 里真的被跑到（Phase 0 的遗留缺口）");
+} else {
+  const svc = mysqlJob.services && mysqlJob.services.mysql;
+  if (!svc) {
+    failures.push("ci.yml 的 mysql job 缺少 services.mysql（没有 MySQL 服务，测试只能 skip）");
+  } else {
+    if (!/^mysql:8\./.test(String(svc.image || ""))) {
+      failures.push(`ci.yml 的 mysql service 镜像必须是 mysql:8.x，实际 "${svc.image}"`);
+    }
+    const opts = String(svc.options || "");
+    if (!/--health-cmd/.test(opts)) {
+      failures.push("ci.yml 的 mysql service 缺少 --health-cmd（runner 会在 DB 就绪前开始跑 steps）");
+    }
+    // 【Ruling 107·安全】口令纪律：service 必须是"独立容器 + 口令"，不得复用本机那种 root 无口令的实例。
+    const svcEnv = svc.env || {};
+    for (const k of ["MYSQL_ROOT_PASSWORD", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"]) {
+      if (String(svcEnv[k] ?? "") === "") failures.push(`ci.yml 的 mysql service 缺少 env ${k}（口令/库名必须显式给出，不能沿用本机 root 无口令的写法）`);
+    }
+    if (/MYSQL_ALLOW_EMPTY_PASSWORD/i.test(JSON.stringify(svcEnv))) {
+      failures.push("ci.yml 的 mysql service 出现 MYSQL_ALLOW_EMPTY_PASSWORD：那等于把本机「root 无口令」搬进 CI（Ruling 107）");
+    }
+    if (svc.ports === undefined || (Array.isArray(svc.ports) && svc.ports.length === 0)) {
+      failures.push("ci.yml 的 mysql service 没有 ports：job 容器必须能连到 service");
+    }
+  }
+  const env = mysqlJob.env || {};
+  for (const k of ["MIWO_DB_DRIVER", "MIWO_DB_HOST", "MIWO_DB_PORT", "MIWO_DB_USER", "MIWO_DB_NAME", "MIWO_TEST_MYSQL"]) {
+    if (String(env[k] ?? "") === "") failures.push(`ci.yml 的 mysql job 缺少 env ${k}`);
+  }
+  // 口令也要经 job 级 env 传给应用（否则 root 无口令那套会传染回来）
+  for (const k of ["MIWO_DB_PASSWORD", "MIWO_JWT_SECRET"]) {
+    if (String(env[k] ?? "") === "") failures.push(`ci.yml 的 mysql job 缺少 env ${k}`);
+  }
+  if (String(env.MIWO_DB_DRIVER) !== "mysql") {
+    failures.push(`ci.yml 的 mysql job 的 MIWO_DB_DRIVER 必须是 mysql，实际 "${env.MIWO_DB_DRIVER}"`);
+  }
+  if (String(env.MIWO_TEST_MYSQL) !== "1") {
+    failures.push(`ci.yml 的 mysql job 的 MIWO_TEST_MYSQL 必须是 "1"（否则集成测试会 skip，等于没跑）`);
+  }
+  const steps = JSON.stringify(mysqlJob.steps || []);
+  for (const needle of ["verify-mysql-migration.cjs", "mysql-integration.test.ts"]) {
+    if (!steps.includes(needle)) failures.push(`ci.yml 的 mysql job 的 steps 里找不到 "${needle}"`);
+  }
+  // ⚠ 判据刻意严于"值为 true"：**出现这个键就算失败**。`continue-on-error: false` 看起来无害，
+  //    但它会让"这一步失败了 CI 也绿"变成一个随时可被改一个词翻过来的开关；这里不留这个开关。
+  if (/continue-on-error/.test(steps)) {
+    failures.push("ci.yml 的 mysql job 步骤里出现 continue-on-error：那是掩盖，不是通过");
+  }
 }
 
 // ---- B2 的"移除而非掩盖"必须留档：README 的「已知问题」小节与 Phase 3 追踪项必须还在 ----
