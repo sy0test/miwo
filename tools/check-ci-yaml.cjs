@@ -142,6 +142,22 @@ if (apiJob) {
   check(apiRuns.includes("pnpm --filter @miwo/api test"), "api job 缺少 `pnpm --filter @miwo/api test`");
   check(apiRuns.includes("pnpm --filter @miwo/api run build"), "api job 缺少 `pnpm --filter @miwo/api run build`");
   check(!/pnpm\s+(run\s+)?(dev|start)\b/.test(apiRuns), "api job 不得启动应用（dev/start），端到端启动验证属 Task 13");
+
+  // Phase 1a / Task 11：Phase 1a 的**唯一验收命令**必须在 api job 里真的被跑到。
+  // ⚠ 为什么这条断言不是"多余的"：`verify-phase1a.cjs` 是 sqlite 口径的收口断言集合
+  //    （迁移机制/库层/数据层闭环/静态 DDL/仓库卫生）。**只加脚本、不加 CI 步骤**时，
+  //    它在唯一的自动化环境里一次都不会跑 —— 正是本仓库反复抓到的
+  //    "唯一的事务守卫永不执行"（Ruling 26）的同族坑。所以这里和 mysql job 那几条一样把它钉死。
+  check(
+    apiRuns.includes("pnpm run verify:phase1a"),
+    "api job 缺少 `pnpm run verify:phase1a`（Phase 1a 的唯一验收命令必须在 CI 里真的跑到）",
+  );
+  // 形态门禁（裁定 B）也必须在**快速失败**的前半段里，而不是只在 verify:phase1a 内部被间接调用：
+  // 仓库检查序列是"秒级、只读源码"，把用例形态放进这一批才能在 typecheck/test 之前拦住。
+  check(
+    apiRuns.includes("node tools/check-test-early-return.cjs"),
+    "api job 缺少 `node tools/check-test-early-return.cjs`（控制器裁定 B：禁止用例里的静默早退形态）",
+  );
 }
 
 // ---- web job：Phase 0 的门禁是 build-only（vite build），**不是** vue-tsc ----
@@ -221,6 +237,24 @@ if (!mysqlJob) {
   const steps = JSON.stringify(mysqlJob.steps || []);
   for (const needle of ["verify-mysql-migration.cjs", "mysql-integration.test.ts"]) {
     if (!steps.includes(needle)) failures.push(`ci.yml 的 mysql job 的 steps 里找不到 "${needle}"`);
+  }
+  // ⚠ Phase 1a / Task 11：mysql job **必须**先把合成 dev 库快照造出来。
+  //   为什么把它钉死而不是"可选"：`tests/mysql-integration.test.ts` 的搬迁用例源库是
+  //   `apps/api/data/db2.sqlite`（被 .gitignore 忽略，全新 checkout 上没有）。少了这一步，
+  //   那条用例会被 `it.skipIf` 显式跳过，而 `verify-mysql-migration.cjs` 的断言 8 的判据是
+  //   "0 skipped" ⇒ **CI 会红**（这正是裁定 B 要的效果：不再有"假装通过"）。
+  //   两种修法里我们选了"给 CI 一份可用的源库"，而不是"放宽断言 8"。
+  //   —— 这条断言防的是"有人把这一步删掉，然后忘了 CI 会红"。
+  if (!steps.includes("gen-dev-db-fixture.cjs")) {
+    failures.push(
+      "ci.yml 的 mysql job 缺少 `gen-dev-db-fixture.cjs` 这一步：没有它，搬迁用例会被显式跳过，" +
+        "而断言 8 要求 0 skipped ⇒ job 必红。别删这一步来'修'红色，那是在掩盖而不是通过。",
+    );
+  }
+  const iFixture = JSON.stringify(mysqlJob.steps || []).indexOf("gen-dev-db-fixture.cjs");
+  const iVerify = JSON.stringify(mysqlJob.steps || []).indexOf("verify-mysql-migration.cjs");
+  if (iFixture >= 0 && iVerify >= 0 && !(iFixture < iVerify)) {
+    failures.push("ci.yml 的 mysql job 顺序错误：必须先 gen-dev-db-fixture.cjs（造源库），再 verify-mysql-migration.cjs");
   }
   // ⚠ 判据刻意严于"值为 true"：**出现这个键就算失败**。`continue-on-error: false` 看起来无害，
   //    但它会让"这一步失败了 CI 也绿"变成一个随时可被改一个词翻过来的开关；这里不留这个开关。

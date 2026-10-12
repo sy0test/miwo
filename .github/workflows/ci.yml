@@ -101,6 +101,10 @@ jobs:
           node tools/check-natives.cjs
           node tools/check-tenant-exceptions.cjs
           pnpm run verify:deploy
+          # Phase 1a / Task 11（控制器裁定 B = Ruling 127）：**形态**门禁，禁止
+          # "用例体最外层的守卫式 `return;`"（静默早退既不是 pass 也不是 skip，
+          # "0 skipped" 这类断言测不到它）。放在这里是因为它只读源码、秒级完成（快速失败序列）。
+          node tools/check-test-early-return.cjs
       - name: 路由生成（幂等）
         working-directory: apps/api
         run: node --import=tsx scripts/generate-router.ts
@@ -125,6 +129,14 @@ jobs:
         run: pnpm --filter @miwo/api test
       - name: 后端打包（产物 data/serve/app.js 已被 .gitignore 忽略）
         run: pnpm --filter @miwo/api run build
+      # Phase 1a / Task 11：Phase 1a 的唯一验收命令，**放在最后**。
+      # 它会自己起一次迁移（用 %TEMP% 下的一次性 dataDir，绝不碰仓库 data/），所以放在
+      # 后端打包之后没有问题（不依赖构建产物）。⚠ 它依赖 apps/api/data/db2.sqlite 的部分
+      # （C 组）在 CI 上**必然没有**（gitignored）—— 那种情况下 C 组记的是**显式**结论，
+      # 不是静默早退（见脚本头 + tools/check-test-early-return.cjs）。
+      # MySQL 口径不由本步覆盖：那条路径归下面的 mysql job（verify-mysql-migration.cjs）。
+      - name: Phase 1a 验收（sqlite 口径；MySQL 口径由 mysql job 覆盖）
+        run: pnpm run verify:phase1a
 
   web:
     runs-on: ubuntu-latest
@@ -193,6 +205,18 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Phase 1a / Task 11：给 mysql job 造一份**合成**的 dev 库快照。
+      # 为什么必须有这一步：`tests/mysql-integration.test.ts` 的"dev sqlite 库 → MySQL 全量搬迁"
+      # 用例的源库是 `apps/api/data/db2.sqlite`，而它被 `apps/api/.gitignore` 的 `*.sqlite` 忽略
+      # ⇒ 全新 checkout 上不存在。改动前它靠裸 `return;` **静默早退**（既不是 pass 也不是 skip，
+      # "0 skipped"那条断言看不见它）；改成 `it.skipIf` 之后它就变成**诚实的一跳**，
+      # 而 `verify-mysql-migration.cjs` 的断言 8 会看到 1 skipped 并判红。
+      # 与其**放宽断言**，不如**给 CI 一份可用的源库** —— 被跳过的恰恰是"整库搬迁 + 逐表行数 +
+      # 分层抽样逐列一致"这条端到端判据，正是最该在自动化环境里被跑到的那一条。
+      # ⚠ 生成物是 `*.sqlite`（.gitignore 覆盖）⇒ `tools/check-copy.cjs` 查 git 索引，不受影响。
+      - name: 生成合成 dev 库快照（供 MySQL 搬迁用例；仓库里没有真库，它被 gitignore）
+        working-directory: apps/api
+        run: node scripts/gen-dev-db-fixture.cjs
       - name: MySQL 迁移验收（8 条断言；空库直接红）
         working-directory: apps/api
         run: node scripts/verify-mysql-migration.cjs

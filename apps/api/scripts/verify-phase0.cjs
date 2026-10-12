@@ -48,14 +48,19 @@ const SEED_DIR = path.join(API_ROOT, "src", "db", "migrations", "seed");
 const SEED_EXPECT = { "o_prompt.ndjson": 4, "o_agentDeploy.ndjson": 19, "o_setting.platform.ndjson": 4, "o_vendorConfig.templates.ndjson": 8 };
 
 /**
- * 迁移名册的**唯一真相**：`src/db/migrations/index.ts` 的 `MIGRATIONS` 数组。
+ * 迁移名册的**真相**：`src/db/migrations/index.ts` 的 `MIGRATIONS` 数组。
  *
- * ⚠ 这里**刻意不写死** `["001_schema", "002_platform_seed"]`：Task 10 往数组末尾追加了
- *    `003_vendor_asset_sync`，写死的清单会把"追加一个合法迁移"误报成验收失败
- *    （实测：Phase 0 第一次跑就是 `实际 ["001_schema","002_platform_seed","003_vendor_asset_sync"]`）。
- *    **不削弱断言**：仍然要求库里 `knex_migrations` 的名字集合与数组**逐个相等**（含顺序），
- *    而且下面还断言"解析出的名册非空"——否则解析失败会退化成 0 === 0 恒真（同 SEED_EXPECT 的教训）。
- *    解析的是 `index.ts` 里 import 进来的标识符 + 数组里的元素，新增迁移照样被这条覆盖。
+ * ⚠ 解析**不能**单独当判据（Task 11 / 控制器裁定 C = ★Ruling 132，与 Ruling 63 同族）：
+ *    Task 10 把期望值从"写死清单"改成"从 `index.ts` 现解析"，方向可以理解（追加迁移不该误报），
+ *    但它引入了一个**期望值从被测对象推导**的回路 —— 有人**删掉**一个迁移时，`MIGRATIONS` 变小、
+ *    解析出的期望值跟着变小、库里也确实少了那一条 ⇒ **两边一起缩小，断言不红**。
+ *    那正是 Ruling 63 的形态（"期望值与被测值同源 ⇒ 恒真"）。
+ *
+ * 现在两道一起用（见 `MIGRATION_ALLOWLIST` 与下面的断言）：
+ *   ① **硬编码 allowlist**：已知迁移名逐个写死在这里，断言"解析出的名册 **⊇** allowlist"。
+ *      追加迁移只需往 allowlist 加一行（**有意的**行为）；删掉既有迁移会**立刻红**。
+ *   ② 解析名册非空 + 与库里 `knex_migrations` 的名字集合**逐个相等**（含顺序的历史断言在
+ *      `tests/migrations.test.ts` 的 `n1).toEqual(NAMES)`）。
  */
 function expectedMigrationNames() {
   const src = fs.readFileSync(path.join(API_ROOT, "src", "db", "migrations", "index.ts"), "utf8");
@@ -74,6 +79,18 @@ function expectedMigrationNames() {
     .map((x) => imported.get(x))
     .filter(Boolean);
 }
+
+/**
+ * **硬编码**的已知迁移名 allowlist（Task 11 / 控制器裁定 C）。
+ *
+ * ⚠ **删掉一行 = 削弱判据**，不要这么做。它是"解析名册 ⊇ 这个集合"里的那个**不动点**：
+ *    唯一的合法改动是**追加**（有了新迁移就往末尾加一行，与 `MIGRATIONS` 数组同步）。
+ *    ⚠ 这里刻意**不**写成"从 index.ts 推导的下界"，也不写成"长度 >= N"：前者是回路本身，
+ *    后者在"删一个旧的、加一个新的"时仍然不红（数量守恒），而这两件事的语义完全相反。
+ *    **逐名**写死才能同时锁住"没被删"和"没被换"。
+ */
+const MIGRATION_ALLOWLIST = ["001_schema", "002_platform_seed", "003_vendor_asset_sync"];
+
 
 const G_FREEZE = "A 旧仓库冻结";
 const G_FILES = "B 构件存在";
@@ -155,7 +172,11 @@ function checkFrozenRepos() {
 
 // ---------- B. 构件存在 ----------
 function checkArtifacts() {
-  for (const rel of ["apps/api/src/config.ts", "apps/api/src/router.ts", "deploy/docker-compose.yml", "deploy/.env.example"]) {
+  // Phase 1a / Task 11：启动路径的**结构真相**已从 `lib/{initDB,fixDB}.ts` 迁到
+  // `src/db/migrations/`。那两个旧文件仍然存在（Phase 1c 才删），但它们**不再**是
+  // "新仓库能起"的构件 —— 所以这里换成迁移目录的入口（条数不变：4 → 4，
+  // ⚠ 是**替换**一条，不是新增/删除，别把总数改动）。
+  for (const rel of ["apps/api/src/config.ts", "apps/api/src/router.ts", "apps/api/src/db/migrations/index.ts", "deploy/docker-compose.yml", "deploy/.env.example"]) {
     const abs = path.join(MIWO_ROOT, rel);
     if (fs.existsSync(abs)) pass(G_FILES, `存在 ${rel}`);
     else fail(G_FILES, `存在 ${rel}`, `缺少 ${abs}`);
@@ -308,15 +329,32 @@ function inspectMigratedDb(dbFile) {
     // ⚠ 期望值来自 `MIGRATIONS`（源码真相）而不是写死的清单；解析失败必须响亮地红，不能 0 === 0 恒真。
     //    两边都按名字排序后比**集合**："库里恰好是这套名册、不多不少"才是这条要断言的事；
     //    执行顺序由 `tests/migrations.test.ts` 的 `n1).toEqual(NAMES)` 与幂等用例钉住（那里是顺序敏感的）。
-    const want = expectedMigrationNames().sort();
-    if (!record(G_BOOT, "能从 src/db/migrations/index.ts 解析出非空迁移名册", want.length > 0, `解析到 ${JSON.stringify(want)}`)) {
+    const parsed = expectedMigrationNames().sort();
+    if (!record(G_BOOT, "能从 src/db/migrations/index.ts 解析出非空迁移名册", parsed.length > 0, `解析到 ${JSON.stringify(parsed)}`)) {
       /* 已记失败，继续跑后面的断言（后面的结论仍然要打印出来） */
     }
+
+    // ---- 裁定 C（★Ruling 132）：解析名册 **⊇ 硬编码 allowlist** ----
+    // ⚠ 这一条**故意**与上面那条"解析得出来"分开记：它们治的是两个不同的病。
+    //   上面治"解析正则失效 ⇒ 空清单 vs 空清单恒真"；这一条治"期望值从被测对象推导 ⇒
+    //   删掉一个迁移时期望也跟着缩小、于是不红"。缺了它，`MIGRATIONS` 少一项就查不出来。
+    const missingFromParsed = MIGRATION_ALLOWLIST.filter((n) => !parsed.includes(n));
+    record(
+      G_BOOT,
+      `解析名册包含全部 ${MIGRATION_ALLOWLIST.length} 条硬编码已知迁移（${MIGRATION_ALLOWLIST.join(" + ")}）`,
+      missingFromParsed.length === 0,
+      missingFromParsed.length
+        ? `名册里**少了** ${JSON.stringify(missingFromParsed)} —— 既有迁移被删/被改名了。` +
+          `⚠ 若这是**有意**删除，必须同时删掉 verify-phase0.cjs 的 MIGRATION_ALLOWLIST 里那一行（那是一次判据修改，不是一次"修复"）；` +
+          `若只是新增迁移，往 allowlist 末尾**追加**一行即可。解析到 ${JSON.stringify(parsed)}`
+        : `解析到 ${JSON.stringify(parsed)}`,
+    );
+
     const appliedSorted = [...applied].sort();
     record(
       G_BOOT,
-      `迁移名册 = ${want.join(" + ") || "(空)"}`,
-      want.length > 0 && JSON.stringify(appliedSorted) === JSON.stringify(want),
+      `迁移名册 = ${parsed.join(" + ") || "(空)"}`,
+      parsed.length > 0 && JSON.stringify(appliedSorted) === JSON.stringify(parsed),
       `实际 ${JSON.stringify(applied)}`,
     );
 
@@ -449,6 +487,10 @@ async function checkBootAndApi() {
     MIWO_PORT: String(port),
     MIWO_HOST: "127.0.0.1",
     MIWO_DATA_DIR: dataDir,
+    // ⚠ Phase 1a / Task 11：本脚本是"全新空目录 + 空库能不能起"的验收，**必须显式用 sqlite**。
+    //    否则 `apps/api/.env` 里若设了 `MIWO_DB_DRIVER=mysql`，它就会去连一个可能不存在的 MySQL，
+    //    把"空库能起"验成"MySQL 连不上"。数据目录已经是一次性目录，驱动也必须同样是一次性的。
+    MIWO_DB_DRIVER: "sqlite",
     MIWO_JWT_SECRET: "phase0-verification-secret-at-least-32-bytes",
     NODE_OPTIONS: "--import=tsx",
   };

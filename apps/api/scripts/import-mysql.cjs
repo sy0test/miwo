@@ -33,6 +33,18 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+// ⚠ 数据库**目标护栏**（Task 11 / 控制器裁定 A：★Ruling 131 机制加固）。
+//    这里是"漏设 MIWO_DB_DRIVER 会静默写真实 dev 库"最危险的一处：`--apply` 会**写**目标库，
+//    而目标库恰恰由 `MIWO_DB_DRIVER` 决定。旧行为下漏设驱动 = 把老库数据整表灌进
+//    `apps/api/data/db2.sqlite`（Task 10 写坏过的那份文件），而且因为它带 `--apply` 还是"真写"。
+//    · 护栏 ①：脚本自称"把导出物导入目标库"，但**绝大多数**调用点是 MySQL 部署路径 ——
+//      所以只在调用方已经声明 `MIWO_DB_DRIVER=mysql` 时才用 mysql 口径复述（漏设时不报"你不是
+//      mysql"这种噪音），真正的兜底是护栏 ②，它对**任何**驱动都生效。
+//    · 护栏 ②：目标落在仓库内 dev 库 且 `MIWO_DATA_DIR` 未显式给出 → 拒绝，除非显式放行。
+const guard = require("./db-target-guard.cjs");
+const guardArgv = process.argv.slice(2);
+if (guard.driverOf() === "mysql") guard.requireDriver("mysql", "db:import");
+guard.requireRepoDevDbAllowed({ argv: guardArgv, what: "db:import" });
 
 const API_ROOT = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);

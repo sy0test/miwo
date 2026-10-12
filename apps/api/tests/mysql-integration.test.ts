@@ -37,6 +37,23 @@ import {
 const ENABLED = process.env.MIWO_TEST_MYSQL === "1";
 const d = ENABLED ? describe : describe.skip;
 
+/**
+ * 仓库里的老 sqlite 快照（搬迁用例的源库）。它被 `apps/api/.gitignore` 的 `*.sqlite` 忽略
+ * ⇒ **全新 checkout（含 CI 的 mysql job）上没有它**。
+ *
+ * ⚠⚠ **Task 11 / 控制器裁定 B（★Ruling 127）：禁止"静默早退"这种测试形态。**
+ * 本文件原来在搬迁用例里写的是 `if (!fs.existsSync(devPath)) return;`。那比"漏测"更坏：
+ *   ① 全新 checkout 上**必然**走那条路；
+ *   ② 早退（`return`）在 vitest 里**既不是 pass 也不是 skip** ⇒ 那条"0 skipped"断言
+ *      （`verify-mysql-migration.cjs` 的断言 8）**测不到它**：摘要照样写 `N passed`，全绿。
+ *
+ * 现在的形态从"运行时早退"改成**收集期的 `it.skipIf`**：没得跑的用例会被标成 skipped，
+ * 于是它一定出现在摘要里（`Tests  N passed | 1 skipped (N+1)`），任何口径的 skip 计数都看得见它。
+ * 门禁侧另有一道形态门禁（`tools/check-test-early-return.cjs`），禁止裸 `return;` 再长回来。
+ */
+const DEV_DB_PATH = path.resolve(__dirname, "..", "data", "db2.sqlite");
+const DEV_DB_PRESENT = fs.existsSync(DEV_DB_PATH);
+
 d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
   it("配置确实指向 mysql（防止误把 sqlite 当 mysql 测）", () => {
     expect(config.db.driver).toBe("mysql");
@@ -193,9 +210,10 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
    * ⚠ 老库快照 `apps/api/data/db2.sqlite` **只读**打开（`better-sqlite3` 的 `readonly`），
    *   并且这里**不**断言它的 sha256（那条硬约束由 `legacy-import.test.ts` 与 `export-sqlite.cjs` 守）。
    */
-  it("dev sqlite 库 → MySQL 全量搬迁：逐表行数与分层抽样逐列一致", async () => {
-    const devPath = path.resolve(__dirname, "..", "data", "db2.sqlite");
-    if (!fs.existsSync(devPath)) return; // CI 上没有 dev 库快照
+  it.skipIf(!DEV_DB_PRESENT)(
+    `dev sqlite 库 → MySQL 全量搬迁：逐表行数与分层抽样逐列一致${DEV_DB_PRESENT ? "" : "（无 dev 库快照 → 显式 skip）"}`,
+    async () => {
+      const devPath = DEV_DB_PATH;
 
     // ⚠ 四张平台种子表在 `002` 之后**已经有行**，而 `importTable()` 是"整表搬"的原语：
     //   它对种子表会撞主键（实测 `Duplicate entry '1' for key 'o_agentdeploy.PRIMARY'`）。
@@ -367,4 +385,23 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       await db.destroy();
     }
   }, 180000);
+});
+
+/**
+ * **skip 归因**（Task 11 / 控制器裁定 B = ★Ruling 127 的配套断言；**故意放在 `d(...)` 之外**）。
+ *
+ * 上面那条搬迁用例在"没有 dev 库快照"时会 `it.skipIf` 掉。这条用例让那个 skip **有据可查**：
+ * 它**在默认套件里也真的跑**（不受 `MIWO_TEST_MYSQL` 门控），并断言 `DEV_DB_PRESENT` 与磁盘事实一致。
+ * 于是"跳过搬迁用例"只可能是"这份快照真的不在"，不可能是"有人把条件写反了/把用例注掉了"——
+ * 后者会让 `DEV_DB_PRESENT` 与事实不符而当场红。
+ *
+ * ⚠ 为什么**不**放进 `d(...)` 里：`d` 在没有 `MIWO_TEST_MYSQL=1` 时是 `describe.skip`，
+ *   放在里面它就只在 MySQL 场景出现 —— 而"默认套件里到底跳了哪些"恰恰是 Ruling B 要盯的东西
+ *   （默认套件的 skip 必须**逐条可归因**，不能有"因为整个 describe 被 skip 所以看不见"的盲区）。
+ */
+it("skip 归因：dev 库快照的存在性与搬迁用例的 skip 条件一致（默认套件也跑）", () => {
+  expect(
+    DEV_DB_PRESENT,
+    `${DEV_DB_PATH} 的存在性必须与 DEV_DB_PRESENT 一致（不一致 = 有人在用假条件跳过搬迁用例）`,
+  ).toBe(fs.existsSync(DEV_DB_PATH));
 });

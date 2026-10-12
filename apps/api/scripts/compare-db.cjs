@@ -48,6 +48,15 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+// ⚠ 数据库**目标护栏**（Task 11 / 控制器裁定 A：★Ruling 131 机制加固）。
+//    比对是搬迁链的**最后一步**，它的目标库由 `MIWO_DB_DRIVER` / `MIWO_DATA_DIR` 决定 ——
+//    也就是最容易"忘了设驱动 → 拿 sqlite 目标库去和 MySQL 的导入报告比"的地方
+//    （旧行为下那会静默去连 apps/api/data/db2.sqlite，正是 Task 10 写坏过的那份文件）。
+//    两条护栏都上：意图 MySQL 就必须显式声明；目标落在仓库内 dev 库就必须显式放行。
+const guard = require("./db-target-guard.cjs");
+const guardArgv = process.argv.slice(2);
+if (guard.driverOf() === "mysql") guard.requireDriver("mysql", "db:compare");
+guard.requireRepoDevDbAllowed({ argv: guardArgv, what: "db:compare" });
 
 const API_ROOT = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);

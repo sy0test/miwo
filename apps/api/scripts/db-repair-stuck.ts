@@ -32,6 +32,11 @@
 import type { Knex } from "knex";
 import { config } from "@/config";
 import { createKnex, describeTarget } from "@/db/connect";
+// ⚠ 数据库**目标护栏**（Task 11 / 控制器裁定 A：禁止默认打到真实 dev 库）。
+//    本文件是"写库"脚本（`--apply` 会 UPDATE 六类"生成中"行），所以两条护栏都上。
+//    与 `db-migrate.ts` 同一位置、同一理由：纯 CJS 的 `scripts/db-target-guard.cjs`，
+//    类型来自同目录 `db-target-guard.d.cts`（`export =` + esModuleInterop）。
+import guard from "./db-target-guard.cjs";
 
 /** 与旧 fixDB 逐条对应的 6 类"生成中"状态。`timeColumn` 是该表**真正存在**的时间列
  *  （`o_image` 没有 —— 见下面 SKIP 的说明）。 */
@@ -236,6 +241,9 @@ function fmtTime(ms: number | null): string {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const cutoffMs = args.cutoffMs;
+  // ⚠ 在 `createKnex()` **之前**判定目标（同 `db-migrate.ts`）：sqlite 分支下建连就等于打开了
+  //    那份文件，"连上再拦"已经把目标打开了。dry-run 也拦 —— 判别力不该取决于 `--apply`。
+  guard.requireRepoDevDbAllowed({ argv: process.argv.slice(2), what: "db:repair-stuck" });
 
   const db = createKnex();
   try {

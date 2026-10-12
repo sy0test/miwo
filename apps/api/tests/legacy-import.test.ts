@@ -51,6 +51,18 @@ import {
 } from "@/db/legacy/import";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-legacy-"));
+
+/**
+ * 仓库里的老 sqlite 快照。被 `apps/api/.gitignore` 的 `*.sqlite` 忽略 ⇒ 全新 checkout（含 CI）上没有它。
+ *
+ * ⚠⚠ **Task 11 / 控制器裁定 B（★Ruling 127）：禁止"静默早退"这种测试形态。**
+ * 本文件下面那条反例用例原先写的是 `if (!fs.existsSync(devPath)) return;` ——
+ * 早退在 vitest 里**既不是 pass 也不是 skip**，于是"0 skipped"这类断言**测不到它**，
+ * 摘要照样全绿。现在改成**收集期的 `it.skipIf`**：跳过一定出现在摘要里（`N skipped`）。
+ * 形态门禁：`tools/check-test-early-return.cjs`（它会逐文件打红"用例体最外层的守卫式 return"）。
+ */
+const DEV_DB_PATH = path.resolve(__dirname, "..", "data", "db2.sqlite");
+const DEV_DB_PRESENT = fs.existsSync(DEV_DB_PATH);
 // ⚠ Windows 上一次性库文件的句柄可能还没释放完 → rmSync 会 EPERM（同 migration-seed.test.ts）。
 afterAll(() => {
   for (let i = 0; i < 5; i++) {
@@ -594,11 +606,12 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
     await dst.destroy();
   });
 
-  it("⚠ 反例：**不能**在已存在的 dev 库（29 张老表）上原地跑 001_schema —— 必须撞 'table already exists'", async () => {
+  it.skipIf(!DEV_DB_PRESENT)(
+    `⚠ 反例：**不能**在已存在的 dev 库（29 张老表）上原地跑 001_schema —— 必须撞 'table already exists'${DEV_DB_PRESENT ? "" : "（无 dev 库快照 → 显式 skip）"}`,
+    async () => {
     // 这条断言是**故意要红的**：它把"老库不能原地迁移"这条限制钉成可执行的文档，
     // 免得下一个人在 apps/api/data/db2.sqlite 上跑 `pnpm dev` 看到 table already exists 以为迁移写错了。
-    const devPath = path.resolve(__dirname, "..", "data", "db2.sqlite");
-    if (!fs.existsSync(devPath)) return; // CI 上没有 dev 库
+    const devPath = DEV_DB_PATH;
     // ⚠ 顺带把【Ruling 1】的"源库只读"钉进回归网：本用例前后 dev 库的 sha256 必须一致。
     const sha = () => crypto.createHash("sha256").update(fs.readFileSync(devPath)).digest("hex");
     const before = sha();
@@ -619,5 +632,6 @@ describe("SQLite → 目标库 搬迁（spec §12.2 T5）", () => {
     //   不能在原地跑 001_schema。真 MySQL 上的完整往返由 Task 8 覆盖。
     await db2.destroy();
     expect(sha(), "dev 库被改写了（搬迁链对源库必须只读）").toBe(before);
-  });
+    },
+  );
 });
