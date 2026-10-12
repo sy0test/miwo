@@ -242,6 +242,20 @@ const EXEMPTIONS = [
     reason:
       "供应商数据 id 迁移工具本身必须包含**旧 id**（`const OLD_ID = \"toonflow\"`）才能把 `data/vendor/toonflow.ts` 迁成 `miwo.ts`；删掉它迁移就失效。",
   },
+  {
+    scope: "apps/api/src/db/legacy/vendor-merge.ts",
+    match: { re: "toonflow", flags: "gi" },
+    min: 4,
+    reason:
+      "供应商 id **合并**迁移模块（Phase 0 deferred 项的修法）与上面的脚本同因：`mergeVendorId` 的 `oldId` 缺省值就是旧 id `toonflow`，注释里还要引述旧脚本那条会撞主键的 `UPDATE ... WHERE id='toonflow'` 才能说清为什么要合并。改掉这些字面量，迁移本身就无法执行。",
+  },
+  {
+    scope: "apps/api/tests/vendor-merge.test.ts",
+    match: { re: "toonflow", flags: "gi" },
+    min: 8,
+    reason:
+      "合并语义的回归用例必须**真的**插入/查询旧 id 行：A 改名、C 合并（删旧行 + enable 取 max）、dry-run 不写、幂等、o_agentDeploy 一起改 —— 这五条判别力全部依赖 `toonflow` 这个字面量；换掉或参数化它就测不到「目标行已存在」的真实场景。",
+  },
 
   // ── i18n：官方中转平台（第三方服务）与第三方产品名 ──
   {

@@ -4,7 +4,10 @@
  * 设计要点：
  *  - `client` 由 `config.db.driver` 决定：`sqlite` → `better-sqlite3`，`mysql` → `mysql2`
  *  - 连接池 min/max 走 `config.db.poolMin/poolMax`（config.ts 已做 fail-fast 校验）
- *  - `useNullAsDefault` **只在 sqlite 分支**加（见 dialect.ts 的注释）
+ *  - `useNullAsDefault` **只在 sqlite 分支**加：它不是 mysql 的合法/需要项，但**传了也不报错**
+ *    （实测 knex 只是把 `valueForUndefined` 由 `'DEFAULT'` 改成 `null`）—— 所以"mysql 侧没有它"
+ *    是一条**由本文件的装配方式保证、并由测试断言**的不变式，而不是靠"传了会抛"来兜（见 dialect.ts
+ *    的详细注释与 `tests/db-driver.test.ts` 的对应用例）
  *  - 驱动实例不从 `config` 里取，而由 `driverOf(cfg)` 判定 → 这样测试可以传"假 config"
  *    直接断言 mysql 分支的连接对象，**不需要真的装 mysql2 服务端**（Task 1 Step 8 就是这么做的）
  */

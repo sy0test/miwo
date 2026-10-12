@@ -6,6 +6,11 @@
  *   node apps/api/scripts/migrate-vendor-id.cjs                 # 预演
  *   node apps/api/scripts/migrate-vendor-id.cjs --apply         # 执行
  *   node apps/api/scripts/migrate-vendor-id.cjs --apply --db=<路径>
+ *
+ * ⚠ Phase 1a 起：**新库/真实库请用 `pnpm.cmd --filter @miwo/api exec tsx src/db/legacy/vendor-merge.ts --apply`**
+ *   （合并语义，能处理"目标 id 已存在"的场景，见 src/db/legacy/vendor-merge.ts 的注释）。
+ *   本脚本只保留给 sqlite dev 库的历史一次性迁移，且**已知会在"miwo 行已存在"时撞主键**。
+ *   这一条是 Phase 0 ledger 明确要求并入 Phase 1a 的 deferred 项（Task 6 minor）。
  */
 const fs = require("fs");
 const path = require("path");
@@ -54,6 +59,18 @@ console.log(`o_vendorConfig 里 id='${OLD_ID}' 的行: ${vendorRows.length}`);
 console.log(`o_agentDeploy 里 vendorId='${OLD_ID}' 的行: ${deployRows}`);
 
 if (APPLY) {
+  // ⚠ 先检测冲突再决定：本脚本用的是 `UPDATE ... SET id = NEW WHERE id = OLD`，目标行已存在时会撞主键。
+  //   Phase 0 ledger 的 deferred 项要求并入 Phase 1a —— 合并语义在 src/db/legacy/vendor-merge.ts。
+  const targetRows = db.prepare("SELECT COUNT(*) AS n FROM o_vendorConfig WHERE id = ?").get(NEW_ID).n;
+  if (targetRows > 0) {
+    console.error(
+      `拒绝执行：o_vendorConfig 里 id='${NEW_ID}' 已存在（${targetRows} 行），` +
+        `而本脚本用的是 UPDATE ... WHERE id='${OLD_ID}'，会撞主键。\n` +
+        `请改用合并语义：pnpm.cmd --filter @miwo/api exec tsx src/db/legacy/vendor-merge.ts --apply`,
+    );
+    db.close();
+    process.exit(1);
+  }
   const tx = db.transaction(() => {
     db.prepare("UPDATE o_vendorConfig SET id = ? WHERE id = ?").run(NEW_ID, OLD_ID);
     db.prepare("UPDATE o_agentDeploy SET vendorId = ? WHERE vendorId = ?").run(NEW_ID, OLD_ID);

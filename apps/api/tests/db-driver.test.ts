@@ -41,13 +41,18 @@ describe("驱动装配（spec §5.1）", () => {
     expect(Object.keys(c)).toEqual(["filename"]);
   });
 
-  it("连接池 min/max 来自 config.db（不是硬编码）", () => {
+  it("连接池：mysql 分支用 config.db 的 min/max，sqlite 分支不把 mysql 的池配置带过去", () => {
     const sqlite = createKnex(cfgSqlite());
-    // sqlite 分支不显式给 pool，knex 用默认值（min 2 / max 10）——这里只断言"没有把 mysql 的 3/7 带过去"
-    expect(sqlite.client.pool?.min).not.toBe(3);
+    // sqlite 分支不显式给 pool → 用的是 knex 自己对 better-sqlite3 的默认池，**实测真值是 min 1 / max 1**
+    // （`sqlite.client.pool` → {min:1,max:1,acquireTimeoutMillis:60000}；不是 min 2 / max 10，也不是 3/7）。
+    // ⚠ 不用可选链：`pool?.min` 会把"pool 缺失"的 undefined 也放过（弱断言）。
+    expect(sqlite.client.pool.min).toBe(1);
+    expect(sqlite.client.pool.max).toBe(1);
     const mysql = createKnex(cfgMysql());
-    expect(mysql.client.pool?.min).toBe(3);
-    expect(mysql.client.pool?.max).toBe(7);
+    // 这两条断言的才是**我们显式传入的配置值**（config.db.poolMin/poolMax = 3/7）；
+    // 比断言 knex 的内部默认更稳 —— 默认值会随版本变。
+    expect(mysql.client.pool.min).toBe(3);
+    expect(mysql.client.pool.max).toBe(7);
     expect(mysql.client.config.client).toBe("mysql2");
     void sqlite.destroy(); void mysql.destroy();
   });

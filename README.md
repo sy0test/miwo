@@ -51,6 +51,26 @@ pnpm.cmd dev
   是第 5 个决策点），Task 12 必做 5 已改为 `config.env === "dev"`。`NODE_ENV` 现在只由 `config.ts:135` **派生写出**，供 Express/knex 等生态代码读。
 - 部署文件与容器 Node 版本要求见 [`deploy/README.md`](deploy/README.md)；一致性由 `node tools/check-deploy-config.cjs` 保证。
 
+## 迁移纪律（spec §5.2）
+
+- 迁移清单是 `apps/api/src/db/migrations/index.ts` 的 `MIGRATIONS`（**顺序即执行顺序**），每条迁移对应同目录下一个
+  `NNN_name.ts`（`apps/api/tests/migrations.test.ts` 断言"清单 ↔ 文件"一一对应）。已执行的条目**不要删、不要改名** ——
+  名字会写进 `knex_migrations.name`，改名等于重跑。
+- **`up(knex)` 拿到的那个 knex 必须用**：knex 默认把一条迁移包在事务里，在 `up` 里改用外层 `db` 做 DDL 会与迁移事务
+  争抢同一条连接 / 库锁，直到驱动超时失败（`MIWO_TEST_SLOW=1 pnpm test` 有一条 180s 的用例专门守这条约定）。
+- **schema 迁移只允许用 schema builder**（`knex.schema.createTable` / `dropTableIfExists` / `alterTable`），不得出现
+  `knex.raw` 或查询调用 —— `apps/api/tests/migration-ddl-mysql.test.ts` 用一个"假 knex"收集编译出来的 DDL 来断言
+  MySQL 合法性（本机没有 MySQL 服务端时的替代口径），而那条路径只覆盖 schema builder。
+- **这里的"幂等"指"迁移系统层面幂等"**（靠 `knex_migrations` 跳过已执行条目），**不是** DDL 字面可重放：`createTable`
+  在表已存在时会抛。**不要**给 `createTable` 加 `hasTable` 守卫 —— 那会掩盖真实的**结构漂移**（例如 dev 库被手工补过列、
+  而迁移里没有）。只有对**老库**的兼容路径（退役表清理）才用真幂等守卫 `dropTableIfExists`。
+- ⚠ 本机的 sqlite 回归网**证明不了**"全新 MySQL 库的结构对不对"：它建的是全新 sqlite 库，漏一列会两边**一致地错**。
+  `apps/api/scripts/gen-schema-migration.cjs`（只读 dev 库、把"现状真有哪些列"打出来、不写任何文件）是防止手写迁移漏列的
+  机械闸门；逐表核对口径与结论见 `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-3-report.md`。
+- 常用命令都在 **`apps/api` 下跑**（`tsx` 只装在 `@miwo/api` 的依赖里，在仓库根裸跑会 `ERR_MODULE_NOT_FOUND`）：
+  `pnpm.cmd run db:migrate` / `db:migrate:status` / `db:migrate:down`；`MIWO_DB_DRIVER=mysql` 时连 MySQL。
+  ⚠ `--down` / `--redo` **会重建所有表、破坏数据**：先在一次性库上试（把 `MIWO_DATA_DIR` 指到 `%TEMP%` 下的空目录）。
+
 ## 已知问题 / Known issues
 
 ### 1. `apps/web` 的类型检查不干净：47 条真实类型错误（**Phase 3 前端重绘的前置清单项**）

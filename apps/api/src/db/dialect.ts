@@ -7,15 +7,20 @@
  *      而 mysql 必须是 `bigint unsigned auto_increment`（spec §5.3 要求 BIGINT UNSIGNED）；
  *      `t.bigIncrements()` 恰好两边都对 —— 实测 sqlite 生成
  *      `integer not null primary key autoincrement`，mysql 生成
- *      `bigint unsigned not null auto_increment primary key`（见 Task 3 的静态断言）。
+ *      `bigint unsigned not null auto_increment primary key`
+ *      （断言：`apps/api/tests/migration-ddl-mysql.test.ts` 的「dialect 的 mysql 分支」组 +
+ *        `apps/api/tests/db-driver.test.ts` 的「types() 的 sqlite 行为」组）。
  *   2. 文本主键 / 被索引的文本列：sqlite 用 TEXT 可以作主键，**MySQL 会报 ERROR 1170**
  *      （BLOB/TEXT column used in key specification without a key length）→ 必须 varchar。
  *   3. 普通大文本：mysql 的 TEXT 只有 64 KB（`o_prompt.data` 单行就有 20982 字符，
  *      `o_project.intro` / `o_script.content` 都可能超），用 LONGTEXT。
  *   4. 布尔：两个方言都不能直接吃 JS boolean 作 DDL 默认值，统一用 0/1 的 tinyint。
  *
- * ⚠ `useNullAsDefault` **只对 sqlite 有效**（sqlite 的 insert 缺列时它才是最省事的默认值策略，
- *    上游行为如此）；若把它传给 mysql 客户端，knex 会在插件参数校验时报错。见 src/db/connect.ts。
+ * ⚠ `useNullAsDefault` **只对 sqlite 有意义**（sqlite 的 insert 缺列时它才是最省事的默认值策略，
+ *    上游行为如此）；mysql 侧不该有它 —— **实测传了不会报错**（knex 只是把 `valueForUndefined`
+ *    由 `'DEFAULT'` 改成 `null`），但它会引入无意义的缺省语义差异，spec §5.1 要求删除。
+ *    见 src/db/connect.ts（`useNullAsDefault` 只在 sqlite 分支）与
+ *    `tests/db-driver.test.ts` 的「createKnex 对 mysql 分支不注入 useNullAsDefault」。
  */
 import type { Knex } from "knex";
 
