@@ -93,13 +93,16 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: 仓库检查（复制完整性 / 改名 / 行尾 / 原生模块 / 隔离特例清单 / 部署配置一致性）
+      - name: 仓库检查（复制完整性 / 改名 / 行尾 / 原生模块 / 隔离特例清单 / 租户策略三方一致 / 部署配置一致性）
         run: |
           node tools/check-copy.cjs
           node tools/check-brand.cjs
           node tools/check-eol.cjs
           node tools/check-natives.cjs
           node tools/check-tenant-exceptions.cjs
+          # Phase 1b / Task 8：策略表 ↔ 001_schema ↔ 回填目标/自检 的三方一致（复用 backfill-userid.ts
+          # 的导出常量，不写第三份手写清单）。它必须**真跑**：交付物没进 CI = 零防漂移（Phase 0 终审教训）。
+          node tools/check-tenant-policies.cjs
           pnpm run verify:deploy
           # Phase 1a / Task 11（控制器裁定 B = Ruling 127）：**形态**门禁，禁止
           # "用例体最外层的守卫式 `return;`"（静默早退既不是 pass 也不是 skip，

@@ -117,9 +117,19 @@ if (apiJob) {
     "node tools/check-eol.cjs",
     "node tools/check-natives.cjs",
     "node tools/check-tenant-exceptions.cjs",
+    "node tools/check-tenant-policies.cjs",
     "pnpm run verify:deploy",
   ]) {
     check(apiRuns.includes(cmd), `api job 缺少仓库检查命令: ${cmd}`);
+  }
+  // Phase 1b / Task 8：策略门禁不仅要"在 CI 里"，还必须**真跑**（不许被 continue-on-error / `|| true` 变成永不失败）。
+  // ⚠ 判据刻意严于"值为 true"：**出现这个键/写法就算失败** —— 那两样都是掩盖，不是通过。
+  //   （mysql job 的同类断言在下面单独一段；这里管 api/web 两个 job。）
+  for (const [jobName, job] of Object.entries({ api: apiJob, web: (doc.jobs || {}).web })) {
+    if (!job) continue;
+    const runs = stepRuns(job).join("\n");
+    if (/continue-on-error/.test(runs)) failures.push(`ci.yml 的 ${jobName} job 步骤里出现 continue-on-error：那是掩盖，不是通过`);
+    if (/\|\|\s*true/.test(runs)) failures.push(`ci.yml 的 ${jobName} job 步骤里出现 \`|| true\`：门禁被削弱（永不失败）`);
   }
   // 顺序：install → 仓库检查 → 路由生成/typecheck/单测/打包。
   // 这是**快速失败**约束（仓库检查秒级、只读索引与源码），**不是** dist 存在性约束 ——
