@@ -12,7 +12,7 @@ import path from "path";
 import fs from "fs";
 import u from "@/utils";
 import { dbReady } from "@/utils/db";
-import jwt from "jsonwebtoken";
+import { tenantContextMiddleware, tenantErrorHandler } from "@/middleware/tenant";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
@@ -152,48 +152,13 @@ export default async function startServe(randomPort: Boolean = false) {
     console.warn("静态网站目录不存在:", webDir);
   }
 
-  app.use(async (req, res, next) => {
-    // ⚠ JWT 密钥的来源（Phase 1a / Task 5）：**库里优先，配置兜底**。
-    //    · 老库（还有 `o_setting.tokenKey` 行）：行为与以前**一字不差** —— 密钥就是那一行；
-    //    · 新库（`002_platform_seed` 明确**不种** `tokenKey`，见 spec §6.2 / Phase 1c）：回退到配置
-    //      `MIWO_JWT_SECRET`（`config.ts` 强制 >= 32 字节，所以这个兜底永远有值）。
-    //    这正是"把 JWT 密钥从数据库搬进配置"那一步的落点。没有兜底的话，**全新安装的库**
-    //    会让**所有**请求都 444（连只读的 `configHealth?summary=1` 都到不了白名单）——
-    //    而那个 444 不是任何安全控制：不带 token 的受保护接口**仍然是 401**（下面的分支没动）。
-    //    证据：`apps/api/scripts/verify-phase0.cjs` 在全新空库上只跑 `db:migrate` 就要求
-    //    `configHealth?summary=1` 返回 200 且 `o_setting` 里**没有** tokenKey（两条断言互为约束）。
-    const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
-    const tokenKey = (setting && setting.value) || config.jwtSecret;
-    // ⚠⚠ 下面这一行**当前不可达（unreachable）**，保留它是因为 Phase 1c 会把 `tokenKey` 机制整体替换掉，
-    //    那时这里的形状会变；现在就删会丢掉"密钥缺失时该怎么办"的意图（444 + 可读文案）。
-    //    不可达的**原因**（Task 5 独立审查实测）：`config.ts:160` 是**模块加载期**的
-    //    `export const config = loadConfig()`，而 `loadConfig()` 对 `MIWO_JWT_SECRET` 走 `required()` +
-    //    "≥ 32 字节"的 fail-fast；本模块第 19 行 `import { config } from "@/config"` 又在任何请求之前。
-    //    所以缺密钥时进程**根本起不来**（抛 ConfigError 退出），能走到中间件时 `config.jwtSecret` 恒非空
-    //    → `tokenKey` 恒为真串 → 这个 `if` 永不成立。
-    //    **不要**为了让它可达去放宽 `config.ts` 的 fail-fast —— 那是削弱安全校验、把 fail-fast 换成运行期 444。
-    //    它也不该被断言成"可达分支"：全仓没有、也不应有覆盖 444 的用例（`tests/auth-token-key.test.ts`
-    //    覆盖的是它上面那行的**两条密钥优先级路径**，那才是本阶段真正有分叉的逻辑）。
-    if (!tokenKey) return res.status(444).send({ message: "服务器秘钥未配置，请联系管理员" });
-    // 从 header 或 query 参数获取 token
-    const rawToken = req.headers.authorization || (req.query.token as string) || "";
-    const token = rawToken.replace("Bearer ", "");
-    // 白名单路径
-    if (req.path === "/api/login/login") return next();
-    // 配置体检（只读）：放行**仅最小信息**的形式（文件数量 + error 计数），
-    // 不返回供应商 id / 模型名 / 路径。这样排查"装全没装全"不必先取 token，
-    // 而详细信息仍要登录后才能看。见 utils/configHealth.ts
-    if (req.path === "/api/other/configHealth" && String(req.query.summary ?? "") === "1") return next();
-
-    if (!token) return res.status(401).send({ message: "未提供token" });
-    try {
-      const decoded = jwt.verify(token, tokenKey as string);
-      (req as any).user = decoded;
-      next();
-    } catch (err) {
-      return res.status(401).send({ message: "无效的token" });
-    }
-  });
+  // 租户上下文的建立点（spec §6.4）。实现见 src/middleware/tenant.ts：
+  // 验签（**库里优先 + config.jwtSecret 兜底**，Phase 1a Task 5 的现状语义）→ 建 ctx（AsyncLocalStorage）
+  // → 在同一个 `run()` 里 next()，于是下游所有 handler（含它们内部的 await）都带 ctx。
+  // ⚠ 白名单两条路径（登录 / configHealth?summary=1）在验签之前 next()：**天然无 ctx**，不许塞假 ctx。
+  // ⚠ 这里是**唯一**一处"还没有 ctx 就要读库"的地方（bootstrap 读 `o_setting.tokenKey`；platform 表
+  //    读在守卫里无 ctx 也放行，所以它**不需要**、也**不许**走 `systemDb` 那个绕过口）。
+  app.use(tenantContextMiddleware);
 
   const router = await import("@/router");
   await router.default(app);
@@ -203,6 +168,9 @@ export default async function startServe(randomPort: Boolean = false) {
     return res.status(404).send({ message: "API 404 Not Found" });
   });
 
+  // 隔离/策略错误 → 403/500（响应体只有 {code, message}）；其它错误原样交给下面的既有处理器。
+  // ⚠ 顺序重要：下面的既有错误中间件不调 `next(err)`，本行注册在它**之后**就永远轮不到。
+  app.use(tenantErrorHandler);
   // 错误处理
   app.use((err: any, _: Request, res: Response, __: NextFunction) => {
     res.locals.message = err.message;
