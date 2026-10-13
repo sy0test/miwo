@@ -112,13 +112,31 @@ export function parseTableSpec(spec: unknown): { table: string; alias: string } 
   throw new PolicyNotFoundError(`无法解析表名/别名（fail-closed）："${spec}"`);
 }
 
+/** 一个租户表名在 SQL 文本里的"词边界"匹配器（`i`：修复轮 1 / M4，表名匹配不分大小写）。 */
+function tenantTablePattern(table: string): RegExp {
+  return new RegExp(`(^|[^\\w$])${table}([^\\w$]|$)`, "i");
+}
+
+/** SQL 文本里出现的**所有**租户表名（去重、按 `TENANT_TABLES` 顺序）。 */
+function tenantTablesIn(text: string): string[] {
+  return TENANT_TABLES.filter((t) => tenantTablePattern(t).test(text));
+}
+
 /** SQL 文本里是否出现任何租户表名（词边界匹配，避免 `json_extract(x,'$.o_assetss')` 这类误报）。 */
 function mentionsTenantTable(sql: unknown): string | null {
-  const text = String(sql);
-  for (const table of TENANT_TABLES) {
-    if (new RegExp(`(^|[^\\w$])${table}([^\\w$]|$)`).test(text)) return table;
-  }
-  return null;
+  return tenantTablesIn(String(sql))[0] ?? null;
+}
+
+/**
+ * 把 SQL 里的**单引号字符串字面量**替换成空串（修复轮 1 / M5）。
+ *
+ * 为什么必须先剥：`where("describe", "like", "%o_segment%")` 这类**参数**会出现在
+ * `where ... = '...'` 的位置，`select 'o_tasks'` 也是合法 SQL。不剥就会把字面量误判成
+ * "提到了租户表"（假红）；剥了之后复核才敢扫**整条** SQL（而不是只看第一个 `where` 之前）。
+ * SQL 的单引号转义是 `''`，这里一并处理。
+ */
+function stripSqlLiterals(sql: string): string {
+  return sql.replace(/'(?:[^']|'')*'/g, "''");
 }
 
 export function makeTenantAware(knex: Knex, options: TenantGuardOptions): TenantAwareDb {
@@ -145,16 +163,47 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
    */
   const asRejection = (err: unknown): Promise<never> => Promise.reject(err);
 
-  /** 执行前复核（规则 6）。SELECT 有效；其它语句直接返回。 */
-  function assertSqlScoped(target: any): void {
+  /** 构建期"某一行显式写了别人的 userId"的统一检查（`insert` 与 `update` payload 共用，修复轮 1 / M2）。 */
+  const assertOwnUserId = (row: any, what: string, ctx: TenantCtx): void => {
+    if (row === null || typeof row !== "object" || Array.isArray(row)) return;
+    const current = row[USER_COLUMN];
+    if (current !== undefined && current !== null && Number(current) !== Number(ctx.userId)) {
+      throw new TenantIsolationError(`${what} 显式写了别人的 ${USER_COLUMN}=${current}（ctx=${ctx.userId}）—— 已阻断`);
+    }
+  };
+
+  /**
+   * 执行前复核（规则 6）。
+   *
+   * 修复轮 1 的三处收紧：
+   *  - **M5**：扫整条 SQL（字符串字面量先剥掉），不再只看第一个 `where` 之前 ——
+   *    平台查询的 WHERE/HAVING 里塞租户子查询、平台 builder `.from(租户表)` 后写，
+   *    都要被拦；
+   *  - **M4**：表名匹配不分大小写；
+   *  - `insert`：隔离由构建期的 `fill()` 保证（SQL 里没有 `userId = ?`），所以它的
+   *    判据是"SQL 里提到的租户表就是守卫登记的那张"，防 `.from()`/`.into()` 换表。
+   */
+  function assertSqlScoped(target: any, self: { policy: string | null; alias: string | null; table: string | null }): void {
     const { sql, bindings } = target.toSQL();
-    if (!/^\s*select\b/i.test(sql)) return;
-    const head = String(sql).split(/\bwhere\b/i)[0]; // 投影 + FROM/JOIN 段（WHERE 里的字符串字面量不参与）
-    const names = TENANT_TABLES.filter((t) => new RegExp(`(^|[^\\w$])${t}([^\\w$]|$)`).test(head));
-    if (!names.length) return;
-    const conditions = (String(sql).match(/[.`"']?\buserId\b[.`"']?\s*=\s*\?/g) ?? []).length;
+    const text = stripSqlLiterals(String(sql));
+    const names = tenantTablesIn(text);
+    if (!names.length) return; // 没提及任何租户表（含字面量里的表名）→ 无需复核
     const ctx = getCtx();
     const boundSelf = ctx ? (bindings ?? []).filter((b: unknown) => Number(b) === Number(ctx.userId)).length : 0;
+
+    if (/^\s*insert\b/i.test(sql)) {
+      const declared = self.table ? self.table.toLowerCase() : "";
+      const swapped = names.filter((t) => t.toLowerCase() !== declared);
+      if (!declared || swapped.length) {
+        throw new SqlScopeError(
+          `执行期复核失败：insert 的目标表与守卫登记的表不一致（登记 "${self.table ?? "—"}"，SQL 提及 ${names.join(", ")}）` +
+            `—— 已阻断（fail-closed）`,
+        );
+      }
+      return;
+    }
+
+    const conditions = (text.match(/[.`"']?\buserId\b[.`"']?\s*=\s*\?/gi) ?? []).length;
     if (conditions < names.length || boundSelf < names.length) {
       throw new SqlScopeError(
         `执行期复核失败：SQL 提及 ${names.length} 张租户表（${names.join(", ")}），` +
@@ -163,7 +212,7 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
     }
   }
 
-  function wrapBuilder(qb: any, self: { policy: string | null; alias: string | null; joins: string[] }): any {
+  function wrapBuilder(qb: any, self: { policy: string | null; alias: string | null; table: string | null; joins: string[] }): any {
     /**
      * 构建期发现的"执行前复核"违规（`deferred`）：**留到 await 时才响**。
      *
@@ -215,7 +264,7 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
     const run = (target: any, thenFn: AnyFn, args: any[]): any => {
       if (deferred) return rejectWith(deferred, args);
       try {
-        assertSqlScoped(target);
+        assertSqlScoped(target, self);
       } catch (err) {
         return rejectWith(err, args);
       }
@@ -228,13 +277,28 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
         const keep = (out: unknown) => (out === target ? proxy : out);
 
         if (prop === "then") return (...args: any[]) => run(target, value, args);
+        // ⚠ `.catch()` / `.finally()` 也必须先过执行前复核（修复轮 1 / M1）：只给 `then` 加
+        //    复核等于给"用 catch 收尾的调用方"留一条静默越权路（实测：`.catch(h)` 会把两租户
+        //    全部行 resolve 出来，而同一句 `await` 却被拦）。
         if (prop === "catch") {
-          return (...args: any[]) =>
-            (deferred ? rejectWith(deferred) : Promise.resolve(value.apply(target, args))).catch(args[0]);
+          return (...args: any[]) => {
+            try {
+              assertSqlScoped(target, self);
+            } catch (err) {
+              return Promise.reject(err).catch(args[0]);
+            }
+            return Promise.resolve(value.apply(target, args)).catch(args[0]);
+          };
         }
         if (prop === "finally") {
-          return (...args: any[]) =>
-            (deferred ? rejectWith(deferred) : Promise.resolve(value.apply(target, args))).finally(args[0]);
+          return (...args: any[]) => {
+            try {
+              assertSqlScoped(target, self);
+            } catch (err) {
+              return Promise.reject(err).finally(args[0]);
+            }
+            return Promise.resolve(value.apply(target, args)).finally(args[0]);
+          };
         }
 
         // clone 出来的 builder 仍然要在守卫里（否则 clone 之后的 join 不会被注入）
@@ -273,6 +337,24 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
           return (...args: any[]) => {
             if (self.policy === "tenant") {
               if (prop === "truncate") throw new TenantIsolationError("租户表禁用 truncate()：它无法被租户条件限定");
+              if (prop === "update") {
+                // 修复轮 1 / M2：`update({userId: 别人})` 能把**自己的行**改成别人的
+                // （实测：`db("o_tasks").update({userId: 8})` 影响 1 行），必须在构建期拦。
+                try {
+                  const ctx = needCtx();
+                  args.forEach((a: any, i: number) => {
+                    if (Array.isArray(a)) {
+                      for (const row of a) assertOwnUserId(row, "update 的 payload", ctx);
+                    } else if (typeof a === "string" && a === USER_COLUMN) {
+                      assertOwnUserId({ [USER_COLUMN]: args[i + 1] }, "update 的 payload", ctx); // .update("userId", 8)
+                    } else {
+                      assertOwnUserId(a, "update 的 payload", ctx);
+                    }
+                  });
+                } catch (err) {
+                  return rejectWith(err); // 保链 + 不留 unhandledRejection
+                }
+              }
             } else {
               assertPlatformWriteAllowed(self);
             }
@@ -371,19 +453,28 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
   function guardBuilder(qb: any, tableSpec: string | undefined): any {
     let policy: string | null = null;
     let alias: string | null = null;
+    let table: string | null = null;
     if (tableSpec) {
       const info = parseTableSpec(tableSpec);
       alias = info.alias;
+      table = info.table;
       policy = resolvePolicy(info.table);
       if (policy === "tenant") qb.andWhere(`${alias}.${USER_COLUMN}`, needCtx().userId);
     }
-    return wrapBuilder(qb, { policy, alias, joins: [] });
+    return wrapBuilder(qb, { policy, alias, table, joins: [] });
   }
 
-  /** 事务对象也要守卫：`persistShots.ts:54` 那条链路全部走 `trx("表")`。 */
+  /**
+   * 事务对象也要守卫：`persistShots.ts:54` 那条链路全部走 `trx("表")`。
+   *
+   * ⚠ `trx.raw` 必须复用**顶层 `guarded.raw` 的同一个实现**（修复轮 1 / M3）：之前是
+   * `value.bind(trx)` 直接透传，实测 `await db.transaction(trx => trx.raw("update o_tasks
+   * set state='hacked' where id=2"))` **真的改了别人的行**。
+   */
   function guardTrx(trx: any): any {
     const guardedTrx: any = (tableSpec: string) => guardBuilder(trx(tableSpec), tableSpec);
-    for (const key of ["commit", "rollback", "raw", "fn", "ref", "schema", "client"]) {
+    guardedTrx.raw = guarded.raw; // 同一个函数：提及租户表 → 抛
+    for (const key of ["commit", "rollback", "fn", "ref", "schema", "client"]) {
       const value = trx[key];
       if (typeof value === "function") guardedTrx[key] = value.bind(trx);
     }

@@ -263,3 +263,94 @@ describe("守卫：knex 结构契约（升级护栏）", () => {
     expect(TENANT_TABLES.length).toBe(20);
   });
 });
+
+/**
+ * 修复轮 1（独立审查 Ruling 188/189/191）。每条都先红后绿，红端原文见 task-2-report.md「修复轮 1」。
+ * 这些用例钉的是"fail-closed 契约在哪些路径不成立"，不是新功能。
+ */
+describe("守卫：修复轮 1（M1–M5 执行路径）", () => {
+  it("M1a: .catch() 也做执行前复核（修复前：租户子查询被 resolve 成 [{n:2}]）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    let caught: unknown = null;
+    const out = await db("o_setting").select(knex.raw("(select count(*) from o_tasks) as n")).catch((e: unknown) => {
+      caught = e;
+      return "handled";
+    });
+    expect(caught).toBeInstanceOf(TenantIsolationError);
+    expect(out).toBe("handled");
+    await knex.destroy();
+  });
+
+  it("M1b: .catch() 也做执行前复核（修复前：平台 builder 换表后 resolve 出两租户全部行）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    let caught: unknown = null;
+    const out = await db("o_setting").from("o_tasks").select("id").catch((e: unknown) => {
+      caught = e;
+      return "handled";
+    });
+    expect(caught).toBeInstanceOf(TenantIsolationError);
+    expect(out).toBe("handled");
+    await knex.destroy();
+  });
+
+  it("M1c: .finally() 也做执行前复核（修复前：resolve 出两租户全部行，finally 照跑）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    let ran = false;
+    await expect(db("o_setting").from("o_tasks").select("id").finally(() => { ran = true; })).rejects.toThrow(TenantIsolationError);
+    expect(ran).toBe(true);
+    await knex.destroy();
+  });
+
+  it("M2: update 的 payload 写别人的 userId → 抛；写自己的 / 不写 → 放行", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    await expect(db("o_tasks").update({ userId: 8 })).rejects.toThrow(TenantIsolationError);
+    await expect(db("o_tasks").where("id", 2).update("userId", 8)).rejects.toThrow(TenantIsolationError);
+    expect((await knex("o_tasks").select("id", "userId").orderBy("id")).map((r: any) => r.userId)).toEqual([7, 8]);
+    expect(await db("o_tasks").update({ state: "ok" })).toBe(1);
+    expect(await db("o_tasks").where("id", 1).update({ userId: 7 })).toBe(1);
+    await knex.destroy();
+  });
+
+  it("M3: 事务里的 trx.raw 提及租户表 → 抛（修复前：真的改了别人的行）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    await expect(
+      db.transaction(async (trx: any) => { await trx.raw("update o_tasks set state = 'hacked' where id = 2"); }),
+    ).rejects.toThrow(TenantIsolationError);
+    expect((await knex("o_tasks").where("id", 2).first()).state).toBe("进行中");
+    await knex.destroy();
+  });
+
+  it("M4: raw 的表名匹配不区分大小写（修复前：delete from O_TASKS 真的删行）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    expect(() => db.raw("delete from O_TASKS where id = 1")).toThrow(TenantIsolationError);
+    expect(() => db.raw("select id from O_TASKS")).toThrow(TenantIsolationError);
+    expect(() => db.raw("update O_Tasks set state = 'x'")).toThrow(TenantIsolationError);
+    expect((await knex("o_tasks").select("id")).length).toBe(2);
+    await knex.destroy();
+  });
+
+  it("M5a: 平台 builder 换表（.from(租户表)）后的 update/del → 执行前复核拦（修复前：改 2 行 / 删 2 行）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, admin); // 实测前提：平台表写要 admin ctx
+    await expect(db("o_setting").from("o_tasks").update({ state: "hacked" })).rejects.toThrow(TenantIsolationError);
+    await expect(db("o_setting").from("o_tasks").del()).rejects.toThrow(TenantIsolationError);
+    expect((await knex("o_tasks").select("state")).map((r: any) => r.state)).toEqual(["进行中", "进行中"]);
+    await knex.destroy();
+  });
+
+  it("M5b: 平台查询 WHERE/HAVING 里的租户子查询 → 拦（修复前：whereRaw 那条返回 1 行）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    await expect(db("o_setting").whereRaw("key in (select 'tokenKey' from o_tasks where o_tasks.userId = 8)").select("key"))
+      .rejects.toThrow(TenantIsolationError);
+    await expect(db("o_setting").select("key").where("key", "tokenKey").havingRaw("1 = (select count(*) from o_tasks)"))
+      .rejects.toThrow(TenantIsolationError);
+    await knex.destroy();
+  });
+});
