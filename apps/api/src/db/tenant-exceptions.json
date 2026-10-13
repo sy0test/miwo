@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T20:48:16.039Z",
+  "generatedAt": "2026-10-13T20:53:44.360Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -422,7 +422,7 @@
         27
       ],
       "confirmed": true,
-      "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。第 23 行用**表名插值**拼 SQL（仅表名走白名单校验，值没有参数化）；Phase 1b 若要保留，改成 knex 的 .del()/.truncate() 并统一走包装层，避免手写 SQL 成为隔离缺口。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。⚠【F6 更正】第 23 行是**表名插值**（`DELETE FROM \"${tableName}\"`）——**值本身是参数化的**，没走参数化的是**表名**（只做了「表存在」校验、没有「允许被清」的白名单）。Phase 1c：改成 knex 的 .del()/.truncate() + 表名白名单，避免手写 SQL 成为隔离缺口。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "systemDb+admin",
         "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
