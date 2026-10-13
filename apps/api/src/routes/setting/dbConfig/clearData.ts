@@ -1,11 +1,14 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
+import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
 import initDB from "@/lib/initDB";
 
 const router = express.Router();
 
-export default router.get("/", async (req, res) => {
+// ⚠ Phase 1b Task 7：挂 `requireAdmin`（收权前任意登录用户 GET 一次就 drop 全库 + 重建）。
+// ⚠ Phase 1c：第 11 行的 `sqlite_master` 与 PRAGMA 是 **sqlite 方言**，MySQL 下无效（本任务不动）。
+export default router.get("/", requireAdmin, async (req, res) => {
   try {
     // 获取所有表名
     const tables: { name: string }[] = await db.raw(

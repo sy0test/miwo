@@ -1,11 +1,16 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
+import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
 import initDB from "@/lib/initDB";
 
 const router = express.Router();
 
-export default router.post("/", async (req, res) => {
+// ⚠ Phase 1b Task 7：挂 `requireAdmin`。这是**全仓权限最大的接口**（先 drop 所有表，再按请求体
+//   任意表名 insert 任意数据）；收权前"任意登录用户一条 POST"即可整库替换。
+//   ⚠ 它**不做租户过滤**（整库恢复语义），所以只能靠"收权 + 表名/列白名单"兜住 —— 白名单归 Phase 1c。
+// ⚠ Phase 1c：第 16 行 `sqlite_master` 与 20/24/30/49 行的 PRAGMA 是 sqlite 方言，MySQL 下无效。
+export default router.post("/", requireAdmin, async (req, res) => {
   try {
     const { tables: importTables } = req.body;
     if (!importTables || typeof importTables !== "object") {
