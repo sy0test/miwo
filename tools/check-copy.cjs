@@ -40,15 +40,20 @@ function countTrackedFiles(prefix, filter) {
   return trackedFiles(prefix).filter((rel) => !filter || filter(rel)).length;
 }
 
-function dirSizeMB(dir) {
-  if (!fs.existsSync(dir)) return -1;
+/**
+ * 递归磁盘字节数（**不做任何四舍五入**）。
+ * ⚠ 旧版 `dirSizeMB` 每层把子目录四舍五入到 0.1 MB 再乘回字节
+ *   （`sum += dirSizeMB(p) * 1024 * 1024`）⇒ 自带 ~0.5 MB 量化误差，是"边界抖动"的根因。
+ */
+function dirSizeBytes(dir) {
+  if (!fs.existsSync(dir)) return 0;
   let sum = 0;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) sum += dirSizeMB(p) * 1024 * 1024;
+    if (e.isDirectory()) sum += dirSizeBytes(p);
     else sum += fs.statSync(p).size;
   }
-  return Math.round((sum / 1024 / 1024) * 10) / 10;
+  return sum;
 }
 
 function mustExist(rel) {
@@ -129,7 +134,9 @@ for (const p of [
 ]) mustNotExist(p);
 
 // ---- 不得被提交（运行/构建产物；查索引，不查磁盘）----
-for (const p of [
+// ⚠ 这份清单是**唯一真相**：它同时驱动 (a) `mustNotBeTracked` 的索引断言、(b) 下面体积断言的**排除集**。
+//   不许再写第二份（本阶段反复的铁律：手工清单必漂）。
+const UNCOMMITTABLE = [
   "apps/api/node_modules",
   "apps/web/node_modules",
   "apps/api/dist",
@@ -140,7 +147,8 @@ for (const p of [
   "apps/api/data/serve",
   "apps/api/data/web",
   "apps/api/data/version.txt",
-]) mustNotBeTracked(p);
+];
+for (const p of UNCOMMITTABLE) mustNotBeTracked(p);
 
 // ---- 数量断言（spec §3.1 实测：236 个 .ts）----
 // 上游 src 有 236 个 .ts；本 Task 删掉死文件 src/socket/resTool copy.ts 后为 235。
@@ -162,11 +170,63 @@ mustAtLeast("apps/api/src 下 .ts 文件数（git 跟踪）", countTrackedFiles(
 mustAtLeast("apps/web/src 下文件数（git 跟踪）", countTrackedFiles("apps/web/src"), 432);
 mustEqual("apps/api/data/vendor 下 .ts 适配器数", countFiles(path.join(ROOT, "apps/api/data/vendor"), (p) => p.endsWith(".ts")), 13);
 
+/**
+ * 交付物体积（MB）：`apps/api` 下**排除 `UNCOMMITTABLE`**（= 本 gate 自己已声明"本地可有、不得提交"
+ * 的运行/构建产物）之后的**文件字节数**，**只在最后四舍五入一次**。
+ *
+ * ⚠ **为什么改量纲**（Task 7 授权修复，Lead 裁定 (i)；规范：*跨量纲的断言必须量"意图量"*）：
+ *   旧实现量的是**整个 `apps/api` 的磁盘占用**，于是把 gate **自己允许存在**的产物也算成违规：
+ *   `data/web`（34.37 MB，本地服务器快照）+ `data/db2.sqlite`（2.86 MB，只读快照）+ `build/`（0.29 MB）
+ *   已吃掉约 37.6 MB 的预算 ⇒ 预算剩 ~2.4 MB。更糟的是旧实现**逐层把子目录四舍五入到 0.1 MB 再累加**
+ *   （`dirSizeMB(p) * 1024 * 1024`），自带 ~0.5 MB 量化误差 ⇒ 边界落在 ±0.05 MB/层 的噪声里：
+ *   几十 KB 的源码改动就能让结果从 `40.0` 抖到 `40.1` ⇒ **随机红**（比恒红更坏：它训练人忽略门禁）。
+ *
+ * ⚠ **阈值重算（显式，不是偷偷放大）**：旧数字 `40` 的含义是"**磁盘**占用上限"，它把 37.6 MB
+ *   允许产物算在内 ⇒ 换算到**新量纲**（只量交付物、排除那些产物）等价于"交付物上限约 2.4 MB"。
+ *   实测本仓库交付物 = **3.0 MB**（`src` ~1.5 + `scripts` ~0.54 + `tests` ~0.38 + `data/{skills,vendor,modelPrompt}` ~0.63）。
+ *   新阈值取 **12 MB**（≈ 当前值的 4 倍，给源码/测试/文档的正常增长留余量），并且**比旧口径更严**：
+ *   在**全新 clone**（磁盘 6.25 MB）上，旧口径要等误提交的产物累计到 ~33.7 MB 才红，
+ *   新口径**误提交 ≥12 MB 就红** ⇒ 在"抓住大产物"这个真正要防的维度上是**收紧**，不是放宽。
+ *   ⚠ 旧数字 `40` **不要**再拿来做比较（量纲不同：磁盘 vs 交付物）。
+ */
+const API_DELIVERABLE_LIMIT_MB = 12;
+
+const uncommittableAbs = new Set(
+  UNCOMMITTABLE.filter((p) => p === "apps/api" || p.startsWith("apps/api/")).map((p) => path.join(ROOT, p)),
+);
+
+/** 该绝对路径是否落在 `UNCOMMITTABLE` 的任一前缀之下。 */
+function isUncommittable(abs) {
+  for (const u of uncommittableAbs) {
+    if (abs === u || abs.startsWith(u + path.sep)) return true;
+  }
+  return false;
+}
+
+/** 交付物字节数（递归；跳过 `UNCOMMITTABLE`；不四舍五入）。 */
+function deliverableBytes(dir) {
+  if (!fs.existsSync(dir)) return 0;
+  let sum = 0;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (isUncommittable(p)) continue;
+    if (e.isDirectory()) sum += deliverableBytes(p);
+    else sum += fs.statSync(p).size;
+  }
+  return sum;
+}
+
 // ---- 体积断言：只做上界泄漏检测 ----
 // 复制完整性由上面的数量断言（src 下 .ts >= 235 等）覆盖。
 // ⚠ 不要加体积下限：源码级复制实测约 1.5 MB，任何下限阈值都会在 Task 2/T4 阶段误报。
-const apiMB = dirSizeMB(path.join(ROOT, "apps/api"));
-if (apiMB > 40) failures.push(`apps/api 体积 ${apiMB} MB 超过 40 MB，疑似把产物/数据搬进来了`);
+const excludedBytes = dirSizeBytes(path.join(ROOT, "apps/api")) - deliverableBytes(path.join(ROOT, "apps/api"));
+const apiMB = Math.round((deliverableBytes(path.join(ROOT, "apps/api")) / 1024 / 1024) * 10) / 10;
+const excludedMB = Math.round((excludedBytes / 1024 / 1024) * 10) / 10;
+if (apiMB > API_DELIVERABLE_LIMIT_MB) {
+  failures.push(
+    `apps/api 交付物 ${apiMB} MB 超过 ${API_DELIVERABLE_LIMIT_MB} MB（已排除本地产物 ${excludedMB} MB：${UNCOMMITTABLE.join(", ")}），疑似把产物/数据搬进来了`,
+  );
+}
 
 if (failures.length) {
   console.error("check-copy 失败：");
