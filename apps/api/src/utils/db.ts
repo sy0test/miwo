@@ -126,6 +126,25 @@ for (const [key, shape] of Object.entries(DB_MEMBERS)) {
 }
 export default dbClient;
 
+/**
+ * **裸 knex（唯一合法的显式绕过口）**。只给三类调用者：
+ *   1. 实例级运维接口（`routes/setting/dbConfig/*`、`routes/other/deleteAllData.ts`）——
+ *      它们要读 `sqlite_master`、`PRAGMA`、按动态表名整库遍历，**根本无法**被租户条件限定；
+ *   2. 启动期 / CLI / 迁移（`db/connect.ts`、`db/migrations/*`）——显然不属于任何租户；
+ *   3. 死代码里的"启动期改库"（`lib/fixDB.ts`，Phase 1c 删除）。
+ *
+ * ⚠ **请求路径禁止使用**：它不经 `makeTenantAware`，没有任何租户条件注入。
+ *   使用者必须登记在 `src/db/tenant-exceptions.json` 的 `bypassFiles` 里，
+ *   并由 `tests/tenant-db-bypass.test.ts` 的逐文件断言钉住（新增使用者即红）。
+ *   ⚠ 计划 **Task 8** 会把这个清单升级成 `systemDbUsers` 字段 + `tools/check-tenant-exceptions.cjs`
+ *   的显式扫描：**当前那道门禁还认不出 `import { systemDb }`**（它现在的判据是
+ *   "命名导入 `{ db }`"），所以本阶段的判据由上面那条测试承担。
+ */
+export const systemDb = db;
+
+/** 同 `systemDb`，但按表名取 builder（运维接口里 `for (const table of tables)` 的写法会用到）。 */
+export const systemTable = <TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table);
+
 export { db };
 
 async function initKnexType(knexDb: any) {
