@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-13T17:59:02.292Z",
+  "generatedAt": "2026-10-13T18:21:00.590Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 245,
+    "tsFilesScanned": 246,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)",
     "bypassFiles": "直接命名导入裸 db：import { db } from \"@/utils/db\"（spec 附录 B.1 的判据）",
@@ -276,8 +276,8 @@
     "apps/api/src/db/tenant-guard.ts": {
       "count": 2,
       "lines": [
-        522,
-        534
+        525,
+        537
       ],
       "confirmed": true,
       "note": "[522/534 guarded.raw 的两个入口] 处置（Task 2 Step 3；**行号与处数由 Task 3 修复轮 2 重钉**）：这两处 `raw` 都是**守卫自己**的包装点（534 = 顶层 `guarded.raw`，522 = `guardTrx` 里的事务入口），不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」与「M3b」两条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。⑤ 修复轮 1（M3/表名大小写 M4）+ **Task 3 修复轮 2**：`trx.raw` 与顶层 `raw` **共用同一个检查**（`assertRawSafe`），但**各自绑定自己的连接** —— 修复轮 1 曾写成\"复用顶层实现\"，而复用时走的是根连接 ⇒ 事务里的**合法** `trx.raw` 落到事务外，sqlite 池 max=1 时与持有连接的事务**互等**（实测把既有用例挂到 5s 超时）。所以清单里现在是**两处**机械扫点；`mentionsTenantTable` 的比较已**不分大小写**（`delete from O_TASKS` 也拦），`raw` 的判据不变。⑥ 该行的注释文字刻意不写 `.raw` 紧跟左括号的形态（散文里的 `xxx.raw(...)` 会被本门禁的正则算成一处 `raw`），以免清单里出现一个「注释行被当成调用点」的假条目 —— Task 3 修复轮 2 的新注释也遵守了这一条（首录时曾多出 2 处假点，改回后 1→2 处全部是真调用点）。"
