@@ -148,9 +148,25 @@ if (apiJob) {
   //    （迁移机制/库层/数据层闭环/静态 DDL/仓库卫生）。**只加脚本、不加 CI 步骤**时，
   //    它在唯一的自动化环境里一次都不会跑 —— 正是本仓库反复抓到的
   //    "唯一的事务守卫永不执行"（Ruling 26）的同族坑。所以这里和 mysql job 那几条一样把它钉死。
+  //
+  // ⚠⚠ 【裁定 B】CI 上跑的必须是 **`verify:phase1a:ci`**（= 该脚本 + `--ci`），**不是**本机口径。
+  //    `verify-phase1a.cjs` 里有两条**本机专属**检查，在全新树（`git archive HEAD`）上**必然失败**：
+  //      ① 旧仓库 sha256 冻结读 `tools/.phase0-old-baseline.json`（被 `.gitignore:12` 忽略 → Test-Path False）；
+  //      ② `verify:legacy-freeze --check` 需要仓库外两个旧仓（无 remote 的 runner 上不可能有）。
+  //    实跑过：全新树里本机口径 = **EXIT 1**。`--ci` 把那两条**显式记为「CI 不适用」**并移出通过计数，
+  //    **未削弱任何断言**（本机口径下它们照旧是真判据）。
+  //    ⚠ 判据刻意是"**必须出现 `verify:phase1a:ci`**"，而不是"出现 `verify:phase1a` 即可"——
+  //      后者会被 `verify:phase1a:ci` 这一行**字符串包含**（它是前者的前缀）而恒真，
+  //      于是"有人把 CI 改回本机口径"就再也拦不住了。所以下面还要一条**反向**断言。
   check(
-    apiRuns.includes("pnpm run verify:phase1a"),
-    "api job 缺少 `pnpm run verify:phase1a`（Phase 1a 的唯一验收命令必须在 CI 里真的跑到）",
+    /^\s*pnpm run verify:phase1a:ci\s*$/m.test(apiRuns),
+    "api job 缺少 `pnpm run verify:phase1a:ci`（Phase 1a 的唯一验收命令必须在 CI 里真的跑到；" +
+      "CI 口径 = 该脚本 + `--ci`，见 .github/workflows/ci.yml 该步的说明）",
+  );
+  check(
+    !/^\s*pnpm run verify:phase1a\s*$/m.test(apiRuns),
+    "api job 不得跑本机口径 `pnpm run verify:phase1a`（无 `--ci`）：它依赖被 gitignore 的旧仓基线与仓库外两个旧仓，" +
+      "全新树里必然 EXIT 1。CI 口径是 `pnpm run verify:phase1a:ci`（那两条会被显式记为「CI 不适用」）",
   );
   // 形态门禁（裁定 B）也必须在**快速失败**的前半段里，而不是只在 verify:phase1a 内部被间接调用：
   // 仓库检查序列是"秒级、只读源码"，把用例形态放进这一批才能在 typecheck/test 之前拦住。

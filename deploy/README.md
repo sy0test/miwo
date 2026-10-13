@@ -131,15 +131,27 @@ curl -I https://<域名>/
 - 一致性脚本还会用 `git ls-files -- deploy/certs *.pem *.key` 复查一遍索引，已跟踪的证书/私钥会让门禁红。
 - `.crt` 等公开文件不忽略。
 
-## 6. 数据文件在哪（**别误判数据库已接入**）
+## 6. 数据文件在哪（**MySQL 已是唯一目标库**）
 
-- **Phase 1a 之前，`MIWO_DB_*` 整组变量不被应用消费**：`apps/api/src` 里只有 `config.ts` 读它们，
-  而 `apps/api/src/utils/db.ts` 的 knex client 仍**硬编码 `better-sqlite3`**。
-- 因此**真实数据文件**是 **`${MIWO_DATA_DIR}/db2.sqlite`**（容器路径下位于 `miwo-data` 卷里）。
-  升级/备份/回滚**必须包含这个文件**，否则会丢数据 —— 只备份 MySQL 卷是不够的。
-- `deploy/.env.example` 里仍然写着 `MIWO_DB_DRIVER=mysql` 与 `MIWO_DB_HOST=127.0.0.1`：
-  那是 **Phase 1a 的接入目标**（容器拓扑下 api 走 host 网络，所以连的是宿主机回环上发布的 MySQL），
-  不代表现在已经在用 MySQL。
+- **【已更正·Ruling 8+16】`MIWO_DB_*` 整组变量现在真的被应用消费。**
+  旧版本这里写着"Phase 1a 之前，`MIWO_DB_*` 整组变量不被应用消费，而 `apps/api/src/utils/db.ts`
+  的 knex client 仍**硬编码 `better-sqlite3`**" —— **那两句现在都是假的**：
+  Phase 1a / Task 4 起启动路径是 `utils/db.ts` 的 `dbReady` → `src/db/connect.ts` 的 `connect()`，
+  而 `createKnex()` **按 `config.db.driver` 选 client**（`sqlite` → `better-sqlite3`，
+  `mysql` → `mysql2`，见 `connect.ts` 的 `clientConfig()` / `createKnex()`）。
+  `MIWO_DB_HOST/PORT/USER/PASSWORD/NAME` 由 `config.ts` 读入后经 `connectionConfig()` 交给 mysql2。
+  ⇒ **设了 `MIWO_DB_DRIVER=mysql` 就是在用 MySQL**，不再是"接入目标"。
+- 因此**真实数据在 MySQL 卷里**（`mysql-data`），**不再是** `${MIWO_DATA_DIR}/db2.sqlite`。
+  `MIWO_DATA_DIR` 在 mysql 分支下只用于媒体/技能等本地文件，**sqlite 分支才在那里建 `db2.sqlite`**。
+  ⚠ 升级/备份/回滚的**主对象是 MySQL**（`mysqldump` 或卷快照）。
+  若你的部署**仍**显式设了 `MIWO_DB_DRIVER=sqlite`（例如迁移过渡期），那才需要一并备份
+  `${MIWO_DATA_DIR}/db2.sqlite`；**默认的 `deploy/.env.example` 是 mysql**。
+- `deploy/.env.example` 里的 `MIWO_DB_DRIVER=mysql` 与 `MIWO_DB_HOST=127.0.0.1` 是**当前生效的配置**
+  （容器拓扑下 api 走 host 网络，所以连的是宿主机回环上发布的 MySQL），不是"未来的接入目标"。
+- ⚠ **启动路径带数据库目标护栏**（【裁定 A】）：若解析出的 sqlite 目标是**仓库内的真实 dev 库**
+  （`apps/api/data/db2.sqlite`）且没有显式放行，应用启动会**响亮失败**而不是静默写坏它。
+  容器里 `MIWO_DATA_DIR` 指向卷、且驱动是 mysql，所以**不受影响**；这条只挡"本机默认配置误连 dev 库"。
+
 
 ## 7. 环境变量：`MIWO_PUBLIC_BASE_URL` 的使用条件
 

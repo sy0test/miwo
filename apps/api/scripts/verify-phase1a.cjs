@@ -5,6 +5,20 @@
  * 用法（在仓库根跑）：`node apps/api/scripts/verify-phase1a.cjs`，或 `pnpm.cmd run verify:phase1a`
  * 退出码 0 = 通过；逐条打印 [通过]/[失败]。
  *
+ * ── 两种口径：本机 vs CI（`--ci`）【Ruling 156 落地轮·裁定 B】──
+ * 本脚本里有**两条本机专属**的检查，在**全新树（CI）上必然失败**，而 `ci.yml` 又强制跑它：
+ *   ① 旧仓库 sha256 冻结读 `tools/.phase0-old-baseline.json`，该文件被 `.gitignore:12` 忽略
+ *      （`git archive HEAD` 的全新树里 `Test-Path` = **False**）；
+ *   ② `verify:legacy-freeze --check` 需要**仓库外**两个旧仓（无 remote 的 runner 上不可能有）。
+ *   全新树里实跑过：**EXIT 1**。这不是"实现有问题"，而是"CI 跑了一条本机专属命令"。
+ *
+ * 处置（**没有削弱任何断言**）：加 `--ci`，把这两条**显式记为「CI 不适用」**并移出通过计数
+ * （`[信息]` 前缀，不计入 `通过 N / M`）—— 它们在本机口径下**照旧是真判据**。
+ * ⚠ **不是**静默跳过：现在 fail 是诚实的，所以这里也保持诚实 —— CI 模式下会**逐条打印**
+ *   「CI 不适用 + 原因 + 本机该跑什么」，谁都能看见少了什么、以及为什么。
+ *   （另两条路 —— 删掉这两条、或改成恒真 —— 都是把诚实换成了好看，已排除。）
+ * 对应的 CI 命令是 `pnpm run verify:phase1a:ci`（= 本文件 + `--ci`）；本机命令不变。
+ *
  * 断言分组：
  *   A 构件：迁移机制与工具链的产物存在
  *   B 库层：sqlite 空目录能起、迁移幂等、27 张表齐、退役表不存在
@@ -41,9 +55,70 @@ const MIWO_ROOT = path.resolve(API_ROOT, "..", "..");
 // 复用裁定 A 的护栏本体（它自己解析 env，不依赖 @/config，所以命令行脚本可以先用它拦下来）。
 const guard = require("./db-target-guard.cjs");
 
+/**
+ * 【裁定 B】CI 口径。`--ci` 时把两条**本机专属**检查显式记为「CI 不适用」（见文件头）。
+ * ⚠ 判据是**显式旗标**，不是 `process.env.CI`：环境变量在本地也能被设成任意值，
+ *   而"这条检查到底跑没跑"必须是调用方**说出来**的（同 `--allow-repo-dev-db` 的口径）。
+ */
+const CI_MODE = process.argv.slice(2).includes("--ci");
+
 const checks = [];
-const pass = (g, n, d) => checks.push({ g, ok: true, n, d: d || "" });
-const fail = (g, n, d) => checks.push({ g, ok: false, n, d: d || "" });
+/**
+ * 记一条判据。
+ *
+ * ⚠⚠ **【本文件最严重的一处历史缺陷，必做修复轮修掉】**
+ * 原声明是 `const pass = (g, n, d) => …`（**只有 3 个形参**），而文件里有 **15 处**调用写成
+ * `pass(g, n, 条件, 详情)` —— JS 会**静默丢弃**第 4 个实参，于是：
+ *   · `条件` 从来没被求值过；
+ *   · `详情` 也从来没被打印过；
+ *   · `ok` 是**硬编码 `true`** ⇒ 这 15 条断言**恒真**。
+ * 受害的恰恰是最要紧的那一批：**裁定 A 的全部"判别力自证"**（A 组 5 条）、
+ * B 组的 `it.skipIf` 形态断言、C 组的"导出表集合逐名相等"/"源库 sha256 前后一致"、
+ * 以及"dry-run 没有偷偷写库"（`applied === false`）等。
+ * 也就是说：**这些"门禁"在改动前无论被测对象是什么样都会报通过** ——
+ * 正是本阶段反复抓到的"看着在检查、其实什么都没查"的最恶劣形态（Ruling 120/156 同族）。
+ *
+ * 判别力证据（本修复轮的 F 自证暴露的）：把 `db-migrate.ts` 的未知旗标白名单整段注释掉，
+ * 本脚本仍然打印 `通过 73 / 73`、EXIT 0 —— 因为那条断言的条件被丢进了这个不存在的第 4 参。
+ *
+ * 修法（**不改变任何调用点的语义**，只让它真的生效）：
+ *   · 给 `pass`/`fail` 补上第 3 个形参 `cond`，把它变成**可选**的；
+ *   · **有 4 个实参** ⇒ 第 3 个是**条件**、第 4 个是详情，`ok` 由条件决定；
+ *   · **有 3 个实参** ⇒ 沿用旧语义（第 3 个是详情），保持既有的"信息性/结论性"调用点不变；
+ *   · **有 2 个实参** ⇒ 只有名字、无详情（旧写法里也存在）。
+ * ⚠ 这个"按实参个数分流"是**刻意**的：文件里同时存在这些写法，而**旧语义必须原样保留**
+ *   （例如 `pass(G_DDL, "…全绿", 摘要)` 那类"条件已在上面的 if 里判过"的调用点）。
+ *   为了不让这个分流再次退化成"静默丢弃"，下面**显式抛错**：实参个数不在 2..4 就直接红。
+ */
+function makeCheck(ok) {
+  return function record(g, n, a, b) {
+    const argc = arguments.length;
+    if (argc < 2 || argc > 4) {
+      // 宁可炸掉整个验收，也不接受"实参个数悄悄漂移"—— 那正是本条注释在防的事。
+      throw new Error(
+        `[verify-phase1a] ${ok ? "pass" : "fail"}() 的实参个数必须是 2（名）/ 3（名+详情）/ 4（名+条件+详情），实际 ${argc}：${String(n)}`,
+      );
+    }
+    const hasCond = argc === 4;
+    return checks.push({
+      g,
+      ok: hasCond ? Boolean(a) : ok,
+      n,
+      d: (hasCond ? b : a) || "",
+    });
+  };
+}
+const pass = makeCheck(true);
+const fail = makeCheck(false);
+/**
+ * 【裁定 B】**信息性**结论：**不计入** `通过 N / M`，也永不判红。
+ *
+ * 为什么要单独一类（而不是复用 `pass`）：`pass` 会把"CI 上没跑这条本机专属检查"记成一条**通过**，
+ * 于是摘要里的 `通过 N / M` 就掺了水 —— 读数字的人会以为"这条判据也过了"。
+ * 用它的是 `--ci` 下那两条本机专属检查（旧仓库冻结基线 / legacy-freeze），
+ * 它们会**显式打印**「CI 不适用 + 原因 + 本机该跑什么」，只是不冒充判据。
+ */
+const info = (g, n, d) => checks.push({ g, ok: true, info: true, n, d: d || "" });
 const run = (cmd, args, opts = {}) =>
   spawnSync(cmd, args, {
     cwd: opts.cwd || MIWO_ROOT,
@@ -68,6 +143,15 @@ const G_MYSQL = "F MySQL(可选)";
 /** 仓库里的 dev 数据目录与 dev 库（C 组显式用它，等价于 `pnpm db:export` 的默认目标）。 */
 const DEV_DATA_DIR = path.join(API_ROOT, "data");
 const DEV_DB = path.join(DEV_DATA_DIR, "db2.sqlite");
+
+/**
+ * 【M4 修复】脚本**一开头**就记下 dev 库的 sha256，E 组结尾拿它比对。
+ *
+ * 为什么必须在最开头：C 组（导出 / 闭环）**以 dev 库为源**，是本验收唯一可能碰到它的地方。
+ * 只在这里记一次，才能回答"**是本验收把它写坏的吗**"——若在 C 组之后才记，写坏就已经被吸收进基线了。
+ */
+const sha256Of = (p) => (fs.existsSync(p) ? require("crypto").createHash("sha256").update(fs.readFileSync(p)).digest("hex") : null);
+const DEV_DB_BEFORE = sha256Of(DEV_DB);
 
 /**
  * "指向某个 sqlite 一次性目标库"的**完整** env。
@@ -117,7 +201,7 @@ for (const rel of [
   "apps/api/scripts/db-target-guard.d.cts",
   "tools/check-test-early-return.cjs",
 ]) {
-  if (fs.existsSync(path.join(MIWO_ROOT, rel))) pass(G_FILES, `存在 ${rel}`);
+  if (fs.existsSync(path.join(MIWO_ROOT, rel))) pass(G_FILES, `存在 ${rel}`, "已就位");
   else fail(G_FILES, `存在 ${rel}`, "缺失");
 }
 
@@ -146,7 +230,9 @@ for (const rel of [
   } catch {
     allowed = false;
   }
-  pass(G_FILES, "A/裁定A 反向：显式 MIWO_DB_DRIVER=mysql 时放行", allowed);
+  // ⚠ 4 个实参 = (组, 名, **条件**, 详情)。3 个实参会被当成 (组, 名, 详情) 且恒通过 ——
+  //    这条在改动前正是那样（`allowed` 被塞进详情位 ⇒ 条件从未生效）。见 `makeCheck()` 的注释。
+  pass(G_FILES, "A/裁定A 反向：显式 MIWO_DB_DRIVER=mysql 时放行", allowed, `allowed=${allowed}`);
 
   // (2) 护栏②：目标解析成**仓库内真实 dev 库**时必须拒绝，且放行开关要真的能放行。
   const blocked = guard.repoDevDbVerdict({ env: {}, argv: [] });
@@ -156,12 +242,22 @@ for (const rel of [
     blocked.blocked === true && blocked.resolved === DEV_DB,
     `blocked=${blocked.blocked} resolved=${blocked.resolved}`,
   );
-  const stillBlocked = guard.repoDevDbVerdict({ env: { MIWO_DATA_DIR: "./data" }, argv: [] });
+  // ⚠⚠ 【判别力自证暴露的**真 bug**】原判据是 `MIWO_DATA_DIR: "./data"` 且注释写"仍然拒绝"。
+  //    它在改动前恒真（条件被丢进第 4 参），修好 arity 后**立刻红了** —— 而红得**对**：
+  //    `db-target-guard.cjs` 的 `resolvedSqliteFile()` 用 `path.resolve(MIWO_DATA_DIR)`，
+  //    即**相对 `process.cwd()`** 解析。`db:*` 脚本的 cwd 是 `apps/api`，那时 `./data`
+  //    确实解析成真实 dev 库；但**本验收脚本的 cwd 是仓库根**，`./data` 会解析成
+  //    `<仓库根>/data/db2.sqlite`（**不是** dev 库）⇒ 护栏**正确地**放行。
+  //    所以原判据把"cwd 相关的相对写法"当成了"绝对会被拦"，是**判据本身写错了**。
+  //    修法（比原来**更强**、且与 cwd 无关）：直接给**绝对的** dev 数据目录 ——
+  //    它表达的才是这条断言真正要说的那句话："**显式点名** dev 数据目录，仍然拒绝
+  //    （解析结果才是判据，不是'写没写变量'）"。
+  const stillBlocked = guard.repoDevDbVerdict({ env: { MIWO_DATA_DIR: DEV_DATA_DIR }, argv: [] });
   pass(
     G_FILES,
-    "A/裁定A 判别力②（加强）：显式 MIWO_DATA_DIR=./data **仍然**拒绝（解析结果才是判据，不是'写没写变量'）",
-    stillBlocked.blocked === true,
-    `blocked=${stillBlocked.blocked} reason=${stillBlocked.reason}`,
+    "A/裁定A 判别力②（加强）：显式 MIWO_DATA_DIR=<dev 数据目录的绝对路径> **仍然**拒绝（解析结果才是判据，不是'写没写变量'）",
+    stillBlocked.blocked === true && stillBlocked.resolved === DEV_DB,
+    `blocked=${stillBlocked.blocked} resolved=${stillBlocked.resolved} reason=${stillBlocked.reason}`,
   );
   const optedIn = guard.repoDevDbVerdict({ env: {}, argv: ["--allow-repo-dev-db"] });
   pass(
@@ -180,16 +276,84 @@ for (const rel of [
     `blocked=${elsewhere.blocked} resolved=${elsewhere.resolved}`,
   );
   // (3) 机制**接线**：护栏必须真的被那几个会写库的脚本 require —— 只写一个没人用的模块等于没加固。
+  // ⚠⚠ 【判别力自证暴露的**真 bug**】原判据只认 `require("./db-target-guard.cjs")`，而两个 `.ts`
+  //    脚本用的是 **`import guard from "./db-target-guard.cjs"`**（`module: CommonJS` +
+  //    esModuleInterop，编译后才是 require）⇒ 这条断言对 `db-migrate.ts` / `db-repair-stuck.ts`
+  //    **恒红**，只是原先被"条件丢进第 4 参"掩盖成了恒绿。现在两种形态都认。
   for (const rel of ["scripts/db-migrate.ts", "scripts/db-repair-stuck.ts", "scripts/import-mysql.cjs", "scripts/compare-db.cjs"]) {
     const p = path.join(API_ROOT, rel);
     let wired = false;
     let why = "文件不存在";
     if (fs.existsSync(p)) {
       const src = fs.readFileSync(p, "utf8");
-      wired = /require\(["']\.\/db-target-guard\.cjs["']\)/.test(src) && /requireRepoDevDbAllowed|repoDevDbVerdict/.test(src);
-      why = wired ? "" : "文件里没有 require 本护栏 / 没有调用它的判定";
+      const imported = /(?:require\(|import\s+\w+\s+from\s*)["']\.\/db-target-guard\.cjs["']/.test(src);
+      const used = /requireRepoDevDbAllowed|repoDevDbVerdict/.test(src);
+      wired = imported && used;
+      why = wired
+        ? ""
+        : `文件里没有引用本护栏（require/import 皆可）或没有调用它的判定：imported=${imported} used=${used}`;
     }
     pass(G_FILES, `A/裁定A 接线：${rel} 真的调用了护栏`, wired, why);
+  }
+
+  // ---- 【裁定 A·必做】启动路径**也**必须过护栏（现有 A 组只证了 CLI 侧）----
+  // 终审在 dev 库**副本**上实测过这条漏网：`grep apps/api/src/**` 是 0 处引用，
+  // 默认配置（.env 的 MIWO_DATA_DIR=./data + 默认 sqlite）下 `pnpm dev` 就会走启动路径，
+  // 把 29 表老库副本写成 31 表（sha256 44716850… → 8C3C2F38…，与 --status 改坏 dev 库**逐字节相同**）。
+  // 这里的断言分两层，缺一不可：
+  //   ① **接线**：`src/db/connect.ts` 必须在 `connect()` 里真的调用护栏（文本层）；
+  //   ② **判别力**：把"已解析目标 = 仓库内 dev 库"直接喂给判定，必须 `blocked: true` ——
+  //      证明这条接线用的**是同一套判定**，而不是"调了个函数但判据不同"。
+  {
+    const connectSrc = fs.existsSync(path.join(API_ROOT, "src", "db", "connect.ts"))
+      ? fs.readFileSync(path.join(API_ROOT, "src", "db", "connect.ts"), "utf8")
+      : "";
+    const wired = /requireRepoDevDbAllowed/.test(connectSrc) && /assertTargetAllowed/.test(connectSrc);
+    pass(
+      G_FILES,
+      "A/裁定A 启动路径接线：src/db/connect.ts 的 connect() 真的调用护栏（不是只有 CLI 侧接）",
+      wired,
+      wired ? "" : "connect.ts 里没有 assertTargetAllowed / requireRepoDevDbAllowed —— 启动路径又漏了",
+    );
+    // 判别力：把 config 解析出来的 driver/file **直接**喂给同一判定（就是 connect() 的入参形态）。
+    const startupVerdict = guard.repoDevDbVerdict({
+      env: {},
+      argv: [],
+      driver: "sqlite",
+      file: DEV_DB,
+    });
+    pass(
+      G_FILES,
+      "A/裁定A 判别力③（启动路径）：config.db.file 解析成仓库内 dev 库且未显式放行 → 拒绝",
+      startupVerdict.blocked === true && startupVerdict.resolved === DEV_DB,
+      `blocked=${startupVerdict.blocked} resolved=${startupVerdict.resolved} reason=${startupVerdict.reason}`,
+    );
+    // 反向：显式放行 + 可恢复点 → 才放行（与 CLI 口径一字不差）。
+    const startupOptIn = guard.repoDevDbVerdict({
+      env: { MIWO_ALLOW_REPO_DEV_DB: "1" },
+      argv: [],
+      driver: "sqlite",
+      file: DEV_DB,
+    });
+    pass(
+      G_FILES,
+      "A/裁定A 反向（启动路径）：MIWO_ALLOW_REPO_DEV_DB=1 才放行（且 verdict 如实标出可恢复点由硬版本建立）",
+      startupOptIn.blocked === false && !!startupOptIn.optIn && /可恢复点/.test(String(startupOptIn.optIn.recoverablePoint)),
+      `blocked=${startupOptIn.blocked} optIn=${JSON.stringify(startupOptIn.optIn || null)}`,
+    );
+    // 反向：mysql 分支不受影响（护栏按驱动分流，否则会把 CI 的 mysql job 全打死）。
+    const mysqlVerdict = guard.repoDevDbVerdict({
+      env: {},
+      argv: [],
+      driver: "mysql",
+      file: DEV_DB,
+    });
+    pass(
+      G_FILES,
+      "A/裁定A 反向（启动路径）：driver=mysql 时不被 sqlite 护栏拦（分流正确，CI 的 mysql job 不受影响）",
+      mysqlVerdict.blocked === false,
+      `blocked=${mysqlVerdict.blocked} reason=${mysqlVerdict.reason}`,
+    );
   }
 }
 
@@ -279,11 +443,16 @@ db.close();
       src ? "没找到 it.skipIf(!DEV_DB_PRESENT)( ... ) 形态" : "文件不存在",
     );
     // ② 文件里**不许**再出现"到 dev 库路径的裸 return"（形态门禁的正则更强，这条是就地哨兵）。
+    // ⚠⚠ 【判别力自证暴露的**真 bug**】原判据直接拿**原文**匹配，于是把文件头注释里那句
+    //    "本文件原来在搬迁用例里写的是 `if (!fs.existsSync(devPath)) return;`"（**引述历史**）
+    //    也当成了"仍存在静默早退守卫" ⇒ **恒红**（原先被 arity 缺陷掩盖成恒绿）。
+    //    修法：先剥注释再匹配 —— 注释是留档，不是缺口（与 `check-dead-ddl` 的口径一致）。
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
     pass(
       G_DB,
-      "B/裁定B 文件里没有 `if (!fs.existsSync(...)) return;` 形态的 dev 库守卫",
-      !/if\s*\(\s*!fs\.existsSync\([^)]*\)\s*\)\s*return\s*;/.test(src),
-      "仍存在静默早退守卫",
+      "B/裁定B 文件里没有 `if (!fs.existsSync(...)) return;` 形态的 dev 库守卫（剥注释后）",
+      !/if\s*\(\s*!fs\.existsSync\([^)]*\)\s*\)\s*return\s*;/.test(code),
+      "仍存在静默早退守卫（已剥注释；注释里的引述不算）",
     );
     // ③ skip 归因断言必须在 `d(...)` 之外（默认套件也跑），否则默认套件里的 skip 会有盲区。
     pass(
@@ -357,7 +526,10 @@ db.close();
         //    fixture 口径的核对在 D 组（那边会断言两份清单**恰好差那两张退役表**）。
         {
           const cols = mf.tables.reduce((s, x) => s + (x.columns ? x.columns.length : 0), 0);
-          pass(G_DATA, `Ruling93 导出物口径（权威、现算）：${mf.tables.length} 表 / ${cols} 列 / ${rows} 行`);
+          // ⚠ 【M4 同类】这一条**只是把现算出来的数字念一遍**，没有任何判据 —— 属"信息行"。
+          //    旧版用 `pass()` 记它，于是 `通过 60 / 60` 里混进了一条恒真项。改成 `info()`。
+          //    真正的判据是下面那条"导出表集合与 001_schema 逐名相等"（它带 `want`/`got` 比对）。
+          info(G_DATA, `Ruling93 导出物口径（权威、现算）：${mf.tables.length} 表 / ${cols} 列 / ${rows} 行`);
         }
 
         // ---- Ruling 93 对账：导出物口径 vs `tests/fixtures/legacy-column-stats.json` 口径 ----
@@ -400,7 +572,9 @@ db.close();
                       : /^[0-9a-f]{64}$/.test(doc.source.sha256))),
                 `fixture.source=${JSON.stringify(doc.source)}`,
               );
-              pass(
+              // ⚠ 【M4 同类】"两套口径都如实记录"是**陈述**、不是判据（上面那条 `onlyInFixture`
+              //    才是真判据）。改成 `info()`，不掺进通过数。
+              info(
                 G_DATA,
                 `Ruling93 口径对账：fixture 口径 = ${doc.source.tables} 表 / ${doc.source.columns} 列 / ${doc.source.rows} 行；` +
                   `导出物口径 = ${mf.tables.length} 表 / ${mf.tables.reduce((s, x) => s + (x.columns ? x.columns.length : 0), 0)} 列 / ${rows} 行（两套口径都如实记录）`,
@@ -541,6 +715,47 @@ db.close();
   else fail(G_DDL, "MySQL DDL 静态断言全绿", tail(outOf(t), 1500));
 }
 
+// ---------- D2：【Ruling 26·必做】慢用例（唯一的事务守卫）必须**真的执行** ----------
+/**
+ * ── 为什么必须在这里跑（这是"门禁真漏洞"，不是优化项）──
+ * `tests/migrations.test.ts` 里那条"up 必须用 trx"的慢用例（180s 超时，实测 ~60s 才抛
+ * `KnexTimeoutError`）是**唯一**能证明"迁移事务守卫真会红"的自动化证据。它由 `MIWO_TEST_SLOW=1` 门控，
+ * 而改动前该变量**只出现在 `migrations.test.ts` 与 README 文本里** —— CI 与两个验收脚本
+ * **都不设它** ⇒ 默认 `pnpm test`（本机与 CI）**永远 skip** 它 ⇒ **唯一的事务守卫永不执行**。
+ * 这与本阶段反复抓到的"一条永不执行的守卫等于没有守卫"（Ruling 26/76/104/120）是同一类。
+ *
+ * ── 判据（两层，缺一不可）──
+ *   ① `MIWO_TEST_SLOW=1` 下 `migrations.test.ts` EXIT 0；
+ *   ② 摘要里**不许出现 skipped** —— 只有真跑到那条慢用例，它才会从 `1 skipped` 变成 `0 skipped`
+ *      且 passed 数 +1（6 → 7）。只看 EXIT 0 是不够的：门控若失效（比如变量名拼错），
+ *      慢用例会安静地 skip 而整套仍然全绿 —— 那正是要防的假绿。
+ */
+{
+  const SLOW_ENV = { ...process.env, MIWO_TEST_SLOW: "1" };
+  const s = run(
+    process.execPath,
+    ["node_modules/vitest/vitest.mjs", "run", "tests/migrations.test.ts", "--reporter=dot"],
+    { cwd: API_ROOT, env: SLOW_ENV, timeout: 400000 },
+  );
+  const sOut = outOf(s);
+  // ⚠ vitest 在 0 skipped 时**不打印** "skipped" 字样（实测），所以判据是"没有非零 skipped"。
+  // ⚠⚠ 解析必须锚在 **`Tests` 那一行**上：默认 reporter 里先出现的是
+  //    `Test Files  1 passed (1)`，朴素的 `/(\d+)\s+passed/` 会先命中它 → 拿到 `1` 而不是 `7`
+  //    （实测踩过：passed=1 让 `>=7` 判红，而慢用例其实**跑成功了**）。
+  const summaryLine = (sOut.match(/^\s*Tests\s+.*$/m) || [""])[0];
+  const skipped = Number((summaryLine.match(/(\d+)\s+skipped/i) || [])[1] || 0);
+  const passed = Number((summaryLine.match(/(\d+)\s+passed/i) || [])[1] || 0);
+  if (s.status === 0 && skipped === 0 && passed >= 7) {
+    pass(G_DDL, `Ruling26 慢用例（唯一事务守卫）真的执行：MIWO_TEST_SLOW=1 → ${passed} passed / 0 skipped`, `EXIT 0`);
+  } else {
+    fail(
+      G_DDL,
+      "Ruling26 慢用例（唯一事务守卫）真的执行（MIWO_TEST_SLOW=1，0 skipped，>=7 passed）",
+      `EXIT ${s.status} passed=${passed} skipped=${skipped}（skipped>0 说明门控失效、守卫没跑）\n` + tail(sOut, 900),
+    );
+  }
+}
+
 // ---------- E：门禁 + 无启动期写盘 + 旧仓库零改动 ----------
 for (const [name, cmd, args] of [
   ["check-copy", "node", ["tools/check-copy.cjs"]],
@@ -555,11 +770,29 @@ for (const [name, cmd, args] of [
   ["check-test-early-return", "node", ["tools/check-test-early-return.cjs"]],
   ["check-dead-ddl", "node", ["tools/check-dead-ddl.cjs"]],
   ["verify:deploy", "node", ["tools/check-deploy-config.cjs"]],
-  ["verify:legacy-freeze", "node", ["tools/record-legacy-freeze.cjs", "--check"]],
+  // ⚠ 【裁定 B】`verify:legacy-freeze --check` **不在这个循环里**了：它需要**仓库外**两个旧仓
+  //    （`code/toonflow-upstream` / `code/toonflow-web`），无 remote 的 CI runner 上不可能有 →
+  //    全新树里实跑 **EXIT 1**。它被移到下面单独一块，按 `--ci` 分流（本机照旧真判据）。
+  //    ⚠ 这不是"删掉一条检查"：本机口径（不带 `--ci`）跑的是**逐字同一命令、同一判据**。
 ]) {
   const r = run(cmd, args);
   if (r.status === 0) pass(G_HYGIENE, name, tail(r.stdout, 200).trim().split("\n").pop());
   else fail(G_HYGIENE, name, tail(outOf(r), 700));
+}
+// ---- 【裁定 B】本机专属检查①：旧仓库冻结（需要仓库外两个旧仓）----
+{
+  if (CI_MODE) {
+    info(
+      G_HYGIENE,
+      "CI 不适用：verify:legacy-freeze（需要仓库外两个旧仓 code/toonflow-upstream 与 code/toonflow-web）",
+      "无 remote 的 runner 上不存在这两个仓 ⇒ `--check` 必然 EXIT 1（缺仓库**不算通过**，见 record-legacy-freeze.cjs 文件头）。" +
+        "本机请跑 `pnpm.cmd run verify:legacy-freeze`",
+    );
+  } else {
+    const r = run("node", ["tools/record-legacy-freeze.cjs", "--check"]);
+    if (r.status === 0) pass(G_HYGIENE, "verify:legacy-freeze", tail(r.stdout, 200).trim().split("\n").pop());
+    else fail(G_HYGIENE, "verify:legacy-freeze", tail(outOf(r), 700));
+  }
 }
 {
   // ⚠ brief 原文这条是**裸字符串**匹配 `/tempOnsert/.test(file)` —— 实测**在当前树上恒红**，
@@ -595,11 +828,19 @@ for (const [name, cmd, args] of [
   if (hits && !hits.length) pass(G_HYGIENE, "无 tempOnsert 代码引用（剥注释后；Phase 0 deferred 已消除）");
   else fail(G_HYGIENE, "无 tempOnsert 代码引用（剥注释后）", hits ? hits.join(", ") : tail(outOf(r), 500));
 }
+// ---- 【裁定 B】本机专属检查②：旧仓库 sha256 冻结（需要被 gitignore 的本机基线）----
 {
-  // 旧仓库 sha256 冻结（复用 Phase 0 的基线）
   const b = path.join(MIWO_ROOT, "tools", ".phase0-old-baseline.json");
-  if (!fs.existsSync(b)) fail(G_HYGIENE, "旧仓库冻结基线存在", b);
-  else {
+  if (CI_MODE) {
+    info(
+      G_HYGIENE,
+      "CI 不适用：旧仓库 sha256 冻结基线（tools/.phase0-old-baseline.json 被 .gitignore 忽略）",
+      `全新树（git archive HEAD）里 Test-Path = False（该文件记的是本机旧仓库的**绝对路径**，属机器特定凭证）。` +
+        `本机请跑 \`node apps/api/scripts/verify-phase0.cjs\` 或本脚本不带 --ci`,
+    );
+  } else if (!fs.existsSync(b)) {
+    fail(G_HYGIENE, "旧仓库冻结基线存在", b);
+  } else {
     const crypto = require("crypto");
     const rec = JSON.parse(fs.readFileSync(b, "utf8"));
     const bad = Object.entries(rec).filter(
@@ -611,11 +852,222 @@ for (const [name, cmd, args] of [
 }
 {
   // 仓库 dev 库必须**逐字节未变**（Task 11 的硬约束：它只读）。
-  // ⚠ 只报"它现在是什么"，不做"和某个历史值比对"——基线值写在报告里、由人工复核；
-  //    这里机械断言的是"本脚本跑完它仍然是这个值"（防"验收脚本自己把 dev 库写坏了"）。
-  const h = (p) => (fs.existsSync(p) ? require("crypto").createHash("sha256").update(fs.readFileSync(p)).digest("hex") : null);
-  const before = h(DEV_DB);
-  pass(G_HYGIENE, `仓库 dev 库 sha256 = ${before || "(不存在)"}（本验收对它是只读的）`);
+  // ⚠⚠ 【M4 修复】原版这一行是**无条件 `pass` 且没有前后比对**（恒真）——它只打印"现在是什么"，
+  //    于是**本验收自己把 dev 库写坏**这件事永远不会被发现（而 C 组恰恰会读写 dev 库：
+  //    导出、闭环里的比对都以它为源）。恒真的"检查"比没有检查更糟：它会被读成一条判据。
+  //    现在改成**真断言**：脚本开头记 `before`，这里比 `after`。
+  const after = sha256Of(DEV_DB);
+  if (DEV_DB_BEFORE === null && after === null) {
+    // CI 上没有 dev 库（gitignored）→ 没有"前后一致"可言。记一条**信息行**（不计入通过数），
+    // 因为它不构成判据（"文件不存在"既不能证明只读、也不能证伪）。
+    info(G_HYGIENE, "仓库 dev 库不存在（gitignored；CI 上必然如此）→ 本条无前后可比", "本机才有这条判据");
+  } else if (after === DEV_DB_BEFORE) {
+    pass(G_HYGIENE, `仓库 dev 库 sha256 前后逐字节一致（本验收对它是只读的）：${after}`);
+  } else {
+    fail(
+      G_HYGIENE,
+      "仓库 dev 库前后逐字节一致（本验收对它是只读的）",
+      `**本验收把它写坏了**：before=${DEV_DB_BEFORE} after=${after}（C 组的导出/比对都拿它当源，只读是硬约束）`,
+    );
+  }
+}
+
+// ---------- G：【★Ruling 156】裁定落地核对 ----------
+/**
+ * ── 这一节存在的唯一原因（结构性教训，不是"再补几条断言"）──
+ * 本阶段终审发现 **5 条标为「必做」的裁定从未落地，且无人登记**：
+ *   Ruling 12（`check-copy` 235 注释 + 计划就地标注）、Ruling 24（`MIGRATIONS` 顺序守卫）、
+ *   **Ruling 25（`db-migrate` 未知旗标白名单；实测 `--dow` → EXIT 0 且真的把 3 条迁移全应用了）**、
+ *   Ruling 26（`MIWO_TEST_SLOW` 排进 CI/验收）、Ruling 8+16（两处 deploy 陈旧陈述）。
+ * 根因不是"忘了做"，而是**没有任何机制**检查"这条裁定后来有没有真的落进代码"——
+ * 账本越写越长，代码不跟，**账本变成自我安慰**。
+ *
+ * 所以本节给每条"必做"裁定各附一条**可执行的机械断言**：把"裁定是否落地"变成
+ * **门禁能回答的问题**，而不是靠人复读账本。
+ *
+ * ⚠ **判别力要求（每条都必须能因"撤掉对应修复"而红）**：断言一律锚在**修复本身的产物**上
+ *   （CLI 的真实退出码 / 数组的真实顺序 / 配置文件里的真实字面量 / 文档里的真实更正），
+ *   **不许**写成"断言某个文件存在"这种撤掉修复也照样绿的形式。
+ *
+ * ⚠ **边界（如实登记在 README deferred #22）**：本节只能防"已登记的必做裁定被忘掉"，
+ *   防不了"根本没登记"。1b 起每加一条必做裁定，必须同时在本节加一条断言。
+ */
+const G_RULINGS = "G 裁定落地核对";
+{
+  // ---- Ruling 25 ↔ "`--dow` 必须 EXIT 1"（未知旗标白名单）----
+  // 最强形式：**真的把 CLI 跑起来**。判据是退出码 + 输出里点名那个未知旗标。
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-ruling25-"));
+    const r = run(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", "scripts/db-migrate.ts", "--dow"], {
+      cwd: API_ROOT,
+      env: targetEnv(dir),
+    });
+    const o = outOf(r);
+    // 反向对照（必须同时成立，否则"EXIT 1"可能是被别的原因打红的 —— 那就不是判别力）：
+    // 同一个一次性目录、不带旗标 → 必须 EXIT 0 且真的跑完迁移。
+    const ok = run(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", "scripts/db-migrate.ts"], {
+      cwd: API_ROOT,
+      env: targetEnv(dir),
+    });
+    pass(
+      G_RULINGS,
+      'Ruling25（必做）：`db:migrate --dow` 必须 EXIT 1 且点名未知旗标（不许 fall-through 到「跑到最新」）',
+      r.status === 1 && /未知旗标/.test(o) && /--dow/.test(o),
+      `EXIT=${r.status}（期望 1）；输出 ${tail(o, 300)}`,
+    );
+    pass(
+      G_RULINGS,
+      "Ruling25 反向对照：同一目标不带旗标必须 EXIT 0 且真的跑完迁移（证明上面那条不是被别的原因打红）",
+      ok.status === 0 && /完成/.test(outOf(ok)),
+      `EXIT=${ok.status}；${tail(outOf(ok), 200)}`,
+    );
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* 删不掉不掩盖结论 */
+    }
+  }
+
+  // ---- Ruling 24 ↔ "乱序 `MIGRATIONS` 必须红"（顺序守卫）----
+  // 判据分两层：① 清单**实际顺序**是升序（机械解析 index.ts，不是抄数字）；
+  //             ② `migrations.test.ts` 里那条 `toEqual([...NAMES].sort())` 还在（守卫真的进了套件）。
+  {
+    const idxPath = path.join(API_ROOT, "src", "db", "migrations", "index.ts");
+    const src = fs.existsSync(idxPath) ? fs.readFileSync(idxPath, "utf8") : "";
+    // ① 解析 import 别名 → 迁移名，再按 `MIGRATIONS` 数组里的出现顺序取出名字。
+    const alias = new Map();
+    for (const m of src.matchAll(/import\s+(\w+)\s+from\s+["']@\/db\/migrations\/(\d{3}_[A-Za-z0-9_]+)["']/g)) {
+      alias.set(m[1], m[2]);
+    }
+    const arrStart = src.indexOf("export const MIGRATIONS");
+    const arrEnd = arrStart >= 0 ? src.indexOf("];", arrStart) : -1;
+    const arrBody = arrStart >= 0 && arrEnd > arrStart ? src.slice(arrStart, arrEnd) : "";
+    const ordered = [];
+    for (const m of arrBody.matchAll(/^\s*([A-Za-z_]\w*)\s*,\s*$/gm)) {
+      if (alias.has(m[1])) ordered.push(alias.get(m[1]));
+    }
+    const sorted = [...ordered].sort();
+    pass(
+      G_RULINGS,
+      `Ruling24（必做）：MIGRATIONS 数组顺序必须是升序（knex 不排序；乱序会静默按错序执行）`,
+      ordered.length >= 3 && JSON.stringify(ordered) === JSON.stringify(sorted),
+      `数组顺序 ${JSON.stringify(ordered)}；升序应为 ${JSON.stringify(sorted)}（解析到 ${alias.size} 个 import）`,
+    );
+    // ② 守卫必须真的在测试套件里（只解析顺序不够：数组可能是"恰好有序"而没人守它）
+    const tPath = path.join(API_ROOT, "tests", "migrations.test.ts");
+    const tSrc = fs.existsSync(tPath) ? fs.readFileSync(tPath, "utf8") : "";
+    pass(
+      G_RULINGS,
+      "Ruling24 接线：tests/migrations.test.ts 里必须有 `expect(NAMES).toEqual([...NAMES].sort())`（守卫进了套件）",
+      /expect\(NAMES\)\.toEqual\(\[\.\.\.NAMES\]\.sort\(\)\)/.test(tSrc),
+      tSrc ? "没找到那条断言" : "测试文件不存在",
+    );
+    // ③ 反向哨兵：`makeMigrationSource` **不得**偷偷 sort（那会掩盖数组写错、让 --status 与真实执行顺序脱钩）
+    const migSrc = src;
+    pass(
+      G_RULINGS,
+      "Ruling24 反向哨兵：makeMigrationSource 不得偷偷 sort()（那会掩盖数组写错）",
+      !/getMigrations[\s\S]{0,200}?\.sort\(/.test(migSrc),
+      "getMigrations 里出现了 sort() —— 掩盖数组写错，违反 Ruling 24 的显式禁令",
+    );
+  }
+
+  // ---- Ruling 26 ↔ "CI/验收脚本里出现 `MIWO_TEST_SLOW=1`"（唯一事务守卫必须真的执行）----
+  {
+    const ciPath = path.join(MIWO_ROOT, ".github", "workflows", "ci.yml");
+    const ciSrc = fs.existsSync(ciPath) ? fs.readFileSync(ciPath, "utf8") : "";
+    // 判据：ci.yml 里必须**真的**把 MIWO_TEST_SLOW 设成 "1"（不是注释里提一句）。
+    const ciSets = /^\s*MIWO_TEST_SLOW:\s*["']?1["']?\s*$/m.test(ciSrc);
+    pass(
+      G_RULINGS,
+      "Ruling26（必做）：.github/workflows/ci.yml 里必须真的设置 MIWO_TEST_SLOW: \"1\"（不是注释里提一句）",
+      ciSets,
+      ciSrc ? (ciSets ? "" : "ci.yml 里没有生效的 MIWO_TEST_SLOW: \"1\" —— 唯一的事务守卫在 CI 上永不执行") : "ci.yml 不存在",
+    );
+    // 本脚本自己也要跑（D2 组）：判据是**本节所在文件**里有那段带 MIWO_TEST_SLOW 的慢用例调用。
+    const selfSrc = fs.readFileSync(__filename, "utf8");
+    pass(
+      G_RULINGS,
+      "Ruling26 接线：verify:phase1a 自己也要真跑慢用例（D2 组设 MIWO_TEST_SLOW=1 并断言 0 skipped）",
+      /MIWO_TEST_SLOW:\s*"1"/.test(selfSrc) && /skipped === 0/.test(selfSrc),
+      "本脚本里没有 D2 的慢用例调用 / 没有 0 skipped 断言",
+    );
+  }
+
+  // ---- Ruling 12 ↔ "`check-copy.cjs` 含该注释"（235 下限 + 禁止单独下调）----
+  {
+    const ccPath = path.join(MIWO_ROOT, "tools", "check-copy.cjs");
+    const ccSrc = fs.existsSync(ccPath) ? fs.readFileSync(ccPath, "utf8") : "";
+    pass(
+      G_RULINGS,
+      "Ruling12（必做）：tools/check-copy.cjs 在阈值处含「235 是当前下限；下调必须随真正删 .ts 的 Task」注释",
+      // ⚠ 三个判据分别锚在：注释的两句关键话 + **真正生效的那次 `mustAtLeast(..., 235)` 调用**。
+      //    最后一个不能用 `/mustAtLeast\([\s\S]{0,80}?,\s*235\)/`：那个正则会被**函数定义行**
+      //    （`function mustAtLeast(label, actual, min) {`）之后的正文抢先命中（实测恒真/恒假都不对）。
+      //    改成逐行找"以 `mustAtLeast(` 开头的调用行、且该行以 `, 235);` 结尾"。
+      /235 是当前下限/.test(ccSrc) &&
+        /禁止单独为/.test(ccSrc) &&
+        ccSrc.split(/\r?\n/).some((l) => /^\s*mustAtLeast\(/.test(l) && /,\s*235\);\s*$/.test(l)),
+      ccSrc ? "注释或 235 阈值缺失" : "check-copy.cjs 不存在",
+    );
+    // 计划文件里的就地标注（本机路径；CI 上没有该文件 → 记信息行，不算判据）
+    const planPath = "D:\\sy_workspace\\docs\\superpowers\\plans\\2026-10-12-miwo-phase1a-mysql-migrations.md";
+    if (fs.existsSync(planPath)) {
+      const plan = fs.readFileSync(planPath, "utf8");
+      pass(
+        G_RULINGS,
+        "Ruling12 接线：计划 Task 1 Step 2 的 Expected 已就地标注「已被控制器裁定覆盖：保持 235」",
+        /已被控制器裁定覆盖：保持 235/.test(plan),
+        "计划文件里没有那条就地标注",
+      );
+    } else {
+      info(G_RULINGS, "Ruling12 接线：计划文件不在本机（CI/全新树没有 docs/）→ 本条无对象", planPath);
+    }
+  }
+
+  // ---- Ruling 8+16 ↔ "两处陈旧断言已改"（deploy/ 的两句假话）----
+  {
+    const dReadme = path.join(MIWO_ROOT, "deploy", "README.md");
+    const dCompose = path.join(MIWO_ROOT, "deploy", "docker-compose.yml");
+    const rSrc = fs.existsSync(dReadme) ? fs.readFileSync(dReadme, "utf8") : "";
+    const cSrc = fs.existsSync(dCompose) ? fs.readFileSync(dCompose, "utf8") : "";
+    // ⚠ 判据是"**不再是活的主张**"：必须出现更正标记，且旧句子不得以肯定语气留下。
+    // ⚠ 同 ②：更正说明必然引述旧句（"旧版本这里写着『…』"），所以判据是
+    //    "旧句只作为被引述的旧文出现 + 有更正标记"，不是"全文不含旧句"（后者恒红）。
+    //    ⚠ 被引述的旧句**跨行**（标记在上一行、旧句在下一行），所以不能按"单行同时含两者"判；
+    //      改成"旧句**之前**的一段窗口里必须有更正标记"。
+    const staleIdx = rSrc.indexOf("硬编码 `better-sqlite3`");
+    const staleQuoted = staleIdx < 0 || /已更正·Ruling 8\+16/.test(rSrc.slice(Math.max(0, staleIdx - 600), staleIdx));
+    pass(
+      G_RULINGS,
+      "Ruling8+16（必做）①：deploy/README.md 不再**主张**「utils/db.ts 仍硬编码 better-sqlite3」且已就地更正",
+      /已更正·Ruling 8\+16/.test(rSrc) && staleQuoted,
+      rSrc
+        ? `更正标记=${/已更正·Ruling 8\+16/.test(rSrc)}；旧句下标=${staleIdx}；旧句之前 600 字内有更正标记=${staleQuoted}`
+        : "deploy/README.md 不存在",
+    );
+    // ⚠ 判据是"**不再是活的主张**"，不是"文件里不许出现这几个字"：
+    //    更正说明**必然要引述旧句子**（"旧注释写『…』"），所以拿"全文不含旧句"当判据会**恒红**。
+    //    正确的判据：① 有更正标记；② 旧句子**只出现在带更正标记的那一段里**（作为被引述的旧文），
+    //    不得以肯定语气独立存在。实现：逐行看，凡是含旧句的行，必须同时含更正标记。
+    const staleLines = cSrc.split(/\r?\n/).filter((l) => /应用根本不消费这一组变量/.test(l));
+    const staleIsQuoted = staleLines.every((l) => /已更正·Ruling 8\+16|旧注释写/.test(l));
+    pass(
+      G_RULINGS,
+      "Ruling8+16（必做）②：deploy/docker-compose.yml 不再**主张**「Phase 1a 之前应用根本不消费这一组变量」（旧句只能作为被引述的旧文出现）",
+      /已更正·Ruling 8\+16/.test(cSrc) && staleIsQuoted,
+      cSrc
+        ? `更正标记=${/已更正·Ruling 8\+16/.test(cSrc)}；含旧句的行数=${staleLines.length}，其中作为被引述旧文的=${staleLines.filter((l) => /已更正·Ruling 8\+16|旧注释写/.test(l)).length}`
+        : "deploy/docker-compose.yml 不存在",
+    );
+    // 反向哨兵：两处都必须**同时**改（Ruling 16 明确要求"别只改一处"）。
+    pass(
+      G_RULINGS,
+      "Ruling8+16 反向哨兵：两处**一起**改（Ruling 16 明确禁止只改一处）",
+      /已更正·Ruling 8\+16/.test(rSrc) && /已更正·Ruling 8\+16/.test(cSrc),
+      `README=${/已更正·Ruling 8\+16/.test(rSrc)} compose=${/已更正·Ruling 8\+16/.test(cSrc)}`,
+    );
+  }
 }
 
 // ---------- F：可选 MySQL ----------
@@ -634,10 +1086,19 @@ for (const c of checks) {
     group = c.g;
     console.log(`\n== ${group} ==`);
   }
-  console.log(`  [${c.ok ? "通过" : "失败"}] ${c.n}${!c.ok && c.d ? " —— " + c.d : ""}`);
+  // ⚠ 【M4】信息行用 `[信息]` 前缀且**不计入通过数**：让摘要里的 `通过 N / M` 只反映真判据。
+  //    旧版把"dev 库现在是这个哈希"这种**无条件 pass** 也计进 60/60，等于给数字掺水。
+  const tag = c.info ? "信息" : c.ok ? "通过" : "失败";
+  console.log(`  [${tag}] ${c.n}${!c.ok && c.d ? " —— " + c.d : ""}${c.info && c.d ? " —— " + c.d : ""}`);
 }
-const failed = checks.filter((c) => !c.ok);
-console.log(`\n--- 摘要：通过 ${checks.length - failed.length} / ${checks.length} ---`);
+// 通过数只数**真判据**（`info` 行既不进分子也不进分母）。
+const judged = checks.filter((c) => !c.info);
+const infoCount = checks.length - judged.length;
+const failed = judged.filter((c) => !c.ok);
+console.log(
+  `\n--- 摘要：通过 ${judged.length - failed.length} / ${judged.length}${infoCount ? `（另有 ${infoCount} 条信息行，不计入）` : ""} ---`,
+);
+if (CI_MODE) console.log("--- 口径：CI（--ci）—— 本机专属检查已显式记为「CI 不适用」且不计入通过数 ---");
 if (failed.length) {
   console.error("\nPhase 1a 验收失败：");
   for (const c of failed) console.error(`  - [${c.g}] ${c.n}${c.d ? " —— " + c.d : ""}`);

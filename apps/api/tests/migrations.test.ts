@@ -62,6 +62,15 @@ describe("迁移机制（spec §5.2）", () => {
   it("清单非空、名字唯一、且与 migrations/*.ts 文件一一对应", () => {
     expect(NAMES.length).toBeGreaterThan(0);
     expect(new Set(NAMES).size).toBe(NAMES.length);
+    // ⚠⚠ 【Ruling 24·必做】**顺序**必须守：knex **不排序** —— `Migrator.listAll` 原样返回
+    //    `getMigrations()`（knex/lib/migrations/migrate/Migrator.js:5-7,22-27,747-751），
+    //    返回顺序 / 执行日志 / `knex_migrations` 里的行**全是数组顺序**。
+    //    实测：把数组故意写成 `[003, 001, 002]` → 执行顺序就是 `[003, 001, 002]`，
+    //    而**改动前这一条断言不存在** ⇒ 新库会**静默按错序执行**（schema 状态难以解释）。
+    //    Task 5/6 都要往同一数组追加，而 `db:generate` 只提醒"别忘 import"、不提醒顺序。
+    //    ⚠ **不要**在 `makeMigrationSource` 里偷偷 `sort()` 来"修"这条：那会掩盖数组写错，
+    //      且让 `--status` 的输出顺序与真实执行顺序脱钩（本门禁要的恰恰是"数组本身有序"）。
+    expect(NAMES).toEqual([...NAMES].sort());
     const files = fs
       .readdirSync(MIGRATIONS_DIR)
       .filter((f) => /^\d{3}_.+\.ts$/.test(f))

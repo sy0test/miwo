@@ -8,7 +8,10 @@
  *   - 文件名 `<三位序号>_<kebab-case>.ts`，序号 = 当前最大序号 + 1
  *   - `name` 字段必须与文件名（去扩展名）**逐字相同**，否则 `knex_migrations` 里会出现两个名字
  *   - 骨架里预置 `up`/`down` 与一段"必须有 down"的注释
- *   - 生成后必须手工把新迁移 import 进 `src/db/migrations/index.ts` 的 `MIGRATIONS` 数组
+ *   - 生成后必须手工把新迁移 import 进 `src/db/migrations/index.ts` 的 `MIGRATIONS` 数组，
+ *     ⚠⚠ 并且**必须追加到数组末尾**（【Ruling 24】）—— knex **不排序**，执行顺序就是数组顺序；
+ *     把 `003` 写在 `002` 前面会让新库**静默按错序执行**。
+ *     `tests/migrations.test.ts` 有一条 `expect(NAMES).toEqual([...NAMES].sort())` 守它。
  */
 import fs from "fs";
 import path from "path";
@@ -42,6 +45,9 @@ export default {
     //   2. 成对：down 必须能把自己 up 出来的东西精确撤掉
     //   3. 种子只插不改：insert 前先查存在性，**绝不覆盖已有行**
     //   4. 不要在 up/down 里读 app 的其它模块（迁移必须能在最小依赖下跑）
+    //   5. **注册顺序**（【Ruling 24】）：import 进 index.ts 的 MIGRATIONS 时**必须追加到末尾**。
+    //      knex 不排序（Migrator.listAll 原样返回 getMigrations()），执行顺序 = 数组顺序；
+    //      插错位置会让新库静默按错序执行。migrations.test.ts 有断言守它。
   },
   async down(knex: Knex): Promise<void> {
     void knex;
@@ -52,4 +58,4 @@ export default {
   "utf8",
 );
 console.log(`已生成 ${path.relative(path.resolve(__dirname, ".."), file)}`);
-console.log(`⚠ 别忘了把它 import 进 src/db/migrations/index.ts 的 MIGRATIONS 数组。`);
+console.log(`⚠ 别忘了把它 import 进 src/db/migrations/index.ts 的 MIGRATIONS 数组 —— 而且必须追加到**末尾**（【Ruling 24】knex 不排序，执行顺序 = 数组顺序）。`);

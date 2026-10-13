@@ -31,7 +31,12 @@ services:
     ports:
       # 只发布到**宿主机回环**：host 网络模式的 api 通过 127.0.0.1:${MIWO_DB_PORT} 连它，公网/局域网都连不上。
       # 宿主端口用 MIWO_DB_PORT，保证"应用要连的端口"与"实际发布的端口"同源。
-      # ⚠ Phase 1a 之前应用根本不消费这一组变量（MIWO_DB_DRIVER 只在 config.ts 里被读取；真实数据在 ${MIWO_DATA_DIR}/db2.sqlite），见 deploy/README.md。
+      # ⚠【已更正·Ruling 8+16】旧注释写"Phase 1a 之前应用根本不消费这一组变量（MIWO_DB_DRIVER 只在
+      # config.ts 里被读取；真实数据在 ${MIWO_DATA_DIR}/db2.sqlite）" —— **那是假的**。
+      # Phase 1a / Task 4 起启动路径是 utils/db.ts 的 dbReady → src/db/connect.ts 的 connect()，
+      # createKnex() 按 config.db.driver 选 client（sqlite→better-sqlite3 / mysql→mysql2），
+      # 这组变量正是它的输入 ⇒ 设了 MIWO_DB_DRIVER=mysql 就是在用 MySQL（真实数据在下面的 mysql 卷里）。
+      # 详见 deploy/README.md 第 6 节。
       - "127.0.0.1:${MIWO_DB_PORT}:3306"
     volumes:
       - mysql-data:/var/lib/mysql

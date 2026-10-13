@@ -126,6 +126,14 @@ jobs:
       - name: 类型检查
         run: pnpm --filter @miwo/api run typecheck
       - name: 单测
+        # 【Ruling 26】`MIWO_TEST_SLOW=1` 让 `tests/migrations.test.ts` 那条**唯一的事务守卫**
+        # 慢用例（~60s，实测 KnexTimeoutError）真的执行。改动前这个变量全仓只出现在
+        # `migrations.test.ts` 与 README 文本里 ⇒ 默认 `pnpm test`（本机与 CI）**永远 skip** 它
+        # ⇒ "唯一的事务守卫永不执行"（Phase 0 Ruling 26 的原话）。它是门控变量、不是配置变量，
+        # 所以**不进** `apps/api/.env.example`（`check-deploy-config` 会把它当未声明配置判红，见 deferred #12）。
+        # `verify:phase1a` 里另有一条同族断言（D2 组）把"0 skipped"钉死，两处互为独立护栏。
+        env:
+          MIWO_TEST_SLOW: "1"
         run: pnpm --filter @miwo/api test
       - name: 后端打包（产物 data/serve/app.js 已被 .gitignore 忽略）
         run: pnpm --filter @miwo/api run build
@@ -135,8 +143,18 @@ jobs:
       # （C 组）在 CI 上**必然没有**（gitignored）—— 那种情况下 C 组记的是**显式**结论，
       # 不是静默早退（见脚本头 + tools/check-test-early-return.cjs）。
       # MySQL 口径不由本步覆盖：那条路径归下面的 mysql job（verify-mysql-migration.cjs）。
+      #
+      # ⚠⚠ 【裁定 B】这里跑的是 **`verify:phase1a:ci`（= 本脚本 + `--ci`）**，不是本机口径。
+      #   原因：该脚本里有**两条本机专属**检查，在全新树（CI）上**必然失败** ——
+      #     ① 旧仓库 sha256 冻结读 `tools/.phase0-old-baseline.json`，该文件被 `.gitignore:12` 忽略
+      #        （`git archive HEAD` 的树里 Test-Path = False）；
+      #     ② `verify:legacy-freeze --check` 需要**仓库外**两个旧仓（无 remote 的 runner 上不可能有）。
+      #   全新树里实跑本机口径 = **EXIT 1**，而"CI 跑了一条本机专属命令"不是实现缺陷、是口径错配。
+      #   `--ci` 把这两条**显式记为「CI 不适用」**并移出通过计数（`[信息]` 前缀，摘要里能看见），
+      #   **没有削弱任何断言**：它们在本机口径下照旧是真判据，且 CI 下会逐条打印"少了什么、为什么"。
+      #   ⚠ 不要改成"删掉那两条"或"让它们恒真"—— 那是把诚实换成好看。
       - name: Phase 1a 验收（sqlite 口径；MySQL 口径由 mysql job 覆盖）
-        run: pnpm run verify:phase1a
+        run: pnpm run verify:phase1a:ci
 
   web:
     runs-on: ubuntu-latest
