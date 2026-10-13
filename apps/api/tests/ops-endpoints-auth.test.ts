@@ -261,7 +261,7 @@ describe("Task 7 运维接口授权（真应用 + 真库 + 真 HTTP）", () => {
     }
   }, 90000);
 
-  it("④ admin token ⇒ 放行（非 401/403）：`clearTable` 真实删表（直读确认行没了）+ `deleteAllData` 命中 handler", async () => {
+  it("④ admin token ⇒ 放行（非 401/403）：`clearTable` 真实删表（直读确认行没了）", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
       // 前置：种一个**独立的**破坏面：clearTable 只删 o_script 的 marker 行，o_project 的必须留着（证明"按表"而不是"整库"）
@@ -277,16 +277,38 @@ describe("Task 7 运维接口授权（真应用 + 真库 + 真 HTTP）", () => {
       const after = await snapshot(db);
       expect(after.markerScript, "admin 该表被清空 ⇒ marker 行必须消失（证明接口真的执行了）").toBe(0);
       expect(after.markerProject, "clearTable 是按表清的 ⇒ 另一张表的行必须还在").toBe(1);
+    } finally {
+      await db.destroy();
+    }
+  }, 90000);
 
-      // `deleteAllData`：只断言"requireAdmin 放行"（不是 401/403）。
-      // ⚠ 它当前**必 500**：`initDB(db, true)` 在**第一张表** `o_user` 上就抛
-      //   `drop table \`o_user\` - database is locked`，所以它既没删成、也不是被授权拦下的 ——
-      //   这是 **Task 3 之前就存在**的 bug（与本次收权无关），登记在报告里，不在本任务修
-      //   （修好它 = 让"整库清空"真的能打，超出"收权"范围）。
+  it("⑤ `deleteAllData` 已**无条件停用**：admin 也拿 501 + 文案看得出是'停用' + 直读确认行还在", async () => {
+    const db = createKnex(dbConfigOf(dataDir));
+    try {
+      // 前置：库里确实有可删的行（否则"行还在"是空断言）
+      await db("o_project").insert({ id: MARKER_PROJECT, userId: NORMAL_USER, name: "ops-auth-marker", createTime: 3 }).onConflict("id").ignore();
+      const before = await snapshot(db);
+      expect(before.markerProject, "前置：marker 行必须在").toBe(1);
+      const token = await signAs(db, ADMIN_USER);
+
       const del = await request("POST", url("/api/other/deleteAllData"), { token, body: {} });
-      console.log(`[ops-auth] admin 打 deleteAllData：status=${del.status} body=${del.body.slice(0, 160)}`);
-      expect(del.status, "admin 不该被 requireAdmin 拦（401/403）").not.toBe(401);
-      expect(del.status, "admin 不该被 requireAdmin 拦（401/403）").not.toBe(403);
+      console.log(`[ops-auth] admin 打 deleteAllData：status=${del.status} body=${del.body.slice(0, 220)}`);
+      // ① 连**管理员**都拿 501（关键：不是"权限不够"，而是"能力已停用"）
+      expect(del.status, `admin 也必须 501（停用），实际 ${del.status}：${del.body.slice(0, 200)}`).toBe(501);
+      // ② 文案必须能看出是**停用**（不是 500 报错、也不是 403 权限不足）
+      expect(del.body, "文案要写明'已停用'与归属阶段").toMatch(/已停用/);
+      expect(del.body).toMatch(/Phase 1b Task 7/);
+      expect(del.body, "不该是权限不足的口径").not.toMatch(/需要管理员权限/);
+      // ③ 直读：行**还在**（停用 = 零副作用）
+      expect(await snapshot(db), "停用的接口一行都不该删").toEqual(before);
+      // 交叉对照：同一个 admin token 打别的运维接口仍可用 ⇒ 501 是"这一个接口停用"，不是"admin 全废"
+      const info = await request("GET", url("/api/setting/dbConfig/dbInfo"), { token });
+      expect(info.status, `admin 打 dbInfo 仍应 200：${info.body.slice(0, 200)}`).toBe(200);
+
+      // 普通 token 仍然先吃 403（保留 requireAdmin ⇒ 不给"未授权探测"的免费信息）
+      const normalToken = await signAs(db, NORMAL_USER);
+      const asUser = await request("POST", url("/api/other/deleteAllData"), { token: normalToken, body: {} });
+      expect(asUser.status, "普通 token 仍是 403（鉴权在停用之前）").toBe(403);
     } finally {
       await db.destroy();
     }

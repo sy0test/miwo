@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T20:14:23.660Z",
+  "generatedAt": "2026-10-13T20:19:24.833Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -347,11 +347,6 @@
       "path": "apps/api/src/lib/fixDB.ts",
       "confirmed": true,
       "note": "处置（Task 3，**新增条目**）：**改走 systemDb**（裸 knex），不再用默认导出。理由：本文件是 Phase 1a 摘除启动路径后留下的**死代码**（保留只为 `tools/check-copy.cjs:94` 的存在性断言，删除归 Phase 1c），它的动作是\"启动期改库\"（矫正 `state='生成中'` 的残留行、补列、补平台种子行）——**不属于任何租户**；用守卫（默认导出）会让它在无 ctx 时抛错，那种报错在死代码里毫无价值、只会误导下一个人。具体改动：第 40 行 `import db from \"@/utils/db\"` → `import { systemDb as db } from \"@/utils/db\"`；第 38 行 `import u from \"@/utils\"` 换成一行注释（**保持行数**，让清单里本文件的 join 行号 176 不漂）；8 处 `u.db(...)` 改成 `db(...)`（同一行内替换，行数不变）。判据：`tests/tenant-db-bypass.test.ts` 的**逐文件**断言 + 本清单的 bypassFiles 枚举（门禁靠 `as db` 别名恰好仍能扫到，这是巧合不是设计 —— 计划 Task 8 会把 `systemDb` 显式纳入扫描并落地 `systemDbUsers`）。"
-    },
-    {
-      "path": "apps/api/src/routes/other/deleteAllData.ts",
-      "confirmed": true,
-      "note": "处置（spec §7.3）：**接口删除**。现状是一句 initDB(db, true) 清空所有表，无鉴权、无环境开关、无审计；服务器版没有保留价值，Phase 1b 直接摘掉路由（连同 router 注册）。**【Task 7 实际处置·2026-10-13】**：**未删除**（任务书要求只做\"收权\"且禁止新增开关）⇒ 改为挂 `requireAdmin`（无 ctx 401 / 非 admin 403），走 `systemDb`。收权前\"任意登录用户一条 POST 就能整库清空\"已闭合；`tests/ops-endpoints-auth.test.ts` 用真应用+真 HTTP 钉住（普通 token 403 且**直读确认一行没少**；admin 放行）。⚠ 另发现**预存在 bug**（与本次收权无关）：`initDB(db, true)` 在第一张表 `o_user` 上抛 `drop table \\`o_user\\` - database is locked` ⇒ 本接口当前 **500 且不生效**（实测：BEFORE/AFTER 表与行数完全不变）。未在本任务修（修好它 = 让\"整库清空\"真的能打，超出收权范围），已上报。"
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",

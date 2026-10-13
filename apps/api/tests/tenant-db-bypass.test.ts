@@ -23,9 +23,16 @@ import { describe, expect, it } from "vitest";
 const API_ROOT = path.resolve(__dirname, "..");
 const SRC = path.join(API_ROOT, "src");
 
-/** 唯一绕过口 `systemDb` 的**登记清单**（相对 `src/`）：实例级运维 + 启动期 bootstrap。 */
+/**
+ * 唯一绕过口 `systemDb` 的**登记清单**（相对 `src/`）：实例级运维 + 启动期 bootstrap。
+ *
+ * ⚠ **Phase 1b Task 7 收窄：7 → 6。** `routes/other/deleteAllData.ts` 原本在列（它用 `systemDb`
+ *   配合 `initDB(db, true)` 清整库）；Task 7 按 Lead 裁定把它改成**无条件 501 停用**（连 admin 也打不动），
+ *   并删掉了它的 `initDB`/`systemDb` 依赖 ⇒ 它**不再持有任何 DB 访问面**，也就不是绕过口使用者了。
+ *   本清单必须跟着**收窄**（这正是这条用例的设计意图：绕过面变大变小都要有人看见）；
+ *   文件与路由挂载都**保留**，只是不再走 DB。
+ */
 const SYSTEM_DB_USERS = [
-  "routes/other/deleteAllData.ts",
   "routes/setting/dbConfig/clearData.ts",
   "routes/setting/dbConfig/clearTable.ts",
   "routes/setting/dbConfig/dbInfo.ts",
@@ -69,7 +76,7 @@ const rel = (abs: string) => path.relative(API_ROOT, abs).split(path.sep).join("
 const read = (apiRelPath: string) => fs.readFileSync(path.join(API_ROOT, apiRelPath), "utf8");
 
 describe("唯一绕过口 systemDb 的登记清单（Task 3）", () => {
-  it("7 个豁免文件**各自**显式导入 systemDb（逐个断言，不依赖门禁正则的巧合）", () => {
+  it("6 个豁免文件**各自**显式导入 systemDb（逐个断言，不依赖门禁正则的巧合）", () => {
     for (const r of SYSTEM_DB_USERS) {
       const abs = path.join(API_ROOT, "src", r);
       expect(fs.existsSync(abs), `${r} 必须存在`).toBe(true);

@@ -93,17 +93,16 @@ const EXTS = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".d.ts"];
  * that when Phase 1b deletes them this gate turns red and the list gets cleaned up.
  */
 const EXEMPTIONS = [
-  {
-    file: "apps/api/src/routes/other/deleteAllData.ts",
-    count: 2,
-    reason:
-      "POST /other/deleteAllData is the user-triggered 'wipe every table' endpoint: it imports initDB and calls initDB(db, true) inside the request handler. Phase 1b deletes the route (it is unauthenticated); Phase 1a must not touch route code.",
-  },
+  // ⚠ `apps/api/src/routes/other/deleteAllData.ts` 曾在此登记（count: 2：`import initDB` + `initDB(db, true)`）。
+  //   **Phase 1b Task 7 已按本 gate 的设计把它清掉**：该路由改为**无条件 501 停用**，不再 import `initDB`、
+  //   也不再持有 `systemDb` ⇒ 命中数 2 → 0。gate 头的规矩是"路线被改写/删除时清单必须清掉"
+  //   （count 不符即红），所以这里删条目而**不是**放宽判据；路由文件本身与 `router.ts` 的挂载都保留
+  //   （删了会让 check-copy 的构件断言与依赖图一起漂）。
   {
     file: "apps/api/src/routes/setting/dbConfig/clearData.ts",
     count: 2,
     reason:
-      "GET /setting/dbConfig/clearData drops all tables then calls initDB(db) to rebuild them - request-triggered, not boot-triggered. Phase 1b reworks it (see tenant-exceptions.json); Phase 1a must not touch route code.",
+      "GET /setting/dbConfig/clearData drops all tables then calls initDB(db) to rebuild them - request-triggered, not boot-triggered. Phase 1b 只做了收权（requireAdmin），接口仍可用；Phase 1c 才决定它是改是删。",
   },
   {
     file: "apps/api/src/routes/setting/dbConfig/importData.ts",

@@ -156,7 +156,33 @@ node --import=tsx scripts/check-migration-import-graph.ts     # exit 0 = 干净
   `import u from "@/utils"` 这句解释文字（审查者第一版脚本因此把 `@/utils` 判成可达 = 假阳性）。
   `tests/backfill-userid.test.ts` 里的 `stripComments()` 就是这条规范的落地。
 
-## 7. 未验证项
+## 8. 运维接口的授权边界与停用（Phase 1b Task 7）
+
+`/api/other/deleteAllData` 与 `/api/setting/dbConfig/{clearData,clearTable,dbInfo,exportData,importData}` 现在
+**全部只对 admin 开放**（`requireAdmin`：无 token **401** / 普通用户 **403** / admin 才可达）。
+判定工具：`tests/ops-endpoints-auth.test.ts`（spawn **真应用** + 真 HTTP + `%TEMP%` 一次性库 +
+**直读断言"行没被删"**——只断言状态码会假绿）。
+
+- **`POST /api/other/deleteAllData` 已无条件停用（HTTP 501，连 admin 也是）**。
+  整库清空是"**停机窗口 + 离线 + 先备份**"的动作，不该有 HTTP 入口。
+  ⚠ **不是修不好，是不该让它活着**：它此前本就**不生效**（`initDB(db,true)` 在第一张表上抛
+  `database is locked` ⇒ 500），"修好"等于把最危险的操作从"坏的"变成"活的"。
+  真要清库：停机 → 备份到 `D:\sy_workspace\.db-backups\` → 用离线工具（照 `scripts/backfill-userid.ts`
+  的 `validateArgs` 白名单 + `guard.requireRepoDevDbAllowed` 放在 `createKnex()` **之前**的口径）→ 核对报告。
+  **不要**把它改回 HTTP。见 §2.1 的同款护栏说明。"修好 vs 彻底删除"登记为 **Phase 1c/2 决策项**。
+- **`GET .../exportData` 导出的是【全量数据备份】，必须按密钥对待**（别进 git、别丢共享盘、别当附件发）：
+  - 已剔除 `o_setting.tokenKey`（JWT 签名密钥；拿到它可伪造**任意用户（含 admin）**的 token）。
+    **为什么只脱敏它**：importer（`db/legacy/import.ts`）本就把 tokenKey 列为"**绝不导回**"
+    ⇒ 剔除**零往返损失**；而 `o_user.password`（密码哈希）与 `o_vendorConfig.inputValues`（供应商明文 key）
+    仍**在导出里** —— 掩掉它们会让"**恢复备份后登录不上 / 供应商配置失效**"，那是**功能回归**、
+    不是安全修复。
+  - 正确做法（Phase 1c）：另加"**脱敏导出**"模式（显式参数，导出给审计/排查用），
+    **不是把默认备份改残**。导出前请确认接收方与存放位置。
+- `clearData` / `clearTable` / `importData` 在收权后**仍是活的** admin 接口；它们里面的
+  `sqlite_master` / `PRAGMA foreign_keys` / 表名插值都是 **sqlite 方言**，MySQL 下不可用；
+  `clearTable` 只校验"表存在"、没有"允许被清"的白名单 ⇒ 一并归 **Phase 1c**。
+
+## 9. 未验证项
 
 - **MySQL 方言未实测**：004 与 CLI **零 raw SQL**（纯 knex query builder），sqlite 上完整回归；
   但"批量 `whereIn(...).update()`"在 MySQL 上的行为、以及 `memories.isolationKey` 前缀匹配的
