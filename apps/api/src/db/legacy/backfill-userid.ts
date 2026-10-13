@@ -281,6 +281,18 @@ const TARGETS: BackfillTarget[] = [
 ];
 
 /**
+ * 回填目标表名（**19 张**；`o_project` 是归属链的源头，单独处理，故不在此列）。
+ *
+ * ⚠ 存在的意义是**三方相等断言**（审查输入 ⑥）：`policies.TENANT_TABLES` ↔ 这里的回填目标 ↔
+ *   运行期 `report.selfCheck` 覆盖的表。本阶段已两次证明"**手工清单必漂**"（Ruling 12/175/240⑤：
+ *   漏选外键列、`--aply` 静默降级），所以表清单必须有**机械**判据，不能靠人记得同步。
+ */
+export const BACKFILL_TARGET_TABLES: readonly string[] = Object.freeze(TARGETS.map((t) => t.table));
+
+/** 自检覆盖的表 = 19 张回填目标 + 链源头 `o_project`（必须与 `policies.TENANT_TABLES` 逐项相等）。 */
+export const SELF_CHECK_TABLES: readonly string[] = Object.freeze(["o_project", ...BACKFILL_TARGET_TABLES]);
+
+/**
  * **根因级拦截**（审查 P2-2 第 1 条）：`derive.columns` 里每一列都必须真的出现在返回行里。
  * `select` 漏列时 `row[col] === undefined` ⇒ 推导全部返回 null ⇒ **整表被静默判成孤儿**，
  * 而自检算术（`expectedNull = nullBefore - updated`）用的是**同一套错误分类** ⇒ 自洽、永不发火。

@@ -19,14 +19,17 @@ import { createKnex } from "@/db/connect";
 import { runMigrations } from "@/db/migrations";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
 import { makeTenantAware } from "@/db/tenant-guard";
+import { TENANT_TABLES } from "@/db/policies";
 import { buildIsolationKey } from "@/socket/tenant";
 import {
   assertBackfillConsistent,
   assertDeriveColumns,
   backfillUserIds,
+  BACKFILL_TARGET_TABLES,
   firstProjectIdInFlowData,
   formatBackfillReport,
   rewriteIsolationKey,
+  SELF_CHECK_TABLES,
   targetSpecOf,
   type BackfillReport,
 } from "@/db/legacy/backfill-userid";
@@ -226,6 +229,27 @@ describe("dry-run 与 apply", () => {
     await knex("o_script").where("id", 12).update({ userId: null });
     await backfillUserIds(knex, { apply: true });
     expect((await knex("o_script").where("id", 12).first()).userId).toBe(9);
+  });
+});
+
+describe("★表清单三方相等（审查输入 ⑥：手工清单必漂，必须有机械判据）", () => {
+  it("policies.TENANT_TABLES ↔ 回填目标(19)+o_project ↔ 运行期 selfCheck(20) 逐项相等", async () => {
+    // dry-run 即可：它不写库，但会算出**全量** selfCheck（20 行）
+    const report = await backfillUserIds(knex, { apply: false });
+    const selfTables = report.selfCheck.map((s) => s.table);
+    const policy = [...TENANT_TABLES].sort();
+
+    // ① 常量层：19 + 链源头 = 20，且顺序就是 selfCheck 的顺序
+    expect([...BACKFILL_TARGET_TABLES]).toHaveLength(19);
+    expect([...SELF_CHECK_TABLES]).toEqual(["o_project", ...BACKFILL_TARGET_TABLES]);
+    expect([...SELF_CHECK_TABLES].sort()).toEqual(policy);
+
+    // ② 运行期：selfCheck 覆盖的表**恰好**是这三方约定的集合（顺序也钉住）
+    expect(selfTables).toEqual([...SELF_CHECK_TABLES]);
+    expect(selfTables.slice().sort()).toEqual(policy);
+
+    // ③ 反向：策略表里没有一张被回填逻辑漏掉（"少一张"必红）
+    for (const table of policy) expect(selfTables).toContain(table);
   });
 });
 
