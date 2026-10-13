@@ -176,6 +176,13 @@ function requireDriver(want, what, opts) {
  */
 function resolvedSqliteFile(opts) {
   const env = envOf(opts);
+  // ⚠ 【裁定 A】允许调用方**直接给出已解析的目标文件**（`opts.file`）。
+  //   为什么需要：应用启动路径（`src/db/connect.ts` 的 `connect()`）拿到的是 `MiwoConfig`，
+  //   它里面的 `db.file` 是 config.ts 已经 `path.resolve()` 过的绝对路径。若只按
+  //   `MIWO_DATA_DIR` 重新推导，就会出现"配置里解析出来的文件"与"护栏判定的文件"两份真相
+  //   （测试传假 config、cwd 不同、相对路径写法不同都会让两者漂移）。
+  //   给了 `file` 就**以它为准**，判定对象与实际要打开的对象逐字同一个。
+  if (opts && opts.file) return path.resolve(String(opts.file));
   if (!envSet(env, "MIWO_DATA_DIR")) return repoDevDbFile();
   const base = path.resolve(String(env.MIWO_DATA_DIR));
   return path.join(base, "db2.sqlite");
@@ -206,14 +213,20 @@ function repoDevDbVerdict(opts) {
   const env = envOf(opts);
   const argv = (opts && opts.argv) || [];
   const dataDirExplicit = envSet(env, "MIWO_DATA_DIR");
-  const driver = driverOf(opts);
+  // ⚠ 【裁定 A】允许调用方直接给出**已解析的驱动**：应用启动路径拿的是 `MiwoConfig.db.driver`，
+  //   它由 `config.ts` 从 env 派生，但测试会传假 config（例如 driver=mysql 而 env 里没有 MIWO_DB_DRIVER）。
+  //   不认这个入参就会出现"配置说 mysql、护栏按 env 判成 sqlite"的错位 —— 而那正是本护栏
+  //   最容易假绿的地方（它会去拦一个根本不会被打开的 sqlite 文件，或反过来放行）。
+  const driver = (opts && opts.driver) || driverOf(opts);
   const root = repoRoot();
   const canonicalDevFile = path.join(root, "apps", "api", "data", "db2.sqlite");
   const resolved = resolvedSqliteFile(opts);
   const isDevFile = samePath(resolved, canonicalDevFile);
-  const how = dataDirExplicit
-    ? `MIWO_DATA_DIR=${String(env.MIWO_DATA_DIR)} 解析成`
-    : "MIWO_DATA_DIR 未设置（继承 apps/api/.env 的 ./data）→ 解析成";
+  const how = opts && opts.file
+    ? "调用方给出的已解析目标文件（MiwoConfig.db.file）就是"
+    : dataDirExplicit
+      ? `MIWO_DATA_DIR=${String(env.MIWO_DATA_DIR)} 解析成`
+      : "MIWO_DATA_DIR 未设置（继承 apps/api/.env 的 ./data）→ 解析成";
 
   // ⚠⚠ **必须按驱动分流**（Task 11 实测踩过）：`MIWO_DATA_DIR` 是**sqlite 分支**才用的路径
   //    （`config.ts` 的 mysql 分支根本不读它）。若不过滤驱动，`MIWO_DB_DRIVER=mysql` +

@@ -33,6 +33,10 @@ declare const guard: {
     argv?: string[];
     what?: string;
     log?: (s: string) => void;
+    /** 【裁定 A】调用方已解析的驱动（`MiwoConfig.db.driver`）；给了就以它为准，不看 env。 */
+    driver?: string;
+    /** 【裁定 A】调用方已解析的目标文件（`MiwoConfig.db.file`）；给了就以它为准，不看 `MIWO_DATA_DIR`。 */
+    file?: string;
   }): {
     checked: boolean;
     blocked: boolean;
@@ -59,6 +63,10 @@ declare const guard: {
     what?: string;
     log?: (s: string) => void;
     exitCode?: number;
+    /** 【裁定 A】调用方已解析的驱动（`MiwoConfig.db.driver`）；给了就以它为准，不看 env。 */
+    driver?: string;
+    /** 【裁定 A】调用方已解析的目标文件（`MiwoConfig.db.file`）；给了就以它为准，不看 `MIWO_DATA_DIR`。 */
+    file?: string;
     /** 测试/自证用：覆盖备份目录（默认 `defaultBackupDir()`）。 */
     backupDir?: string;
   }): {

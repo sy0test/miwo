@@ -48,7 +48,10 @@ const GENERATE_DB_TYPES = config.env === "dev" && process.env.MIWO_GEN_DB_TYPES 
  *    —— 建表没完成就开始接请求（表现为冷启动第一批请求偶发 `no such table`）。
  *
  * ⚠ 这里**不再**调用 `@/lib/initDB` / `@/lib/fixDB`（Task 4 Step 3 摘除）。两个文件仍留在仓库里，
- *    但只是**死代码**：它们的存在只为 `apps/api/scripts/verify-phase0.cjs` 的构件清单断言，删除归 Phase 1c。
+ *    但只是**死代码**：它们的存在只为 **`tools/check-copy.cjs:94`** 的构件断言（"必须存在"清单里
+ *    有 `apps/api/src/lib/initDB.ts`），删除归 Phase 1c。
+ *    ⚠ **【L1 更正】原写"只为 `apps/api/scripts/verify-phase0.cjs` 的构件清单断言"—— 过期了**：
+ *      `verify-phase0.cjs:179` 已把那条换成 `apps/api/src/db/migrations/index.ts`（Task 11）。
  *    守这条不变式的门禁是 `tools/check-dead-ddl.cjs`（从 `src/app.ts` 出发的 import 图上不得再出现它们）。
  *    被摘掉的两条"启动期无条件副作用"的语义变化登记在 `src/db/migrations/001_schema.ts` 的 `up` 开头与根 README。
  */

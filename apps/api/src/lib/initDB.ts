@@ -14,7 +14,11 @@
  *   那些路由的处置（删除接口 / 摘掉调用）是 **Phase 1b** 的事（见 `src/db/tenant-exceptions.json`）。
  *   Phase 1a **不动**它们：本 Task 只摘掉"**每次启动都无条件跑**"的那条路径。
  *
- * 保留本文件在仓库里的**唯一**理由是 `apps/api/scripts/verify-phase0.cjs` 的构件存在性断言；
+ * 保留本文件在仓库里的**唯一**理由是 **`tools/check-copy.cjs:94`** 的构件存在性断言
+ * （它把 `apps/api/src/lib/initDB.ts` 列在"必须存在"清单里）。
+ * ⚠ **【L1 更正】原写"`apps/api/scripts/verify-phase0.cjs` 的构件存在性断言"—— 那是过期的**：
+ *   `verify-phase0.cjs:179` 已把这条换成 `apps/api/src/db/migrations/index.ts`（Phase 1a / Task 11），
+ *   它**不再**断言 initDB/fixDB 存在。现在钉住这两个文件的只有 `check-copy.cjs` 那一条。
  * 删除它（以及 `tools/check-copy.cjs` 的 .ts 数量下限）是 Phase 1c 的清理项。
  *
  * ⚠ **不要**再把它接回启动路径：`tools/check-dead-ddl.cjs` 从 `src/app.ts` 出发走 import 图，

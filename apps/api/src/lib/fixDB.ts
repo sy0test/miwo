@@ -25,7 +25,11 @@
  *   上面三条加起来就是"启动期自动改写 `data/vendor/miwo.ts` 之类适配器文件"的**全部路径**；
  *   删掉之后仓库里再没有启动期写适配器的代码（`tests/vendor-asset-sync.test.ts` 有守卫断言）。
  *
- * 保留本文件在仓库里的**唯一**理由是 `apps/api/scripts/verify-phase0.cjs` 的构件存在性断言；
+ * 保留本文件在仓库里的**唯一**理由是 **`tools/check-copy.cjs:94`** 的构件存在性断言
+ * （`apps/api/src/lib/initDB.ts` 在它的"必须存在"清单里）。
+ * ⚠ **【L1 更正】原写"`apps/api/scripts/verify-phase0.cjs` 的构件存在性断言"—— 那是过期的**：
+ *   `verify-phase0.cjs:179` 已把这条换成 `apps/api/src/db/migrations/index.ts`（Phase 1a / Task 11），
+ *   它**不再**断言 initDB/fixDB 存在。现在钉住这两个文件的只有 `check-copy.cjs` 那一条。
  * 删除它是 Phase 1c 的清理项（本文件**没有**被任何路由在请求时调用）。
  *
  * ⚠ **不要**再把它接回启动路径：`tools/check-dead-ddl.cjs` 从 `src/app.ts` 出发走 import 图，

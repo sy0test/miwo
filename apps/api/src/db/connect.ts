@@ -15,6 +15,11 @@ import knexFactory, { type Knex } from "knex";
 import { config, type MiwoConfig } from "@/config";
 import { sqldialect } from "@/db/dialect";
 import { migrationStatus, runMigrations } from "@/db/migrations";
+// ⚠ 【裁定 A / ★Ruling 131·156】数据库**目标护栏**——与 4 个 `db:*` CLI 脚本**同一套判定**。
+//    见下面 `assertTargetAllowed()` 的注释：本文件是"启动路径也过护栏"的唯一落点。
+//    类型来自同目录的 `db-target-guard.d.cts`（`export =` + esModuleInterop），与
+//    `scripts/db-migrate.ts` 的用法一致。
+import guard from "../../scripts/db-target-guard.cjs";
 
 const SQLITE_CLIENT = "better-sqlite3";
 const MYSQL_CLIENT = "mysql2";
@@ -94,6 +99,48 @@ export function dialectOfConfig(c: MiwoConfig = config): ReturnType<typeof sqldi
 }
 
 /**
+ * 【裁定 A / ★Ruling 131·156】**启动路径也必须过同一套目标护栏**。
+ *
+ * ── 为什么必须在这里（已发生的漏网，不是假想）──
+ * 本阶段把 `db-target-guard.cjs` 接到了 4 个 `db:*` CLI 脚本上，但 `grep apps/api/src/**` 是
+ * **0 处**引用 —— 也就是说**默认配置下的应用启动路径完全没过护栏**。终审在 dev 库**副本**上实测：
+ * `MIWO_DATA_DIR` 指向 29 表老库副本 → 跑启动路径（`import('@/utils/db')` → `await dbReady`）→
+ * `table o_user already exists`，副本 sha256 从 `44716850…` 变成 `8C3C2F38…`（与 `--status`
+ * 改坏 dev 库的哈希**逐字节相同**，同一处 `knex_migrations*` 副作用）。
+ * 触发条件是**默认配置**：`apps/api/.env` 的 `MIWO_DATA_DIR=./data` ＋ 默认 `sqlite` 驱动
+ * ⇒ 本机 `cd apps/api; pnpm dev` 就会走。CLI 侧的护栏对这条路径**一点用都没有**。
+ *
+ * ── 判定与 CLI **逐字同一套** ──
+ * 复用 `scripts/db-target-guard.cjs` 的 `requireRepoDevDbAllowed()`（不是另写一份近似逻辑：
+ * 两份判定迟早漂移，而漂移的那一份就是假绿）。它做的三件事与 CLI 完全一致：
+ *   ① 解析目标文件（这里直接把 `config.db.file` 传进去，避免"配置解析出的文件"与
+ *      "护栏推导出的文件"两份真相）；
+ *   ② 目标 = `<仓库根>/apps/api/data/db2.sqlite` 且驱动是 sqlite 且没有显式放行 → **响亮失败**；
+ *   ③ 有显式放行（`MIWO_ALLOW_REPO_DEV_DB=1`）时**仍然要求可恢复点**（仓库外一份 sha256
+ *      相同的备份，或现备一份并校验拷贝）—— 建不出来照样拒绝（【Ruling 139】）。
+ *
+ * ── 两条出路（与 CLI 报错文案一致）──
+ *   · `MIWO_DATA_DIR=<仓库外的目录>`（推荐：一次性目录）；
+ *   · `MIWO_ALLOW_REPO_DEV_DB=1`（进程级开关，不是新的 `MIWO_*` 配置变量：`config.ts` 不读它）。
+ *
+ * ⚠ `argv` 显式传空数组：应用没有"命令行旗标"这个概念，只有环境变量这一条放行途径
+ *   （`--allow-repo-dev-db` 是 CLI 的形式；若照抄 `process.argv`，nodemon 转发一个同名参数
+ *   就能悄悄放行 —— 那等于给启动路径留了个后门）。
+ *
+ * ⚠ **mysql 分支不受影响**：护栏按驱动分流（`MIWO_DATA_DIR` 是 sqlite 分支才用的路径）。
+ *   这条分流在 `db-target-guard.cjs` 里，此处不重复判定。
+ */
+export function assertTargetAllowed(c: MiwoConfig = config): void {
+  if (c.db.driver !== "sqlite") return; // mysql 分支的护栏是 requireDriver，见 CLI 脚本
+  guard.requireRepoDevDbAllowed({
+    argv: [],
+    driver: c.db.driver,
+    file: c.db.file,
+    what: "应用启动（dbReady → connect()）",
+  });
+}
+
+/**
  * 启动期初始化：连接 → 跑迁移 → 返回。
  *
  * ⚠ 这是 Phase 1a 唯一"启动时改库"的合法位置（spec §5.2 的迁移纪律：发布流程 = 备份 → 迁移 → 起服务）。
@@ -106,6 +153,9 @@ export function dialectOfConfig(c: MiwoConfig = config): ReturnType<typeof sqldi
  *    本函数可以被脚本（`db:migrate` / `db:repair-stuck` 之类）显式复用，但"每次进程启动都跑"只有一条路径。
  */
 export async function connect(c: MiwoConfig = config): Promise<{ db: Knex; applied: string[]; batch: number }> {
+  // ⚠⚠ 【裁定 A】护栏必须在 `createKnex()` **之前** —— `createKnex()` 在 sqlite 分支上
+  //    就会把库文件建出来/打开（可写），"连上再检查"等于已经把目标打开了，那正是要避免的形态。
+  assertTargetAllowed(c);
   const db = createKnex(c);
   try {
     // 探活：让"连不上"在迁移之前就以清晰的错误暴露，而不是让 migrate 抛一个 tarn 超时
