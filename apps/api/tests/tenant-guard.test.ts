@@ -383,6 +383,29 @@ describe("守卫：修复轮 1（M1–M6 / L1 / L5 / L6 / L7）", () => {
     expect(db.trx).toBe(db.transaction);
   });
 
+  /**
+   * 修复轮 2 / Task 3 接线时实测发现的缺陷：M3 把 `trx.raw` 写成"复用顶层 `guarded.raw` 的
+   * 同一个实现"，而顶层实现内部是 `knex.raw(...)`（**根连接**）⇒ 事务里的**合法** raw
+   * 跑到了事务外；sqlite 池 max=1 时与持有唯一连接的事务互等 ⇒ 用例挂到超时。
+   * 本用例前半段就是那个"真的在事务里跑一次 raw"的场景（修复前必红）。
+   */
+  it("M3b（Task 3）: trx.raw 绑定事务自己（事务内能跑），且仍拦租户表", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    const out = await db.transaction(async (trx: any) => trx.raw("select 1 as one"));
+    expect(out).toBeTruthy();
+    // 同一处仍然拦租户表（M3 的判据不许回到"直接透传"）
+    await expect(
+      db.transaction(async (trx: any) => trx.raw("update o_tasks set state='hacked' where id=2")),
+    ).rejects.toThrow(TenantIsolationError);
+    // trx("表") 仍走守卫；事务真的提交得下去
+    await db.transaction(async (trx: any) => {
+      await trx("o_assets").where("id", 1).update({ name: "A-renamed" });
+    });
+    expect((await knex("o_assets").where("id", 1).first()).name).toBe("A-renamed");
+    await knex.destroy();
+  }, 15000);
+
   it("L6: transaction(container, config) 把 config 透传给 knex（修复前 arg2 被丢掉）", () => {
     const calls: any[][] = [];
     const fake: any = () => ({});

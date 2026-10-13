@@ -34,8 +34,10 @@
  *     否则 `PlatformWriteDeniedError`。
  *  8. 未声明策略的表 → `PolicyNotFoundError`；退役表 → 同一个错误但文案点明"已退役"。
  *  9. 事务：`transaction(container, config)` 把 container 包成 `guardTrx` —— `trx("表")` 走守卫、
- *     `trx.raw` 与顶层 `raw` **同一个实现**（修复轮 1 / M3）、`config` 原样透传 knex
- *     （修复轮 1 / L6）。`db.trx` 只是 `transaction` 的别名（修复轮 1 / L5）。
+ *     `trx.raw` 与顶层 `raw` **共用同一个租户表拦截器**（修复轮 1 / M3），但各自**绑定自己的连接**
+ *     （修复轮 2 / Task 3 接线时实测：`trx.raw` 复用顶层实现 = 走根连接 = **在事务外**执行；
+ *     sqlite 池 max=1 时与持有连接的事务互等 ⇒ 超时挂死）、`config` 原样透传 knex（修复轮 1 / L6）。
+ *     `db.trx` 只是 `transaction` 的别名（修复轮 1 / L5）。
  * 10. 成员面与 Phase 1a 的显式白名单**逐项对齐**：函数成员 `bind(knex)`、对象成员原样挂
  *     （`fn/ref/schema/client/destroy/migrate/seed`）；`transaction`/`raw`/`trx` 是守卫自己的
  *     实现，不被覆盖。⚠ **接线时实测发现原实现只挂函数 ⇒ 对象成员全丢**（Task 3 修复，
@@ -493,15 +495,32 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
   }
 
   /**
+   * 租户表 `raw` 的**唯一拦截器**：顶层 `raw` 与 `trx.raw` 共用它（检查相同），
+   * 但**执行各自绑定自己的连接**（修复轮 2 / Task 3 实测的缺陷，见 `guardTrx`）。
+   */
+  const assertRawSafe = (sql: unknown): void => {
+    if (mentionsTenantTable(sql)) {
+      throw new TenantIsolationError("raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）；实例级运维请走 systemDb");
+    }
+  };
+
+  /**
    * 事务对象也要守卫：`persistShots.ts:54` 那条链路全部走 `trx("表")`。
    *
-   * ⚠ `trx.raw` 必须复用**顶层 `guarded.raw` 的同一个实现**（修复轮 1 / M3）：之前是
-   * `value.bind(trx)` 直接透传，实测在事务回调里让 `trx.raw` 执行一条
-   * `update o_tasks set state='hacked' where id=2` —— **真的改了别人的行**。
+   * ⚠ `trx.raw` 的历史（两轮修复，别只做一半）：
+   *  - 修复轮 1 / M3：原来 `trx.raw` 是 `value.bind(trx)` **直接透传** ⇒ 事务里
+   *    `trx.raw("update o_tasks … where id=2")` 真的改了别人的行。改成**先过 `assertRawSafe`**。
+   *  - 修复轮 2 / Task 3：M3 当时写成"复用顶层 `guarded.raw` 的同一个实现"，而顶层实现内部是
+   *    `knex.raw(...)`（**根连接**）⇒ 事务里的合法 `trx.raw("select 1 …")` 跑到了**事务外**；
+   *    sqlite 池 max=1 时它与持有唯一连接的事务**互等**，实测直接把用例挂到 5s 超时
+   *    （真机上会一直挂到 `acquireTimeoutMillis`）。**检查共用、执行必须委派给 `trx`**。
    */
   function guardTrx(trx: any): any {
     const guardedTrx: any = (tableSpec: string) => guardBuilder(trx(tableSpec), tableSpec);
-    guardedTrx.raw = guarded.raw; // 同一个函数：提及租户表 → 抛
+    guardedTrx.raw = (sql: string, bindings?: readonly unknown[]) => {
+      assertRawSafe(sql);
+      return trx.raw(sql, bindings as any);
+    };
     for (const key of ["commit", "rollback", "fn", "ref", "schema", "client"]) {
       const value = trx[key];
       if (typeof value === "function") guardedTrx[key] = value.bind(trx);
@@ -511,9 +530,7 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
 
   const guarded: any = (tableSpec: string) => guardBuilder(knex(tableSpec), tableSpec);
   guarded.raw = (sql: string, bindings?: readonly unknown[]) => {
-    if (mentionsTenantTable(sql)) {
-      throw new TenantIsolationError("raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）；实例级运维请走 systemDb");
-    }
+    assertRawSafe(sql);
     return knex.raw(sql, bindings as any);
   };
   /**

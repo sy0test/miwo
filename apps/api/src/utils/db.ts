@@ -5,6 +5,9 @@ import type { DB } from "@/types/database";
 import crypto from "crypto";
 import { config } from "@/config";
 import { connect, createKnex } from "@/db/connect";
+import { makeTenantAware, type TenantAwareDb } from "@/db/tenant-guard";
+import { currentTenant } from "@/db/tenant-context";
+import type { Knex } from "knex";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
@@ -69,61 +72,48 @@ dbReady.catch((err) => {
   process.exit(1);
 });
 
-const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
-
 /**
- * `u.db` 的形状：函数 + **显式白名单**成员（spec §5.1）。
+ * 数据层的**唯一入口**，三层结构：
+ *   1. `db`（裸 knex）—— 由 `src/db/connect.ts` 按 `config.db.driver` 装配（本文件私有）。
+ *   2. `dbClient`（**默认导出**，= 全仓的 `u.db`）—— 租户守卫（`src/db/tenant-guard.ts`）。
+ *      **fail-closed**：没有 ctx 就拒绝访问租户表；未声明策略的表直接抛错。
+ *      ⚠ 462 处调用点从此**全部**经守卫（spec §6.2 的原话：把"漏改"从"越权"变成"当场报错"）。
+ *   3. `systemDb` / `systemTable`（显式命名导出）—— **唯一合法的绕过口**（见下方注释）。
  *
- * ⚠ 历史（这里原先是一个**黑名单 hack**，实测过两层都是坏的）：
+ * ⚠ 为什么不再导出命名 `{ db }`（spec 附录 B.1 的 7 个绕过文件）：
+ *   那个导出让 7 个文件直接拿到裸 knex、完全跳过隔离。删掉它是本阶段"把绕过口从
+ *   '默认可用'变成'必须显式' "的关键一步：`routes/novel/event/getEvent.ts` 改走守卫，
+ *   其余 6 个（5 个 `dbConfig` + `deleteAllData`）改成 `systemDb`。
  *
- *   第一层：`Object.assign(wrapper, db)` —— 拷不到任何 knex 方法。knex 把 `transaction` / `raw` /
- *   `schema` … 定义成 **db 函数自己的、`enumerable: false` 的属性**（`schema` / `client` 还是 getter），
- *   而 `Object.assign` 只拷**自有可枚举**属性 ⇒ `u.db("表")` 能用、`u.db.transaction(fn)` 是 `undefined`
- *   （真机表现：`db.transaction is not a function`，事务落库整条路径静默失败）。
+ * ⚠ 成员面（`transaction` / `raw` / `fn` / `ref` / `schema` / `client` / `destroy` / `migrate` / `seed`）
+ *   现在由**守卫**挂上（`tenant-guard.ts` 的 `MEMBER_SHAPES`），本文件**不再自己拷一份**：
+ *   原先这里有一张白名单 + `Object.assign`/循环拷贝，留着只会多一处会漂移的真相。
+ *   历史（**真机 bug**：`db.transaction is not a function`）与"为什么不能用黑名单"的完整论证
+ *   见守卫的 `MEMBER_SHAPES` 注释；`tests/db-driver.test.ts` 仍**逐成员断言形状**。
+ *   一句话：黑名单必须先知道要跳哪些名字，而 `Function.prototype` 上的 `caller`/`arguments`
+ *   在**严格模式**下**读一下就抛**（打包版整个模块初始化失败）—— 白名单让它们**在结构上
+ *   不可能**被读到，不是"读到了再跳过"。
  *
- *   第二层：`for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(db)))` + 一张
- *   `SKIP = {constructor, caller, arguments, prototype, length, name}` 黑名单。实测
- *   **`Object.getPrototypeOf(db) === Function.prototype`**（knex 的成员是自有属性，不在原型上）
- *   ⇒ 这个循环遍历到的恰好是 `Function.prototype` 的 `caller`/`arguments`/… —— 在**严格模式**
- *   （esbuild 打出来的包带 "use strict"）下读它们**直接抛**：
- *     TypeError: 'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions
- *   后果是整个 `utils/db` 模块初始化失败 → 所有 `db(...)` 调用点都拿到 undefined
- *   → 打包版启动报「服务启动失败 / db_default is not a function」，后端起不来。
- *   （dev 用 tsx 转成非严格模式，读 `.caller` 只是拿到 null，所以本地测不出来。）
+ * ⚠ `dbClient` 的**类型**是"守卫 + 按表名推断行类型的调用签名"的交叉类型（纯 `as unknown as`，
+ *   运行时就是守卫本身）。为什么需要这层断言：守卫的调用签名是 `(table: string) => any`
+ *   ——它刻意不依赖 `@/types/database`。直接把守卫当 `u.db`，全仓回调参数会退化成 `any`，
+ *   在 `noImplicitAny` 下当场报一片 TS7006（实测 8 处）。所以这里只把**类型**收回来：
+ *   不复制成员、不引入第二份真相（成员面仍由守卫的 `MEMBER_SHAPES` 全权负责）。
  *
- *   净效果：那个"拷贝原型方法"的循环**一个方法都没拷到**（真正起作用的是紧随其后的小名单），
- *   却引入了唯一的崩溃源。黑名单永远会漏 —— 现在换成**白名单**：只有下面这些成员会被挂上去，
- *   其余（含 `caller`/`arguments`）**在结构上不可能**被读到，不是"读到了再跳过"。
- *
- * 白名单的选取依据 = 全仓实际使用到的（`transaction` / `raw` / `schema`）+ knex 公共 API 里形状必需的那几个。
- * **形状必须逐个写对**（`typeof` 实测，knex 3.x）：`transaction` / `raw` / `ref` / `destroy` 是**函数**
- * （要 `bind(db)`，否则 `this` 丢失）；`fn` / `schema` / `client` / `migrate` / `seed` 是**对象**
- * （`bind` 只会把它们弄坏）。
- *
- * 若要新增，**必须同时在这里与 `tests/db-driver.test.ts` 的断言里加**（否则测试会红）。
+ *   两个调用签名都是**必需**的，别删第二条：
+ *     ① 已知表名（`keyof DB`）→ 按表名推断行类型（Phase 1a 的既有类型契约）；
+ *     ② 兜底（任意 string）→ 与**旧实现**形状一致：旧的 `Object.assign(fn, db)` 里 knex 自己的
+ *        `(tableName: string)` 签名就是这个兜底。少了它，`getConfig.ts` 那个**不在 schema 里**的
+ *        `t_config` 会落到守卫的 `(table: string) => any` 上，回调参数当场退化成隐式 `any`（TS7006）。
+ *        ⚠ 兜底只影响**类型**：运行时未知表由守卫的 `PolicyNotFoundError` 响亮拦住（fail-closed）。
+ *   `Omit<TenantAwareDb, never>` 是为了**只取成员、丢掉它的 `(table: string) => any` 调用签名**，
+ *   否则交集里会同时存在两个 `(table: string)` 签名、调用点可能解析到 `any` 那个。
  */
-const DB_MEMBERS = {
-  transaction: "function",
-  raw: "function",
-  ref: "function",
-  destroy: "function",
-  fn: "object",
-  schema: "object",
-  client: "object",
-  migrate: "object",
-  seed: "object",
-} as const;
+const dbClient = makeTenantAware(db, { getCtx: currentTenant }) as unknown as {
+  <TName extends TableName>(table: TName): Knex.QueryBuilder<RowType<TName>, RowType<TName>[]>;
+  (table: string): Knex.QueryBuilder<any, any[]>;
+} & Omit<TenantAwareDb, never>;
 
-for (const [key, shape] of Object.entries(DB_MEMBERS)) {
-  let value: any;
-  try {
-    value = (db as any)[key];
-  } catch {
-    continue; // 万一某个属性是 getter 且会抛，跳过而不是让模块初始化挂掉
-  }
-  if (typeof value !== shape) continue; // 形状与白名单不符 → 不挂（宁缺勿错，也不抛）
-  (dbClient as any)[key] = shape === "function" ? value.bind(db) : value;
-}
 export default dbClient;
 
 /**
@@ -135,17 +125,18 @@ export default dbClient;
  *
  * ⚠ **请求路径禁止使用**：它不经 `makeTenantAware`，没有任何租户条件注入。
  *   使用者必须登记在 `src/db/tenant-exceptions.json` 的 `bypassFiles` 里，
- *   并由 `tests/tenant-db-bypass.test.ts` 的逐文件断言钉住（新增使用者即红）。
- *   ⚠ 计划 **Task 8** 会把这个清单升级成 `systemDbUsers` 字段 + `tools/check-tenant-exceptions.cjs`
- *   的显式扫描：**当前那道门禁还认不出 `import { systemDb }`**（它现在的判据是
- *   "命名导入 `{ db }`"），所以本阶段的判据由上面那条测试承担。
+ *   并由 `tests/tenant-db-bypass.test.ts` 的**逐文件**断言钉住（新增使用者即红）。
+ *
+ * ⚠ `tools/check-tenant-exceptions.cjs` 当前的判据是「命名导入 `{ db }`」，它**不认识
+ *   `systemDb` 这个名字**；上面 7 个调用方统一写成 `import { systemDb as db }`，所以那道门禁
+ *   **碰巧**还能枚举到它们（`as db` 落进了它的正则）—— **这是巧合，不是设计**。
+ *   计划 **Task 8** 会把它升级成 `systemDbUsers` 字段 + 显式扫描；在那之前，
+ *   "6 个豁免文件只有 `systemDb` 这一条路"的不变式由 `tests/tenant-db-bypass.test.ts` 承担。
  */
 export const systemDb = db;
 
 /** 同 `systemDb`，但按表名取 builder（运维接口里 `for (const table of tables)` 的写法会用到）。 */
 export const systemTable = <TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table);
-
-export { db };
 
 async function initKnexType(knexDb: any) {
   const { Client } = await import("@rmp135/sql-ts");

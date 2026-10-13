@@ -201,3 +201,54 @@ describe("u.db 的成员白名单", () => {
     expect(() => (u as any).arguments).toThrow(/caller|arguments/);
   });
 });
+
+/**
+ * Task 3 的**接线**判据：`u.db` 必须是租户守卫（fail-closed），且绕过口只有显式导出这一个。
+ *
+ * ⚠ 这三条真的 import 整个 `utils/db`（含启动迁移），走 `vitest.config.ts` 的
+ *   `MIWO_DATA_DIR=D:\tmp\miwo-test-data`（仓库外一次性目录），**不碰** `apps/api/data/db2.sqlite`。
+ */
+describe("u.db 已接上租户守卫（Task 3）", () => {
+  it("没有 ctx 访问租户表 → 抛 TenantContextError（fail-closed，含 Task 4 依赖的 code/httpStatus）", async () => {
+    const mod = await import("../src/utils/db");
+    const u = mod.default as any;
+    expect(() => u("o_assets")).toThrow(/fail-closed|没有租户上下文/);
+    try {
+      u("o_assets");
+      expect.unreachable("无 ctx 访问租户表必须抛");
+    } catch (err: any) {
+      // 这两个字符串是 Task 4 的错误中间件（403/500 映射）唯一的分支依据，这里在**接线层**再钉一次
+      expect(err.name).toBe("TenantContextError");
+      expect(err.code).toBe("TENANT_NO_CONTEXT");
+      expect(err.httpStatus).toBe(500);
+    }
+    // 平台表读**无 ctx 也放行**（登录前要取 `o_setting.tokenKey`，app.ts 的内联鉴权就靠它）
+    expect(() => u("o_setting")).not.toThrow();
+  });
+
+  it("有 ctx 时：租户表自动带租户条件，平台表不受影响", async () => {
+    const mod = await import("../src/utils/db");
+    const { runWithTenant } = await import("../src/db/tenant-context");
+    const u = mod.default as any;
+    runWithTenant({ userId: 7, role: "user", requestId: "t", source: "system" }, () => {
+      const sql = u("o_assets").select("id").toSQL();
+      expect(sql.sql).toContain("userId");
+      expect(sql.bindings).toContain(7);
+      // 平台表：读路径不加租户条件（它没有"属于谁"的概念）
+      expect(u("o_setting").select("key").toSQL().sql).not.toContain("userId");
+    });
+  });
+
+  it("绕过口是显式导出：systemDb / systemTable 存在且可用；裸 `db` 命名导出已删", async () => {
+    const mod: any = await import("../src/utils/db");
+    expect(typeof mod.systemDb).toBe("function");
+    expect(typeof mod.systemTable).toBe("function");
+    expect(mod.db).toBeUndefined(); // spec 附录 B.1 的 7 个绕过文件拿到的那个命名导出，已被删除
+    // 裸 knex：没有 ctx 也能建出 builder（实例级运维接口的前提）
+    expect(mod.systemDb("o_setting")).toBeTruthy();
+    expect(mod.systemTable("o_setting")).toBeTruthy();
+    // 两个出口必须是**不同**对象：默认导出是守卫，systemDb 是裸 knex
+    expect(mod.systemDb).not.toBe(mod.default);
+    expect(() => mod.systemDb("o_assets")).not.toThrow();
+  });
+});
