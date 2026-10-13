@@ -3,6 +3,8 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { requireTenantCtx } from "@/db/tenant-context";
+import { buildIsolationKey } from "@/socket/tenant";
 const router = express.Router();
 
 export default router.post(
@@ -15,7 +17,9 @@ export default router.post(
   }),
   async (req, res) => {
     const { projectId, episodesId,agentType, type = "all" } = req.body;
-    const isolationKey = `${projectId}:${agentType}${episodesId ? `:${episodesId}` : ""}`;
+    // ⚠ Phase 1b / Task 5：与 socket 侧**同一把键**（唯一真相 = `@/socket/tenant` 的 `buildIsolationKey`）。
+    //    不同步这里 ⇒ 清记忆会**静默清不掉**（不报错，比抛错更坏）。
+    const isolationKey = buildIsolationKey(requireTenantCtx(), projectId, agentType, episodesId);
 
     if (type === "all") {
       await u.db("memories").where({ isolationKey }).del();

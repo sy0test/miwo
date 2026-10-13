@@ -3,6 +3,8 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { requireTenantCtx } from "@/db/tenant-context";
+import { buildIsolationKey } from "@/socket/tenant";
 const router = express.Router();
 
 function normalizeRole(role?: string | null): "user" | "assistant" {
@@ -18,7 +20,10 @@ export default router.post(
   }),
   async (req, res) => {
     const { projectId, agentType, episodesId } = req.body;
-    const isolationKey = `${projectId}:${agentType}${episodesId ? `:${episodesId}` : ""}`;
+    // ⚠ Phase 1b / Task 5：键由**服务端**拼，且格式与 socket 侧**逐字符相同**
+    //    （唯一真相 = `@/socket/tenant` 的 `buildIsolationKey`：`${userId}:${projectId}:${agentType}[:episodesId]`）。
+    //    只改 socket 侧会让这里静默读不到（`tests/socket-tenant.test.ts` §C 用行为断言钉住这条合同）。
+    const isolationKey = buildIsolationKey(requireTenantCtx(), projectId, agentType, episodesId);
 
     const rows = await u
       .db("memories")

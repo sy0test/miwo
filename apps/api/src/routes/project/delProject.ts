@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { requireTenantCtx } from "@/db/tenant-context";
 const router = express.Router();
 
 // 删除项目
@@ -13,6 +14,10 @@ export default router.post(
   }),
   async (req, res) => {
     const { id } = req.body;
+    // ⚠ Phase 1b / Task 5：`memories.isolationKey` 的格式多了**userId 前缀**
+    //    （唯一真相在 `@/socket/tenant` 的 `buildIsolationKey`），所以这里的 LIKE 必须同步，
+    //    否则删项目会**静默漏删**该项目的记忆。守卫已按 userId 过滤，前缀只是形状匹配。
+    const ctx = requireTenantCtx();
     //删除项目
     await u.db("o_project").where("id", id).delete();
     await u.db("o_agentWorkData").where("projectId", id).delete();
@@ -69,7 +74,7 @@ export default router.post(
     await u.db("o_video").where("projectId", id).delete();
     //删除项目下的资源
 
-    await u.db("memories").where("isolationKey", "like", `${id}:%`).delete();
+    await u.db("memories").where("isolationKey", "like", `${ctx.userId}:${id}:%`).delete();
 
     try {
       await u.oss.deleteDirectory(`${id}/`);
