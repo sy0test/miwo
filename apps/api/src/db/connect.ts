@@ -67,10 +67,25 @@ export function clientConfig(c: MiwoConfig = config): string {
  */
 export const MYSQL_SESSION_SETUP: readonly string[] = Object.freeze(["SET SESSION group_concat_max_len = 1048576"]);
 
-/** 逐条执行会话设置（失败即抛出，由 `mysqlAfterCreate` 交给连接池的 `done(err)`）。 */
+/**
+ * 逐条执行会话设置（失败即抛出，由 `mysqlAfterCreate` 交给连接池的 `done(err)`）。
+ *
+ * ⚠⚠ **必须优先走 `conn.promise()`**（审查 P0）：knex 用的是 **mysql2 的 callback API**
+ *   （`knex/lib/client.js` 的 `_driver()` → `require("mysql2")`），它的 `query()` 返回的是
+ *   **非 Promise 的 `Query`** 对象；对那个对象 `await` 会抛
+ *     `You have tried to call .then()/.catch()/await on the result of query that is not a promise…`
+ *   ⇒ `mysqlAfterCreate` 会立刻 `done(err)` ⇒ tarn 的 `propagateCreateError = true` 让**每条新连接都拿不到**
+ *   ⇒ **MySQL 全路径不可用**。本机 sqlite 分支**不接** `afterCreate`，所以本地怎么跑都测不到这一点；
+ *   本文件用"照抄 mysql2 形状"的假连接钉住（`tests/db-driver.test.ts`），**最终作证靠 CI 的 mysql job**。
+ *   回退分支（`conn` 自身就是 promise 形状）只服务于测试/诊断里的简单替身。
+ */
 export async function applyMysqlSessionSettings(conn: unknown): Promise<void> {
-  const c = conn as { query: (sql: string) => Promise<unknown> };
-  for (const sql of MYSQL_SESSION_SETUP) await c.query(sql);
+  const c = conn as {
+    query: (sql: string) => unknown;
+    promise?: () => { query: (sql: string) => Promise<unknown> };
+  };
+  const q = typeof c.promise === "function" ? c.promise() : c;
+  for (const sql of MYSQL_SESSION_SETUP) await q.query(sql);
 }
 
 /**

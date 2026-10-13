@@ -262,10 +262,54 @@ describe("u.db 已接上租户守卫（Task 3）", () => {
  * 一章的 `chapterIndex` 聚合成一列时，章节一多就**静默截断**（列表少几项、不报错）。
  * 它是**会话变量** ⇒ 必须对池里**每条**连接设一次 ⇒ 挂在 knex 的 `pool.afterCreate`。
  *
- * ⚠ 本机 3307 独占、不启动 MySQL ⇒ **行为未实测**（只测函数语义与接线）；真机验证归 CI 的 mysql job。
+ * ⚠⚠ **本机 3307 独占、不启动 MySQL ⇒ 真实连接行为未实测**。而本机 sqlite 分支**根本不接
+ *   `afterCreate`** ⇒ "sqlite 全绿"对这条接线**零证据**。所以这里的假连接**必须照抄 mysql2 的形状**：
+ *   knex 用的是 mysql2 的 **callback API**（`_driver() → require("mysql2")`），`query()` 返回的是
+ *   **非 Promise** 的 `Query` 对象 —— 对它 `await` 会抛：
+ *     `You have tried to call .then()/.catch()/await on the result of query that is not a promise…`
+ *   ⇒ 每条新连接都拿不到（tarn `propagateCreateError`）＝**全路径不可用**。
+ *   **最终作证只能靠 CI 的 mysql job**（本文件的断言只能证明"函数对着正确形状不炸、错误可见"）。
  */
 describe("MySQL 连接级会话设置（Task 7）", () => {
   const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  /**
+   * 照抄 mysql2 的**两种**形状：
+   *   · `query(sql[, cb])` → 返回**非 Promise** 的 `Query`，它的 `.then()` **必然抛**（真实行为）；
+   *   · `promise()` → 返回 `{ query(sql): Promise }` 包装（mysql2 提供的正确入口）。
+   * `behavior="ok"` 时所有 SQL 都成功；`"fail"` 时 callback 与 promise 两条路都失败。
+   */
+  function mysql2LikeConn(behavior: "ok" | "fail"): { conn: any; calls: string[] } {
+    const calls: string[] = [];
+    const err = (): Error => new Error("session-setup-failed: connect ECONNREFUSED");
+    const conn = {
+      constructor: { name: "Connection" },
+      query(sql: string, cb?: (e: Error | null) => void): unknown {
+        calls.push(sql);
+        // mysql2 的 Query 是"thenable 但 then() 抛"的对象 —— 这里逐字复现那句报错
+        const query: any = {
+          then() {
+            throw new Error(
+              "You have tried to call .then()/.catch()/await on the result of query that is not a promise. " +
+                "Either use the callback-based API or use .promise() to get a promise-based API.",
+            );
+          },
+        };
+        if (typeof cb === "function") cb(behavior === "ok" ? null : err());
+        return query;
+      },
+      promise() {
+        return {
+          query: async (sql: string): Promise<unknown> => {
+            calls.push(sql);
+            if (behavior === "fail") throw err();
+            return [];
+          },
+        };
+      },
+    };
+    return { conn, calls };
+  }
 
   it("MYSQL_SESSION_SETUP 设置 group_concat_max_len，且明显大于默认的 1024", () => {
     expect(MYSQL_SESSION_SETUP.length).toBeGreaterThan(0);
@@ -276,27 +320,44 @@ describe("MySQL 连接级会话设置（Task 7）", () => {
     expect(value).toBeGreaterThan(1024);
   });
 
-  it("applyMysqlSessionSettings 逐条执行（顺序与常量一致）", async () => {
+  it("★判别力前置：对 mysql2 的 callback `Query` 直接 await **必然抛**（假连接必须复现这一点）", async () => {
+    const { conn } = mysql2LikeConn("ok");
+    await expect((async () => await (conn.query("SELECT 1") as any))()).rejects.toThrow(/not a promise/);
+  });
+
+  it("applyMysqlSessionSettings 对**callback 形状**的 mysql2 连接逐条执行（走 `promise()` 包装）", async () => {
+    const { conn, calls } = mysql2LikeConn("ok");
+    await applyMysqlSessionSettings(conn);
+    expect(calls, "顺序与常量一致，且每条都真的发出去了").toEqual([...MYSQL_SESSION_SETUP]);
+  });
+
+  it("applyMysqlSessionSettings 对**promise 形状**的连接也能工作（无 `promise()` 时的回退）", async () => {
     const ran: string[] = [];
     await applyMysqlSessionSettings({ query: async (sql: string) => { ran.push(sql); } });
     expect(ran).toEqual([...MYSQL_SESSION_SETUP]);
   });
 
-  it("mysqlAfterCreate：成功路径回传连接；失败路径回传 error（不许吞）", async () => {
+  it("applyMysqlSessionSettings 的失败**必须冒泡**（真错误可见，不被吞成 undefined）", async () => {
+    const { conn } = mysql2LikeConn("fail");
+    await expect(applyMysqlSessionSettings(conn)).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it("mysqlAfterCreate：callback 形状连接的成功/失败两条路径都回调（不回调会挂死池）", async () => {
     let ok: { err: unknown; conn: unknown } | null = null;
-    const conn = { query: async () => undefined };
-    mysqlAfterCreate(conn, (err, c) => { ok = { err, conn: c }; });
+    const good = mysql2LikeConn("ok");
+    mysqlAfterCreate(good.conn, (err, c) => { ok = { err, conn: c }; });
     await settle();
     expect(ok, "成功路径必须回调（否则池永远拿不到连接）").not.toBeNull();
     expect(ok!.err).toBeNull();
-    expect(ok!.conn).toBe(conn);
+    expect(ok!.conn).toBe(good.conn);
+    expect(good.calls, "成功路径也要真的把会话设置发出去").toEqual([...MYSQL_SESSION_SETUP]);
 
     let failed: { err: unknown } | null = null;
-    const bad = { query: async () => { throw new Error("boom-session-setup"); } };
-    mysqlAfterCreate(bad, (err) => { failed = { err }; });
+    const bad = mysql2LikeConn("fail");
+    mysqlAfterCreate(bad.conn, (err) => { failed = { err }; });
     await settle();
     expect(failed, "失败路径必须回调").not.toBeNull();
-    expect(String((failed!.err as Error).message)).toMatch(/boom-session-setup/);
+    expect(String((failed!.err as Error).message)).toMatch(/ECONNREFUSED/);
   });
 
   it("接线：createKnex 的 mysql 分支把 afterCreate 接进池；sqlite 分支不带它", () => {

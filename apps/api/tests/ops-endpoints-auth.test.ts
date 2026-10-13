@@ -12,11 +12,13 @@
  *   · 无 token  ⇒ 6 个接口全 401；
  *   · 普通 token（id=7，role=user）⇒ 6 个接口全 **403**，并且**直读快照逐表相等**（"一行都没少"）——
  *     改造前 `deleteAllData`/`clearTable`/`clearData`/`importData` 会真的删/灌，快照必然不等 ⇒ 红；
- *   · admin token（id=1）⇒ 6 个接口可达：`dbInfo` 200；
+ *   · admin token（id=1）⇒ 5 个接口可达：`dbInfo`/`exportData` 200，`clearTable` **真的删表**（直读对照）；
  *   · admin ⇒ `exportData` 200 且响应体**不含** `tokenKey` 行（最高价值凭据不外泄）；
- *   · admin ⇒ `deleteAllData` 200，且**我种的行真的没了**（正向对照：证明"删得动"而不是"接口没生效"）。
+ *   · admin ⇒ **`deleteAllData` 也拿 501**（该接口已**无条件停用**，连 admin 都清不了库）——
+ *     正向对照另找 `clearTable`（admin 打它 200 且直读确认那一行没了），并交叉对照 `dbInfo` 仍 200
+ *     （证明 501 是"这一个接口停用"，不是"admin 全废"）。
  *
- * ⚠ 用例**顺序是有意义的**：破坏性最强的 `deleteAllData`(admin) 放最后（它 drop 全表）。
+ * ⚠ 用例**顺序是有意义的**：调用会改状态的用例（④ 清表、⑤ 停用断言）在前面的只读/拒绝断言之后。
  */
 import fs from "node:fs";
 import http from "node:http";

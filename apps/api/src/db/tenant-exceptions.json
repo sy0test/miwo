@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T20:19:24.833Z",
+  "generatedAt": "2026-10-13T20:37:03.344Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -259,7 +259,7 @@
     "apps/api/src/db/connect.ts": {
       "count": 1,
       "lines": [
-        192
+        207
       ],
       "confirmed": true,
       "note": "[162 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。⚠ 行号 112 → **162** 是必做修复轮（【裁定 A】把目标护栏接进 connect()）在文件头新增注释导致的位移；**处数与 SQL 文本均未变**（仍是 `select 1`），本条结论不受影响。"
