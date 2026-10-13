@@ -74,7 +74,7 @@ describe("唯一绕过口 systemDb 的登记清单（Task 3）", () => {
       const abs = path.join(API_ROOT, "src", r);
       expect(fs.existsSync(abs), `${r} 必须存在`).toBe(true);
       const src = fs.readFileSync(abs, "utf8");
-      expect(SYSTEM_DB_IMPORT_RE.test(src), `${r} 必须显式 \`import { systemDb as db } from "@/utils/db"\``).toBe(true);
+      expect(SYSTEM_DB_IMPORT_RE.test(src), `${r} 必须显式命名导入 systemDb（\`import { systemDb } from "@/utils/db"\`，别名任意、惯用 \`as db\`）`).toBe(true);
       expect(importsNamedRawDb(src), `${r} 不该再有命名导入裸 db`).toBe(false);
     }
   });

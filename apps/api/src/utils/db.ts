@@ -77,8 +77,20 @@ dbReady.catch((err) => {
  *   1. `db`（裸 knex）—— 由 `src/db/connect.ts` 按 `config.db.driver` 装配（本文件私有）。
  *   2. `dbClient`（**默认导出**，= 全仓的 `u.db`）—— 租户守卫（`src/db/tenant-guard.ts`）。
  *      **fail-closed**：没有 ctx 就拒绝访问租户表；未声明策略的表直接抛错。
- *      ⚠ 462 处调用点从此**全部**经守卫（spec §6.2 的原话：把"漏改"从"越权"变成"当场报错"）。
- *   3. `systemDb` / `systemTable`（显式命名导出）—— **唯一合法的绕过口**（见下方注释）。
+ *      ⚠ 调用点口径（**可复现**，别再引用不可复现的"462 处"；Ruling 205）：在仓库根跑
+ *        `$f = Get-ChildItem apps/api/src -Recurse -Filter *.ts -File`，再跑
+ *        `(Select-String -Path $f.FullName -Pattern 'u[.]db' -AllMatches).Count` → Task 4 实测 **463 行**；
+ *        共 **468 处**匹配（452 处在代码 + 16 处在注释）；调用形 `u[.]db\(` 共 **376 处**
+ *        （`(Select-String -Path $f.FullName -Pattern 'u[.]db\(' -AllMatches).Count`）。
+ *        ⚠ 命令里的正则刻意写成 `u[.]db`（等价于 `u\.db`）—— 否则**这段注释自己**会被下一次统计算进去。
+ *        这些引用从此**全部**经守卫（spec §6.2 的原话：把"漏改"从"越权"变成"当场报错"）。
+ *   3. `systemDb`（显式命名导出）—— **唯一合法的绕过口**（见下方注释）。
+ *      ⚠ 曾与它并列导出的 `systemTable` 已**删除**（Task 4 / Ruling 204）：它 0 个使用者，
+ *        却是**第二个无守卫出口**（实测 `systemTable("o_tasks").select("id")` 既不抛错也不加租户条件），
+ *        而且当时的门禁与 bypass 测试都看不见它（两个正则都要求导入名恰为 `systemDb`）。
+ *        **消除出口比登记出口安全**：要按表名取 builder 的实例级运维，用 `systemDb("表名")` 即可。
+ *        判据：`tests/db-driver.test.ts` 有一条反向断言（`mod.systemTable` 必须是 `undefined`），
+ *        所以它不会被悄悄加回来。
  *
  * ⚠ 为什么不再导出命名 `{ db }`（spec 附录 B.1 的 7 个绕过文件）：
  *   那个导出让 7 个文件直接拿到裸 knex、完全跳过隔离。删掉它是本阶段"把绕过口从
@@ -135,8 +147,8 @@ export default dbClient;
  */
 export const systemDb = db;
 
-/** 同 `systemDb`，但按表名取 builder（运维接口里 `for (const table of tables)` 的写法会用到）。 */
-export const systemTable = <TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table);
+// ⚠ 这里曾有 `export const systemTable = <T>(table: T) => db(table)`：Task 4 已删除（0 使用者、
+//    第二个无守卫出口）。要按表名取 builder 的实例级运维写 `systemDb("表名")`，理由见上方第 3 条。
 
 async function initKnexType(knexDb: any) {
   const { Client } = await import("@rmp135/sql-ts");

@@ -222,7 +222,8 @@ describe("u.db 已接上租户守卫（Task 3）", () => {
       expect(err.code).toBe("TENANT_NO_CONTEXT");
       expect(err.httpStatus).toBe(500);
     }
-    // 平台表读**无 ctx 也放行**（登录前要取 `o_setting.tokenKey`，app.ts 的内联鉴权就靠它）
+    // 平台表读**无 ctx 也放行**（登录前要取 `o_setting.tokenKey`，`src/middleware/tenant.ts` 的
+    // bootstrap 就读它，所以它**不需要**走 systemDb 那个绕过口）
     expect(() => u("o_setting")).not.toThrow();
   });
 
@@ -239,14 +240,15 @@ describe("u.db 已接上租户守卫（Task 3）", () => {
     });
   });
 
-  it("绕过口是显式导出：systemDb / systemTable 存在且可用；裸 `db` 命名导出已删", async () => {
+  it("绕过口是显式导出：只有 systemDb 可用；`systemTable` 已删（**移除也要有判别力**）；裸 `db` 命名导出已删", async () => {
     const mod: any = await import("../src/utils/db");
     expect(typeof mod.systemDb).toBe("function");
-    expect(typeof mod.systemTable).toBe("function");
+    // Task 4 / Ruling 204：`systemTable` 是**第二个无守卫出口**（0 使用者、门禁与 bypass 测试双盲），
+    // 已删除。这条**反向**断言让"删除"本身被钉住 —— 谁想加回来就必须先改这里。
+    expect(typeof mod.systemTable).toBe("undefined");
     expect(mod.db).toBeUndefined(); // spec 附录 B.1 的 7 个绕过文件拿到的那个命名导出，已被删除
     // 裸 knex：没有 ctx 也能建出 builder（实例级运维接口的前提）
     expect(mod.systemDb("o_setting")).toBeTruthy();
-    expect(mod.systemTable("o_setting")).toBeTruthy();
     // 两个出口必须是**不同**对象：默认导出是守卫，systemDb 是裸 knex
     expect(mod.systemDb).not.toBe(mod.default);
     expect(() => mod.systemDb("o_assets")).not.toThrow();
