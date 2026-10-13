@@ -509,9 +509,9 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
    *
    * ⚠ `trx.raw` 的历史（两轮修复，别只做一半）：
    *  - 修复轮 1 / M3：原来 `trx.raw` 是 `value.bind(trx)` **直接透传** ⇒ 事务里
-   *    `trx.raw("update o_tasks … where id=2")` 真的改了别人的行。改成**先过 `assertRawSafe`**。
-   *  - 修复轮 2 / Task 3：M3 当时写成"复用顶层 `guarded.raw` 的同一个实现"，而顶层实现内部是
-   *    `knex.raw(...)`（**根连接**）⇒ 事务里的合法 `trx.raw("select 1 …")` 跑到了**事务外**；
+   *    `trx.raw` 直通时，`update o_tasks … where id=2` 真的改了别人的行。改成**先过 `assertRawSafe`**。
+   *  - 修复轮 2 / Task 3：M3 当时写成"复用顶层 `guarded.raw` 的同一个实现"，而顶层实现内部走的是
+   *    `knex.raw`（**根连接**）⇒ 事务里的合法 `trx.raw` 跑到了**事务外**；
    *    sqlite 池 max=1 时它与持有唯一连接的事务**互等**，实测直接把用例挂到 5s 超时
    *    （真机上会一直挂到 `acquireTimeoutMillis`）。**检查共用、执行必须委派给 `trx`**。
    */

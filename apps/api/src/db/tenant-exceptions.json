@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T17:38:53.508Z",
+  "generatedAt": "2026-10-13T17:59:02.292Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -274,12 +274,13 @@
       "note": "[1341/1351 src.raw(\"?? as ??\", [col, \"__v\"])] 处置（Task 8 Step 1）：这是 `extremeRowPicks()` 的**边界抽样**取数。两条都是 knex 的**标识符占位符**（`??` = 转义列名/表名，不是值绑定），实参只有 `col`（来自 `columnInfo()` 的**真实列名**）与常量 `\"__v\"` —— 没有任何来自请求/用户的字符串被拼进 SQL；返回的也只是主键 + 那一列，不返回整行业务数据。\n它读的**不是**应用库：调用方是 `scripts/extreme-picks-runner.ts`，传进来的 `src` 是它用 `createKnex({ db: { driver: \"sqlite\", file: SRC } })` 建的 **knex 句柄**（`extreme-picks-runner.ts:68-70`）—— **不是** `better-sqlite3` 的 `{ readonly: true }` 连接（那个连接在同一文件里**另建**，见 `:81-83`，只用于按主键取整行）。knex 这条句柄**没有** readonly 开关：它的\"只读\"来自两点 —— ① `extremeRowPicks()` 只发 SELECT；② 源库快照的 sha256 前后一致断言（`scripts/export-sqlite.cjs`；注意那条只覆盖**导出**那一步，不覆盖这一步）。Phase 1b 判策略时请按**「不在请求上下文的 knex 句柄、只发 SELECT」**理解，**不要**按\"已打开为 readonly 的连接\"理解。没有请求上下文、不对 `o_*` 表做 join、也完全不碰目标库，因此**不参与租户过滤**；Phase 1b 的 `policies.ts` 不得给它注入租户条件。\n为什么用 raw：要按 `LENGTH(col)` 排序 / 取极值，query builder 表达不了\"列名\"这一维（同函数里的 `orderByRaw(\"LENGTH(??) DESC\", [col])` 是同一套参数化写法，只是没被本门禁的正则扫到）。"
     },
     "apps/api/src/db/tenant-guard.ts": {
-      "count": 1,
+      "count": 2,
       "lines": [
-        513
+        522,
+        534
       ],
       "confirmed": true,
-      "note": "[513/534 guarded.raw(...) 的透传] 处置（Task 2 Step 3，行号由修复轮 1 重钉）：这一处 `raw` 是**守卫自己**的包装点，不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」一条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。⑤ 修复轮 1（M3/表名大小写 M4）之后：事务对象的 `trx.raw` 也**复用本行的同一个实现**（`guardTrx` 里 `guardedTrx.raw = guarded.raw`，不再 `bind(trx)` 直通），所以清单里仍然只有这一处机械扫点；`mentionsTenantTable` 的比较已**不分大小写**（`delete from O_TASKS` 也拦），`raw` 的判据不变。⑥ 该行的注释文字刻意不写 `.raw` 紧跟左括号的形态（散文里的 `xxx.raw(...)` 会被本门禁的正则算成一处 `raw`），以免清单里出现一个「注释行被当成调用点」的假条目。"
+      "note": "[522/534 guarded.raw 的两个入口] 处置（Task 2 Step 3；**行号与处数由 Task 3 修复轮 2 重钉**）：这两处 `raw` 都是**守卫自己**的包装点（534 = 顶层 `guarded.raw`，522 = `guardTrx` 里的事务入口），不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」与「M3b」两条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。⑤ 修复轮 1（M3/表名大小写 M4）+ **Task 3 修复轮 2**：`trx.raw` 与顶层 `raw` **共用同一个检查**（`assertRawSafe`），但**各自绑定自己的连接** —— 修复轮 1 曾写成\"复用顶层实现\"，而复用时走的是根连接 ⇒ 事务里的**合法** `trx.raw` 落到事务外，sqlite 池 max=1 时与持有连接的事务**互等**（实测把既有用例挂到 5s 超时）。所以清单里现在是**两处**机械扫点；`mentionsTenantTable` 的比较已**不分大小写**（`delete from O_TASKS` 也拦），`raw` 的判据不变。⑥ 该行的注释文字刻意不写 `.raw` 紧跟左括号的形态（散文里的 `xxx.raw(...)` 会被本门禁的正则算成一处 `raw`），以免清单里出现一个「注释行被当成调用点」的假条目 —— Task 3 修复轮 2 的新注释也遵守了这一条（首录时曾多出 2 处假点，改回后 1→2 处全部是真调用点）。"
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,
@@ -343,9 +344,9 @@
   },
   "bypassFiles": [
     {
-      "path": "apps/api/src/routes/novel/event/getEvent.ts",
+      "path": "apps/api/src/lib/fixDB.ts",
       "confirmed": true,
-      "note": "处置（spec 附录 B.1 / §6.3）：**改走 u.db**。本文件同时是 joins(24,25) 与 raws(42) 条目：把 import { db } from \"@/utils/db\" 去掉，GROUP_CONCAT 走包装层并加租户条件——三处是同一处改动，不能只改 import。"
+      "note": "处置（Task 3，**新增条目**）：**改走 systemDb**（裸 knex），不再用默认导出。理由：本文件是 Phase 1a 摘除启动路径后留下的**死代码**（保留只为 `tools/check-copy.cjs:94` 的存在性断言，删除归 Phase 1c），它的动作是\"启动期改库\"（矫正 `state='生成中'` 的残留行、补列、补平台种子行）——**不属于任何租户**；用守卫（默认导出）会让它在无 ctx 时抛错，那种报错在死代码里毫无价值、只会误导下一个人。具体改动：第 40 行 `import db from \"@/utils/db\"` → `import { systemDb as db } from \"@/utils/db\"`；第 38 行 `import u from \"@/utils\"` 换成一行注释（**保持行数**，让清单里本文件的 join 行号 176 不漂）；8 处 `u.db(...)` 改成 `db(...)`（同一行内替换，行数不变）。判据：`tests/tenant-db-bypass.test.ts` 的**逐文件**断言 + 本清单的 bypassFiles 枚举（门禁靠 `as db` 别名恰好仍能扫到，这是巧合不是设计 —— 计划 Task 8 会把 `systemDb` 显式纳入扫描并落地 `systemDbUsers`）。"
     },
     {
       "path": "apps/api/src/routes/other/deleteAllData.ts",
@@ -379,7 +380,6 @@
     }
   ],
   "directDbImports": [
-    "apps/api/src/lib/fixDB.ts",
     "apps/api/src/utils.ts",
     "apps/api/src/utils/agent/embedding.ts",
     "apps/api/src/utils/taskRecord.ts"
