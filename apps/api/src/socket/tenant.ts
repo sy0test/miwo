@@ -57,18 +57,13 @@ export function bindSocketTenant(socket: Socket, ctx: TenantCtx): Socket {
 }
 
 /**
- * 集号取值：**按值判定**，不是 `??`。
- * 前端在"还没选集"时会发 `-1` / `0` / `undefined`（`apps/web/src/stores/productionAgent.ts:44-48`），
- * `??` 拦不住 `-1` —— 那会拼出一个带 `:-1` 的键，与 HTTP 侧的键静默错开。
- * 规则：**正整数才采用**，其余一律当作"没有集号"。
+ * ⚠ 键格式（`pickEpisodesId` / `buildIsolationKey`）的**唯一真相**已搬到 `@/db/isolation-key`
+ *   （Task 6 / Lead 授权）：这里只**再导出**，对外接口与行为一字不变。
+ *   搬移原因（实测）：`db/migrations/004_*` 会被启动链加载，而本模块顶层 `import u from "@/utils"`
+ *   → `@/utils/db` → `@/db/connect`；从迁移链 import 本模块就构成**加载期循环**
+ *   （`TypeError: createKnex is not a function`）。纯格式函数不依赖启动链，所以它能安全地待在 `db/` 下。
  */
-export function pickEpisodesId(...candidates: unknown[]): number | undefined {
-  for (const c of candidates) {
-    const n = Number(c);
-    if (Number.isInteger(n) && n > 0) return n;
-  }
-  return undefined;
-}
+export { pickEpisodesId, buildIsolationKey } from "@/db/isolation-key";
 
 /**
  * 归属校验：必须在**与 `ctx` 匹配的 `runWithTenant(ctx, …)`** 里调用 ——
@@ -95,11 +90,3 @@ export async function resolveOwnedScript(ctx: TenantCtx, scriptIdRaw: unknown): 
   return resolveOwned("o_script", ctx, scriptIdRaw);
 }
 
-/**
- * spec §6.2 / §10.2 #12 的键格式真相：`${userId}:${projectId}:${agentType}[:episodesId]`。
- * Task 6 的回填用**同一条规则**改写历史 key（老格式没有 userId 前缀 ⇒ 新代码看不到，必须回填）。
- */
-export function buildIsolationKey(ctx: TenantCtx, projectId: number, agentType: string, episodesId?: number | null): string {
-  const ep = pickEpisodesId(episodesId);
-  return [ctx.userId, projectId, agentType, ...(ep ? [ep] : [])].join(":");
-}
