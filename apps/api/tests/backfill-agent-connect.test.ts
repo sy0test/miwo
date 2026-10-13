@@ -15,6 +15,7 @@
  * ⚠ 判别力覆盖到 **handler 层**（连接逻辑），**不含 engine.io transport**（仓库无 `socket.io-client`）。
  */
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -25,6 +26,9 @@ import { createKnex } from "@/db/connect";
 const API_ROOT = path.resolve(__dirname, "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-task6-e2e-"));
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
+
+/** 文件 sha256（用于"拒绝必须是碰库之前发生的"这类逐字节断言）。 */
+const sha256 = (file: string): string => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
 const TOKEN_KEY = "task6-e2e-token-key-32-bytes!!!!!";
 const CONFIG_SECRET = "task6-e2e-config-secret-32-bytes!!!";
@@ -129,5 +133,74 @@ describe("★P1：o_script.userId 回填是 agent 可用性的开关（真 route
     expect(green.result.disconnected, `回填后必须连上。probe=${JSON.stringify(green.result)}`).toBe(false);
     expect(green.result.scriptCheckRejected).toBe(false);
     expect(green.result.handlers).toContain("updateContext");
+  }, 300000);
+
+  it("★ P2-1 加固：probe 对**仓库内 dev 库**直接拒绝（且该文件逐字节未变）", () => {
+    const repoDb = path.join(API_ROOT, "data", "db2.sqlite");
+    const before = sha256(repoDb);
+    const env = envOf(path.join(API_ROOT, "data"));
+    delete env.MIWO_ALLOW_REPO_DEV_DB; // 不许放行
+    const r = spawnSync(
+      process.execPath,
+      ["--env-file-if-exists=.env", "--import=tsx", path.join("scripts", "probe-agent-connect.ts"), "--project=1", "--script=1", "--user=1"],
+      { cwd: API_ROOT, env, encoding: "utf8", timeout: 180000, windowsHide: true },
+    );
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    console.log("[task6-e2e] probe 对仓库 dev 库：exit=" + r.status + " 输出尾部=" + out.trim().split(/\r?\n/).slice(-2).join(" | "));
+    expect(r.status, `probe 必须拒绝仓库内 dev 库（exit ${r.status}）：\n${out}`).not.toBe(0);
+    expect(out).toMatch(/拒绝执行/);
+    expect(sha256(repoDb), "拒绝必须是**在碰库之前**发生的：仓库 dev 库逐字节未变").toBe(before);
+  }, 200000);
+
+  it("★ P3-1：`--report=` 写**完整 JSON**（孤儿名单不截断），控制台仍只点前 5 条", async () => {
+    const dataDir = path.join(TMP, "json-report");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const dbFile = path.join(dataDir, "db2.sqlite");
+    const mig = spawnSync(process.execPath, ["--env-file-if-exists=.env", "--import=tsx", path.join("scripts", "db-migrate.ts")], {
+      cwd: API_ROOT, env: envOf(dataDir), encoding: "utf8", timeout: 180000, windowsHide: true,
+    });
+    expect(mig.status, `db:migrate 失败：${mig.stdout}\n${mig.stderr}`).toBe(0);
+
+    const knex = createKnex(cfgOf(dbFile));
+    try {
+      // 归属得上的项目（证明不是"全表都没归属"），以及一个 userId=NULL 的孤儿项目 + 7 条属于它的 o_tasks
+      await knex("o_project").insert([
+        { id: 5001, userId: 7, name: "ok", createTime: 1 },
+        { id: 5002, userId: null, name: "orphan", createTime: 1 },
+      ]);
+      const rows = [];
+      for (let i = 0; i < 7; i += 1) rows.push({ id: 6000 + i, projectId: 5002, userId: null, taskClass: "t", state: "进行中" });
+      rows.push({ id: 6100, projectId: 5001, userId: null, taskClass: "t", state: "进行中" });
+      await knex("o_tasks").insert(rows);
+    } finally {
+      await knex.destroy();
+    }
+
+    const reportPath = path.join(dataDir, "report.json");
+    const cli = spawnSync(
+      process.execPath,
+      ["--env-file-if-exists=.env", "--import=tsx", path.join("scripts", "backfill-userid.ts"), "--apply", `--report=${reportPath}`],
+      { cwd: API_ROOT, env: envOf(dataDir), encoding: "utf8", timeout: 180000, windowsHide: true },
+    );
+    expect(cli.status, `CLI 失败：${cli.stdout}\n${cli.stderr}`).toBe(0);
+    // 控制台：只点前 5 条孤儿（可读性取舍）
+    const consoleOrphans = (String(cli.stdout).match(/孤儿 \{/g) ?? []).length;
+    expect(consoleOrphans, "控制台应只点前 5 条").toBe(5);
+    // JSON：7 条孤儿**全在**（预裁定 1 要求"留 NULL + 报告"，名单截断等于没报告）
+    const parsed = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    const tasks = parsed.tables.find((t: any) => t.table === "o_tasks");
+    expect(tasks.orphans).toHaveLength(7);
+    expect(tasks.updated).toBe(1);
+    expect(parsed.selfCheck.find((s: any) => s.table === "o_tasks")).toMatchObject({ userIdNull: 7, expectedNull: 7, updated: 1, orphans: 7 });
+    // 可疑全孤儿信号**不该**在这里触发（有 1 行归属上了）
+    expect(parsed.warnings).toEqual([]);
+    // 幂等 + 第二次 JSON 里孤儿仍是 7（名单稳定）
+    const cli2 = spawnSync(
+      process.execPath,
+      ["--env-file-if-exists=.env", "--import=tsx", path.join("scripts", "backfill-userid.ts"), "--apply", `--report=${reportPath}`],
+      { cwd: API_ROOT, env: envOf(dataDir), encoding: "utf8", timeout: 180000, windowsHide: true },
+    );
+    expect(cli2.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(reportPath, "utf8")).tables.find((t: any) => t.table === "o_tasks").orphans).toHaveLength(7);
   }, 300000);
 });

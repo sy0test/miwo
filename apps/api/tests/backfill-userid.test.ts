@@ -22,10 +22,12 @@ import { makeTenantAware } from "@/db/tenant-guard";
 import { buildIsolationKey } from "@/socket/tenant";
 import {
   assertBackfillConsistent,
+  assertDeriveColumns,
   backfillUserIds,
   firstProjectIdInFlowData,
   formatBackfillReport,
   rewriteIsolationKey,
+  targetSpecOf,
   type BackfillReport,
 } from "@/db/legacy/backfill-userid";
 
@@ -43,6 +45,16 @@ function cfg(file: string): MiwoConfig {
 let knex: any;
 
 const ctxOf = (userId: number): TenantCtx => ({ userId, role: "user", requestId: "t", source: "system" });
+
+/**
+ * 剥掉 `//` 行注释与 `/* … *\/` 块注释（**字符串字面量里的 `//` 不处理**——本用例只比对 import 语句，
+ * 够用且简单）。
+ * ⚠ 立这条的由来（Lead 规范 / 审查者踩过的假阳性）：审查者第一版 import-graph 脚本因为
+ * `isolation-key.ts` 的**注释里**有 `import u from "@/utils"` 这句解释文字，把 `@/utils` 判成可达。
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
 
 /** 只读快照：所有租户表的 userId 分布（用于 dry-run / down 的"没有写库"断言）。 */
 async function snapshot(): Promise<string> {
@@ -133,11 +145,12 @@ describe("回填工具函数", () => {
   });
 
   it("源码层判据：键格式来自**中性纯模块** @/db/isolation-key（唯一真相），迁移链不得拉 @/utils", () => {
-    const src = fs.readFileSync(path.join(API_ROOT, "src", "db", "legacy", "backfill-userid.ts"), "utf8");
+    // ⚠ **必须先剥注释**（Lead 立的规范 / 审查者踩过的假阳性）：`isolation-key.ts` 的注释里就写着
+    //   `import u from "@/utils"` 这句解释文字；不剥注释会把"解释为什么不能 import"判成"可达"。
+    const src = stripComments(fs.readFileSync(path.join(API_ROOT, "src", "db", "legacy", "backfill-userid.ts"), "utf8"));
     expect(src).toMatch(/from "@\/db\/isolation-key"/);
-    // ⚠ 不许**从** `@/socket/tenant` import/require：那里顶层 `import u from "@/utils"` → `@/utils/db`
-    //   → `@/db/connect`，从迁移链进来会构成加载期循环（实测 `TypeError: createKnex is not a function`）。
-    //   （注释里提到它是允许的——那正是"为什么不能 import"的说明。）
+    // 不许**从** `@/socket/tenant` import/require：那里顶层 `import u from "@/utils"` → `@/utils/db`
+    // → `@/db/connect`，从迁移链进来会构成加载期循环（实测 `TypeError: createKnex is not a function`）。
     expect(src).not.toMatch(/^\s*import[^\n]*@\/socket\/tenant/m);
     expect(src).not.toMatch(/require\(\s*["']@\/socket\/tenant["']\s*\)/);
     expect(src).toMatch(/buildIsolationKey\(/);
@@ -217,23 +230,46 @@ describe("dry-run 与 apply", () => {
 });
 
 describe("★三层验证（Ruling 228 / 审查输入 D、E）", () => {
-  it("① 静态自洽：三张表的 userId IS NULL 计数 + 键首段违规计数（回填后）", async () => {
+  it("① 静态自洽：**每一张**目标表的 NULL 计数 = 应剩、键首段违规 = 0（回填后）", async () => {
     const report = await backfillUserIds(knex, { apply: true });
-    expect(report.selfCheck.map((s) => s.table)).toEqual(["o_script", "o_project", "memories"]);
-    // ⚠ 本用例在 `--assign-to` 之后跑 ⇒ 连孤儿也已被显式归属 ⇒ 三张表都应是 **0 NULL / 0 违规**。
-    //   "孤儿留 NULL"的数量语义由 dry-run 用例钉住（`o_assets.orphans=1`、`projects.withoutUser=[300]`）。
+    // 覆盖 19 张目标表 + `o_project`（审查 P2-2：只覆盖 3 张时"某表整表误判孤儿"看不见）
+    expect(report.selfCheck.length).toBe(20);
+    expect(report.selfCheck[0].table).toBe("o_project");
     for (const s of report.selfCheck) {
-      expect(s, `${s.table}：NULL 计数必须等于"应剩"，且键首段违规必须为 0`).toMatchObject({
-        userIdNull: 0,
-        expectedNull: 0,
-        keyHeadMismatch: 0,
-      });
+      expect(s.userIdNull, `${s.table}：NULL 实际必须等于应剩`).toBe(s.expectedNull);
+      expect(s.keyHeadMismatch, `${s.table}：键首段违规必须为 0`).toBe(0);
+      expect(s.suspiciousAllOrphan, `${s.table}：本项目场景下不该出现"整表孤儿"`).toBe(false);
     }
     expect(() => assertBackfillConsistent(report)).not.toThrow();
-    // 报告文本里必须能看到这张自检表（运维口径）
+    // 报告文本里必须能看到自检表（运维口径）+ 全部 20 行
     const text = formatBackfillReport(report);
     expect(text).toMatch(/自检/);
-    for (const t of ["o_script", "o_project", "memories"]) expect(text).toContain(t);
+    for (const s of report.selfCheck) expect(text).toContain(`${s.table}:`);
+  });
+
+  it("★ 审查 P2-2 根因拦截：`assertDeriveColumns` 对'漏选外键列'当场抛（D3 的根因）", () => {
+    expect(() => assertDeriveColumns([{ id: 1, userId: null }], targetSpecOf("o_script")!.derive, "o_script")).toThrow(/外键列/);
+    expect(() => assertDeriveColumns([{ id: 1, userId: null, projectId: 100 }], targetSpecOf("o_script")!.derive, "o_script")).not.toThrow();
+    // `o_event` 的 derive 不声明外键列（靠 `o_eventChapter` 索引）⇒ 不误报
+    expect(() => assertDeriveColumns([{ id: 1, userId: null }], targetSpecOf("o_event")!.derive, "o_event")).not.toThrow();
+  });
+
+  it("★ 审查 P2-2 可疑信号：整表都是孤儿且项目索引非空 ⇒ warnings 点名（不抛错，避免启动路径假失败）", async () => {
+    // 造一个"项目存在但 userId=NULL"的项目 + 一条属于它的 o_videoTrack 行
+    await knex("o_project").insert({ id: 400, userId: null, name: "orphan-only" });
+    await knex("o_videoTrack").insert({ id: 123, projectId: 400, userId: null });
+    try {
+      const report = await backfillUserIds(knex, { apply: true });
+      const vt = report.selfCheck.find((s) => s.table === "o_videoTrack")!;
+      expect(vt).toMatchObject({ userIdNull: 1, expectedNull: 1, updated: 0, orphans: 1, suspiciousAllOrphan: true });
+      expect(report.warnings.join("\n")).toMatch(/o_videoTrack/);
+      expect(formatBackfillReport(report)).toMatch(/可疑/);
+      // ⚠ 它**不**让断言抛错（真库上可能有合法的全孤儿表；004.up 在启动路径上）
+      expect(() => assertBackfillConsistent(report)).not.toThrow();
+    } finally {
+      await knex("o_videoTrack").where("id", 123).del();
+      await knex("o_project").where("id", 400).del();
+    }
   });
 
   it("② 守卫层两向：用自己的 userId 查得到；换一个 userId 查不到（都不抛错）", async () => {
@@ -292,6 +328,16 @@ describe("★三层验证（Ruling 228 / 审查输入 D、E）", () => {
   });
 
   it("④ 自检断言的红端：少填一个（NULL 计数对不上）/ 键首段违规 → 必须抛", () => {
+    const entry = (over: Partial<BackfillReport["selfCheck"][number]> = {}): BackfillReport["selfCheck"][number] => ({
+      table: "memories",
+      userIdNull: 1,
+      expectedNull: 1,
+      keyHeadMismatch: 0,
+      updated: 1,
+      orphans: 0,
+      suspiciousAllOrphan: false,
+      ...over,
+    });
     const base = (): BackfillReport => ({
       applied: true,
       assignedTo: null,
@@ -299,25 +345,34 @@ describe("★三层验证（Ruling 228 / 审查输入 D、E）", () => {
       tables: [],
       memoriesKeys: { total: 0, rewritten: 0, skipped: 0 },
       selfCheck: [
-        { table: "o_script", userIdNull: 1, expectedNull: 1, keyHeadMismatch: 0 },
-        { table: "o_project", userIdNull: 1, expectedNull: 1, keyHeadMismatch: 0 },
-        { table: "memories", userIdNull: 1, expectedNull: 1, keyHeadMismatch: 0 },
+        { ...entry(), table: "o_script", updated: 2 },
+        { ...entry(), table: "o_project", updated: 0 },
+        entry(),
       ],
+      warnings: [],
     });
     expect(() => assertBackfillConsistent(base())).not.toThrow();
     // 红端 1：实际 NULL 比"应剩"的多一个（= 有一行该填没填）
     const short = base();
-    short.selfCheck[2] = { table: "memories", userIdNull: 2, expectedNull: 1, keyHeadMismatch: 0 };
+    short.selfCheck[2] = entry({ userIdNull: 2 });
     expect(() => assertBackfillConsistent(short)).toThrow(/memories/);
     // 红端 2：键首段 != userId（= 键改错了/漏改）
     const badKey = base();
-    badKey.selfCheck[2] = { table: "memories", userIdNull: 1, expectedNull: 1, keyHeadMismatch: 1 };
+    badKey.selfCheck[2] = entry({ keyHeadMismatch: 1 });
     expect(() => assertBackfillConsistent(badKey)).toThrow(/键首段/);
+    // 红端 3：**任意一张表**（不再只 3 张）少填也会被抓住
+    const shortTable = base();
+    shortTable.selfCheck[0] = { ...entry({ userIdNull: 3 }), table: "o_script", updated: 2, expectedNull: 2 };
+    expect(() => assertBackfillConsistent(shortTable)).toThrow(/o_script/);
     // dry-run 例外：还没写库 ⇒ 剩余违规只作"待修复"信息，不抛（否则真库上 dry-run 必红）
     const dry = base();
     dry.applied = false;
-    dry.selfCheck[2] = { table: "memories", userIdNull: 3, expectedNull: 3, keyHeadMismatch: 92 };
+    dry.selfCheck[2] = entry({ userIdNull: 3, expectedNull: 3, keyHeadMismatch: 92 });
     expect(() => assertBackfillConsistent(dry)).not.toThrow();
+    // "整表可疑孤儿"是**警告级**：即便 applied 也不抛（避免服务器启动路径假失败）
+    const suspicious = base();
+    suspicious.selfCheck[0] = { ...entry(), table: "o_script", updated: 0, orphans: 8, userIdNull: 8, expectedNull: 8, suspiciousAllOrphan: true };
+    expect(() => assertBackfillConsistent(suspicious)).not.toThrow();
   });
 });
 
