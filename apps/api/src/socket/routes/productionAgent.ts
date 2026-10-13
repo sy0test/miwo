@@ -17,7 +17,8 @@ export default (nsp: Namespace) => {
     // ② 归属校验：projectId 必须在 ctx 里查得到（别人的 ⇒ 查不到）
     const projectId = await runWithTenant(tenant, () => resolveOwnedProject(tenant, socket.handshake.auth?.projectId));
     if (!projectId) {
-      console.log("[productionAgent] 连接失败：projectId 缺失或不属于当前用户");
+      // ⚠ 与 scriptAgent 同理：服务端分不清"别人的行"与"userId 未回填"（精确区分见 Task 6 文案事项）
+      console.log("[productionAgent] 连接失败：projectId 缺失，或该行在库里不属于当前用户（o_project.userId 未回填也会落到这里）");
       socket.disconnect();
       return;
     }
@@ -28,7 +29,15 @@ export default (nsp: Namespace) => {
     if (authScriptId) {
       scriptId = await runWithTenant(tenant, () => resolveOwnedScript(tenant, authScriptId));
       if (!scriptId) {
-        console.log("[productionAgent] 连接失败：scriptId 不属于当前用户");
+        // ⚠⚠ **别把这条日志读成"有人越权"**：真实库的 `o_script.userId` 目前是 **NULL**
+        //    （001_schema 的新列 / `db/legacy/import.ts` 留 NULL）⇒ 连**自己的**集也会落到这里。
+        //    精确区分（"脚本不存在 / 未回填" vs "别人的脚本"）需要一次无租户条件的读，而 Ruling 220 #4
+        //    禁止为此新增 `systemDb` 使用者 ⇒ 登记为 **Task 6 的回填 + 文案事项**。
+        //    ⚠ 后果必须说清：**回填之前 productionAgent 的真实连接会被全部拒掉** ⇒ "让 agent 活过来"
+        //    在**真实库上尚未成立**，当前状态是"从 chat 500 变成连接被拒"。
+        console.log(
+          "[productionAgent] 连接失败：scriptId 不属于当前用户，或 o_script.userId 未回填（真实库现状；这是数据未回填，不是越权）—— 见 Task 6 回填清单",
+        );
         socket.disconnect();
         return;
       }
