@@ -1,12 +1,16 @@
 {
-  "generatedAt": "2026-10-13T20:37:03.344Z",
-  "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
+  "generatedAt": "2026-10-13T20:48:16.039Z",
+  "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
     "tsFilesScanned": 250,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
-    "raws": "db.raw(...) / u.db.raw(...)",
-    "bypassFiles": "直接命名导入裸 db：import { db } from \"@/utils/db\"（spec 附录 B.1 的判据）",
+    "raws": "db.raw(...) / u.db.raw(...)（接收者限定：u.db/db/systemDb/trx/knex/conn/connection）",
+    "systemDbUsers": "拿到裸 systemDb 的文件（命名/别名/命名空间/相对路径/动态 import/require 任一形态）",
+    "bypassFiles": "把裸 handle 绑定成名字 db 的文件：import { systemDb as db } from \"@/utils/db\"",
+    "bareDbImports": "裸 import { db } from \"@/utils/db\" —— **必须为空**（附录 B.1 的 7 个绕过口已全部删除）",
+    "directDbImports": "默认导入 import x from \"@/utils/db\"（受守卫的 handle；只允许已知内部层）",
+    "knexImports": "直接 import ... from \"knex\"（只允许 src/db/** 与 src/lib/**）",
     "excludedKnownDirectDbImports": [
       "apps/api/src/lib/fixDB.ts",
       "apps/api/src/lib/initDB.ts",
@@ -27,7 +31,12 @@
         "o_vendorConfig"
       ],
       "confirmed": true,
-      "note": "[176 leftJoin o_vendorConfig] 被 join 表策略=platform（供应商配置是平台级，管理员专用）。此处是启动期 fixDB 的 o_agentDeploy 模型回填，没有请求上下文。现状：启动期单次执行，不涉及任何用户；Phase 1b：把这段回填移出请求路径（改成显式的非请求扫描或迁移脚本的 SQL），policies.ts 不为它注入租户条件，并注明这是无 ctx 的允许路径——若留在包装层里就必须显式声明 allowNoContext，不能靠默认放行。⚠ 行号 145 → **176** 是必做修复轮在 fixDB.ts 文件头新增【L1 更正】注释导致的位移；**处数与 join 表均未变**。"
+      "note": "[176 leftJoin o_vendorConfig] 被 join 表策略=platform（供应商配置是平台级，管理员专用）。此处是启动期 fixDB 的 o_agentDeploy 模型回填，没有请求上下文。现状：启动期单次执行，不涉及任何用户；Phase 1b：把这段回填移出请求路径（改成显式的非请求扫描或迁移脚本的 SQL），policies.ts 不为它注入租户条件，并注明这是无 ctx 的允许路径——若留在包装层里就必须显式声明 allowNoContext，不能靠默认放行。⚠ 行号 145 → **176** 是必做修复轮在 fixDB.ts 文件头新增【L1 更正】注释导致的位移；**处数与 join 表均未变**。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "route-removed-later",
+        "evidence": "tenant-guard.test.ts#没有 ctx → 租户表抛 TenantContextError；平台表读仍然放行（登录前要取 tokenKey）",
+        "note": "启动期 fixDB 的 o_agentDeploy→o_vendorConfig(platform) 回填：**没有请求上下文**，走 `systemDb`（不经过守卫，也不需要）。⚠ 本文件是 Phase 1a 摘掉启动路径后留下的**死代码**（只为 check-copy 的存在性断言保留）⇒ 处置是 **Phase 1c 删除**（故用 `route-removed-later` 而不是 brief 表里的 `systemDb+admin`：这里没有 admin 概念）。"
+      }
     },
     "apps/api/src/routes/assets/getAssetsApi.ts": {
       "count": 2,
@@ -40,7 +49,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[23][36 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表 o_assets 两处都带 .where(\"o_assets.projectId\", projectId)，而 projectId 由前端传入、当前无归属校验。Phase 1b：主表条件改为经 o_assets.userId=ctx.userId 的租户条件（projectId 归属由服务端校验），同一条 SQL 上补 o_image.userId=ctx.userId。"
+      "note": "[23][36 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表 o_assets 两处都带 .where(\"o_assets.projectId\", projectId)，而 projectId 由前端传入、当前无归属校验。Phase 1b：主表条件改为经 o_assets.userId=ctx.userId 的租户条件（projectId 归属由服务端校验），同一条 SQL 上补 o_image.userId=ctx.userId。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/assets/getMaterialData.ts": {
       "count": 1,
@@ -51,7 +65,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[19 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表 o_assets 带 projectId 条件（前端传入、未校验归属）。Phase 1b：加 o_assets.userId 与 o_image.userId 双条件，projectId 改为服务端校验归属后使用。"
+      "note": "[19 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表 o_assets 带 projectId 条件（前端传入、未校验归属）。Phase 1b：加 o_assets.userId 与 o_image.userId 双条件，projectId 改为服务端校验归属后使用。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/assets/pollingImageAssets.ts": {
       "count": 1,
@@ -62,7 +81,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[17 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：只有 whereIn(o_assets.id, ids)——ids 由前端传入，是**越权面**（可传他人资产 id）。Phase 1b：必须补 o_assets.userId 与 o_image.userId 条件，并对 ids 做归属校验，不能只靠 ids 过滤。"
+      "note": "[17 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：只有 whereIn(o_assets.id, ids)——ids 由前端传入，是**越权面**（可传他人资产 id）。Phase 1b：必须补 o_assets.userId 与 o_image.userId 条件，并对 ids 做归属校验，不能只靠 ids 过滤。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/cornerScape/getAllAssets.ts": {
       "count": 2,
@@ -75,7 +99,12 @@
         "o_assets"
       ],
       "confirmed": true,
-      "note": "[18 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表带 projectId 条件（前端传入、未校验归属）。Phase 1b：加 o_assets.userId 与 o_image.userId。[38 leftJoin o_assets（主表 o_assetsRole2Audio）] 被 join 表 o_assets 策略=tenant；现状：只按 assetsRoleId 白名单过滤，而该白名单 id 来自上面那条已按 projectId 过滤的结果，属于间接约束。Phase 1b：在该 SQL 上补 o_assets.userId=ctx.userId（o_assetsRole2Audio 本身也需回填 userId），不依赖「上游已经过滤过」这种隐式保证。"
+      "note": "[18 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：主表带 projectId 条件（前端传入、未校验归属）。Phase 1b：加 o_assets.userId 与 o_image.userId。[38 leftJoin o_assets（主表 o_assetsRole2Audio）] 被 join 表 o_assets 策略=tenant；现状：只按 assetsRoleId 白名单过滤，而该白名单 id 来自上面那条已按 projectId 过滤的结果，属于间接约束。Phase 1b：在该 SQL 上补 o_assets.userId=ctx.userId（o_assetsRole2Audio 本身也需回填 userId），不依赖「上游已经过滤过」这种隐式保证。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 2,
@@ -88,7 +117,12 @@
         "o_novel"
       ],
       "confirmed": true,
-      "note": "[24 join o_eventChapter][25 join o_novel] 两张被 join 表策略均为 tenant。现状：靠 .where(\"n.projectId\", projectId) 定位到单个项目（projectId 由前端传入、未校验归属），而 o_event 自身**无任何归属列**（附录 A）。Phase 1b：o_eventChapter/o_novel 补 userId 后，整个查询加 tenant 条件；o_event 的归属经 o_eventChapter→o_novel→o_project 回填 userId 后再纳入租户过滤。另：本接口同时是 bypass 与 raw 条目，三处必须一起改。"
+      "note": "[24 join o_eventChapter][25 join o_novel] 两张被 join 表策略均为 tenant。现状：靠 .where(\"n.projectId\", projectId) 定位到单个项目（projectId 由前端传入、未校验归属），而 o_event 自身**无任何归属列**（附录 A）。Phase 1b：o_eventChapter/o_novel 补 userId 后，整个查询加 tenant 条件；o_event 的归属经 o_eventChapter→o_novel→o_project 回填 userId 后再纳入租户过滤。另：本接口同时是 bypass 与 raw 条目，三处必须一起改。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "get-event-tenant-scope.test.ts#② 别人的项目 id：一行都看不到（改前这里会返回 OTHER-EVENT）",
+        "note": "两处 join（o_eventChapter / o_novel）的租户条件由守卫注入 ON 子句；Task 3 已把该文件从裸 `db` 改成 `u.db`（三处一起改：bypass/join/raw），Task 7 用真中间件 + 真 HTTP 钉住「拿别人的 projectId 返回 0 行」两端（改前形态可复现出别人的事件）。"
+      }
     },
     "apps/api/src/routes/production/assets/batchGenerateAssetsImage.ts": {
       "count": 1,
@@ -99,7 +133,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[28 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(o_assets.id, parentIds)，parentIds 是**服务端从本次请求内的 assetsDataArr 推导**的，而 assetsDataArr 用 whereIn(\"id\", assetIds)、assetIds 由前端传入且未校验归属。Phase 1b：在 .db(\"o_assets\") 上补 userId 条件，阻断「传入他人 assetId」的越权面。"
+      "note": "[28 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(o_assets.id, parentIds)，parentIds 是**服务端从本次请求内的 assetsDataArr 推导**的，而 assetsDataArr 用 whereIn(\"id\", assetIds)、assetIds 由前端传入且未校验归属。Phase 1b：在 .db(\"o_assets\") 上补 userId 条件，阻断「传入他人 assetId」的越权面。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/assets/pollingImage.ts": {
       "count": 1,
@@ -110,7 +149,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[17 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 pollingImageAssets 同形，只有 whereIn(o_assets.id, ids)，ids 前端传入未经归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId，并在取数前校验 ids 归属。"
+      "note": "[17 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 pollingImageAssets 同形，只有 whereIn(o_assets.id, ids)，ids 前端传入未经归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId，并在取数前校验 ids 归属。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/getFlowData.ts": {
       "count": 2,
@@ -123,7 +167,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[85][94 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：两条查询的主表 o_assets 都带 .where(\"o_assets.projectId\", projectId)（前端传入、未校验归属）。Phase 1b：主表改 userId=ctx.userId，同一 SQL 补 o_image.userId。"
+      "note": "[85][94 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：两条查询的主表 o_assets 都带 .where(\"o_assets.projectId\", projectId)（前端传入、未校验归属）。Phase 1b：主表改 userId=ctx.userId，同一 SQL 补 o_image.userId。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/getStoryboardData.ts": {
       "count": 2,
@@ -136,7 +185,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[32 leftJoin o_assets][33 leftJoin o_image] 两张被 join 表策略均为 tenant。现状：whereIn(\"o_assets2Storyboard.storyboardId\", storyboardIds)，storyboardIds 是本请求内先查 o_storyboard 得到的结果——而那次查询的 projectId 过滤决定了它的边界。Phase 1b：不要依赖「上游已过滤」这条隐式保证，直接在 o_assets2Storyboard 上加租户条件并让 o_assets/o_image 一并带 userId。"
+      "note": "[32 leftJoin o_assets][33 leftJoin o_image] 两张被 join 表策略均为 tenant。现状：whereIn(\"o_assets2Storyboard.storyboardId\", storyboardIds)，storyboardIds 是本请求内先查 o_storyboard 得到的结果——而那次查询的 projectId 过滤决定了它的边界。Phase 1b：不要依赖「上游已过滤」这条隐式保证，直接在 o_assets2Storyboard 上加租户条件并让 o_assets/o_image 一并带 userId。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/batchGeneratePrompt.ts": {
       "count": 1,
@@ -147,7 +201,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[131 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 且 .first()，item.id 来自前端请求体的素材列表，无归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId 条件，使越权 id 查不到而不是返回数据。"
+      "note": "[131 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 且 .first()，item.id 来自前端请求体的素材列表，无归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId 条件，使越权 id 查不到而不是返回数据。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/batchGenerateVideo.ts": {
       "count": 1,
@@ -158,7 +217,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[85 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 后 .first()，item.id 由前端传入、无归属校验；且 join 在 where 之后书写，可读性差但与语义无关。Phase 1b：加 o_assets.userId 条件（o_image 同补），越权 id 直接落到 undefined 而不是返回路径。"
+      "note": "[85 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 后 .first()，item.id 由前端传入、无归属校验；且 join 在 where 之后书写，可读性差但与语义无关。Phase 1b：加 o_assets.userId 条件（o_image 同补），越权 id 直接落到 undefined 而不是返回路径。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/generateVideo.ts": {
       "count": 1,
@@ -169,7 +233,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[75 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 batchGenerateVideo 同形（where(\"o_assets.id\", item.id).first()，id 前端传入未校验）。Phase 1b：补 o_assets.userId/o_image.userId；建议顺手把 join 提到 where 之前，统一成「先 join 再筛」的写法。"
+      "note": "[75 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 batchGenerateVideo 同形（where(\"o_assets.id\", item.id).first()，id 前端传入未校验）。Phase 1b：补 o_assets.userId/o_image.userId；建议顺手把 join 提到 where 之前，统一成「先 join 再筛」的写法。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/generateVideoPrompt.ts": {
       "count": 1,
@@ -180,7 +249,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[60 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id).first()，id 前端传入未校验归属。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。"
+      "note": "[60 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id).first()，id 前端传入未校验归属。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/getAudioBindAssetsList.ts": {
       "count": 1,
@@ -191,7 +265,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[21 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(\"o_assets.assetsId\", assets2AudioData.map(...))，白名单来自上一条按 assetsRoleId 查 o_assetsRole2Audio 的结果（前端传入 assetsIds、未校验归属）。Phase 1b：给 o_assets 加 userId 条件（o_assetsRole2Audio 回填 userId 后一并加），不要依赖上游隐式过滤。"
+      "note": "[21 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(\"o_assets.assetsId\", assets2AudioData.map(...))，白名单来自上一条按 assetsRoleId 查 o_assetsRole2Audio 的结果（前端传入 assetsIds、未校验归属）。Phase 1b：给 o_assets 加 userId 条件（o_assetsRole2Audio 回填 userId 后一并加），不要依赖上游隐式过滤。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/getFileUrl.ts": {
       "count": 1,
@@ -202,7 +281,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[36 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(\"o_assets.id\", assetsIds)，assetsIds 是前端 items 里 sources===\"assets\" 的 id，无归属校验——**典型越权读文件路径面**。Phase 1b：补 o_assets.userId 与 o_image.userId；此外该接口返回的是 OSS 路径，Phase 1b 还需确认路径签名/鉴权不会因拿到路径而绕过隔离。"
+      "note": "[36 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(\"o_assets.id\", assetsIds)，assetsIds 是前端 items 里 sources===\"assets\" 的 id，无归属校验——**典型越权读文件路径面**。Phase 1b：补 o_assets.userId 与 o_image.userId；此外该接口返回的是 OSS 路径，Phase 1b 还需确认路径签名/鉴权不会因拿到路径而绕过隔离。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/production/workbench/getGenerateData.ts": {
       "count": 4,
@@ -219,7 +303,12 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[163 leftJoin o_assets][164 leftJoin o_image] 被 join 表策略均为 tenant。现状：主表按 isSegments 切 o_shotAssets / o_assets2Storyboard，条件里 storyIds 由服务端从「该集所有镜 id」推导（v2 颗粒度改动的产物），上游 projectId 过滤来自本文件前段。[172 leftJoin o_assets][173 leftJoin o_image] 同两张表；现状：whereIn(\"o_assetsRole2Audio.assetsRoleId\", queryAudioIds)，queryAudioIds 是本请求内从上面结果推导的。Phase 1b：两段都要在主表与两张被 join 表上显式加 userId 条件——本文件是「分镜/素材」主干读路径，越权面最大，必须逐条断言而不是靠推导链。"
+      "note": "[163 leftJoin o_assets][164 leftJoin o_image] 被 join 表策略均为 tenant。现状：主表按 isSegments 切 o_shotAssets / o_assets2Storyboard，条件里 storyIds 由服务端从「该集所有镜 id」推导（v2 颗粒度改动的产物），上游 projectId 过滤来自本文件前段。[172 leftJoin o_assets][173 leftJoin o_image] 同两张表；现状：whereIn(\"o_assetsRole2Audio.assetsRoleId\", queryAudioIds)，queryAudioIds 是本请求内从上面结果推导的。Phase 1b：两段都要在主表与两张被 join 表上显式加 userId 条件——本文件是「分镜/素材」主干读路径，越权面最大，必须逐条断言而不是靠推导链。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/script/getScrptApi.ts": {
       "count": 1,
@@ -230,7 +319,12 @@
         "o_scriptAssets"
       ],
       "confirmed": true,
-      "note": "[24 leftJoin o_scriptAssets] 被 join 表 o_scriptAssets 策略=tenant。现状：whereIn(\"o_scriptAssets.scriptId\", data.map(id))，data 来自上一条 u.db(\"o_script\").where(\"projectId\", projectId)（前端传入、未校验归属）。Phase 1b：o_script 与 o_scriptAssets 都补 userId 条件（两张表都需回填 userId）。"
+      "note": "[24 leftJoin o_scriptAssets] 被 join 表 o_scriptAssets 策略=tenant。现状：whereIn(\"o_scriptAssets.scriptId\", data.map(id))，data 来自上一条 u.db(\"o_script\").where(\"projectId\", projectId)（前端传入、未校验归属）。Phase 1b：o_script 与 o_scriptAssets 都补 userId 条件（两张表都需回填 userId）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
     },
     "apps/api/src/routes/setting/agentDeploy/getAgentDeploy.ts": {
       "count": 1,
@@ -241,7 +335,12 @@
         "o_vendorConfig"
       ],
       "confirmed": true,
-      "note": "[7 leftJoin o_vendorConfig] 被 join 表 o_vendorConfig 策略=platform（附录 A：管理员专用）。现状：**无任何鉴权**，任意登录用户即可读到全表 o_agentDeploy 与 o_vendorConfig 列（供应商 key 明文存储，见附录 C「密钥回传」）。Phase 1b：整个 /api/setting/agentDeploy/* 加 requireAdmin，o_vendorConfig 的 key 加密存储且不回传；不加租户条件（platform 表对所有租户相同），但要防越权读取。"
+      "note": "[7 leftJoin o_vendorConfig] 被 join 表 o_vendorConfig 策略=platform（附录 A：管理员专用）。现状：**无任何鉴权**，任意登录用户即可读到全表 o_agentDeploy 与 o_vendorConfig 列（供应商 key 明文存储，见附录 C「密钥回传」）。Phase 1b：整个 /api/setting/agentDeploy/* 加 requireAdmin，o_vendorConfig 的 key 加密存储且不回传；不加租户条件（platform 表对所有租户相同），但要防越权读取。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "tenant-guard.test.ts#没有 ctx → 租户表抛 TenantContextError；平台表读仍然放行（登录前要取 tokenKey）",
+        "note": "join 目标 o_vendorConfig 是 **platform** 表 ⇒ 守卫不加租户条件（语义正确：供应商配置对所有租户相同）。⚠ **仍欠账（Phase 1c）**：本路由**尚未挂 `requireAdmin`** ⇒ 「任意登录用户可读供应商配置（key 明文）」 仍成立；Task 7 只处置了 6 个运维接口。已登记进 §Phase 1c。"
+      }
     },
     "apps/api/src/routes/task/getTaskApi.ts": {
       "count": 1,
@@ -252,7 +351,12 @@
         "o_project"
       ],
       "confirmed": true,
-      "note": "[21 leftJoin o_project] 被 join 表 o_project 策略=tenant（附录 A：已有 userId 列但当前未真写入）。现状：projectId 是**可选**过滤条件——不传时这条查询会返回**全部租户**的任务，是当前最直接的越权读。Phase 1b：o_tasks 补 userId 后强制加 o_tasks.userId=ctx.userId（o_project 同补），projectId 只能在租户条件之内进一步收窄。"
+      "note": "[21 leftJoin o_project] 被 join 表 o_project 策略=tenant（附录 A：已有 userId 列但当前未真写入）。现状：projectId 是**可选**过滤条件——不传时这条查询会返回**全部租户**的任务，是当前最直接的越权读。Phase 1b：o_tasks 补 userId 后强制加 o_tasks.userId=ctx.userId（o_project 同补），projectId 只能在租户条件之内进一步收窄。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "tenant-guard.test.ts#只回自己的行；按越权 id 查返回空",
+        "note": "join 目标 o_project 是租户表 ⇒ 守卫注入条件；该接口 projectId **可选**（不传时改造前返回全租户），现在不传也只会回自己的任务（「只回自己的行；按越权 id 查返回空」用例）。代码无需改，但端到端用例归 Task 9。"
+      }
     }
   },
   "raws": {
@@ -262,16 +366,12 @@
         207
       ],
       "confirmed": true,
-      "note": "[162 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。⚠ 行号 112 → **162** 是必做修复轮（【裁定 A】把目标护栏接进 connect()）在文件头新增注释导致的位移；**处数与 SQL 文本均未变**（仍是 `select 1`），本条结论不受影响。"
-    },
-    "apps/api/src/db/legacy/import.ts": {
-      "count": 2,
-      "lines": [
-        1341,
-        1351
-      ],
-      "confirmed": true,
-      "note": "[1341/1351 src.raw(\"?? as ??\", [col, \"__v\"])] 处置（Task 8 Step 1）：这是 `extremeRowPicks()` 的**边界抽样**取数。两条都是 knex 的**标识符占位符**（`??` = 转义列名/表名，不是值绑定），实参只有 `col`（来自 `columnInfo()` 的**真实列名**）与常量 `\"__v\"` —— 没有任何来自请求/用户的字符串被拼进 SQL；返回的也只是主键 + 那一列，不返回整行业务数据。\n它读的**不是**应用库：调用方是 `scripts/extreme-picks-runner.ts`，传进来的 `src` 是它用 `createKnex({ db: { driver: \"sqlite\", file: SRC } })` 建的 **knex 句柄**（`extreme-picks-runner.ts:68-70`）—— **不是** `better-sqlite3` 的 `{ readonly: true }` 连接（那个连接在同一文件里**另建**，见 `:81-83`，只用于按主键取整行）。knex 这条句柄**没有** readonly 开关：它的\"只读\"来自两点 —— ① `extremeRowPicks()` 只发 SELECT；② 源库快照的 sha256 前后一致断言（`scripts/export-sqlite.cjs`；注意那条只覆盖**导出**那一步，不覆盖这一步）。Phase 1b 判策略时请按**「不在请求上下文的 knex 句柄、只发 SELECT」**理解，**不要**按\"已打开为 readonly 的连接\"理解。没有请求上下文、不对 `o_*` 表做 join、也完全不碰目标库，因此**不参与租户过滤**；Phase 1b 的 `policies.ts` 不得给它注入租户条件。\n为什么用 raw：要按 `LENGTH(col)` 排序 / 取极值，query builder 表达不了\"列名\"这一维（同函数里的 `orderByRaw(\"LENGTH(??) DESC\", [col])` 是同一套参数化写法，只是没被本门禁的正则扫到）。"
+      "note": "[162 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。⚠ 行号 112 → **162** 是必做修复轮（【裁定 A】把目标护栏接进 connect()）在文件头新增注释导致的位移；**处数与 SQL 文本均未变**（仍是 `select 1`），本条结论不受影响。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#raw 的处置：提及租户表 → 抛；纯表达式（GROUP_CONCAT）→ 放行",
+        "note": "启动期**驱动探活** `await db.raw(\"select 1\")`：不碰任何 `o_*` 表、不返回行数据、没有请求上下文 ⇒ 守卫的 raw 复核对「纯表达式/非租户表」放行（正确）。"
+      }
     },
     "apps/api/src/db/tenant-guard.ts": {
       "count": 2,
@@ -280,7 +380,12 @@
         537
       ],
       "confirmed": true,
-      "note": "[522/534 guarded.raw 的两个入口] 处置（Task 2 Step 3；**行号与处数由 Task 3 修复轮 2 重钉**）：这两处 `raw` 都是**守卫自己**的包装点（534 = 顶层 `guarded.raw`，522 = `guardTrx` 里的事务入口），不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」与「M3b」两条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。⑤ 修复轮 1（M3/表名大小写 M4）+ **Task 3 修复轮 2**：`trx.raw` 与顶层 `raw` **共用同一个检查**（`assertRawSafe`），但**各自绑定自己的连接** —— 修复轮 1 曾写成\"复用顶层实现\"，而复用时走的是根连接 ⇒ 事务里的**合法** `trx.raw` 落到事务外，sqlite 池 max=1 时与持有连接的事务**互等**（实测把既有用例挂到 5s 超时）。所以清单里现在是**两处**机械扫点；`mentionsTenantTable` 的比较已**不分大小写**（`delete from O_TASKS` 也拦），`raw` 的判据不变。⑥ 该行的注释文字刻意不写 `.raw` 紧跟左括号的形态（散文里的 `xxx.raw(...)` 会被本门禁的正则算成一处 `raw`），以免清单里出现一个「注释行被当成调用点」的假条目 —— Task 3 修复轮 2 的新注释也遵守了这一条（首录时曾多出 2 处假点，改回后 1→2 处全部是真调用点）。"
+      "note": "[522/534 guarded.raw 的两个入口] 处置（Task 2 Step 3；**行号与处数由 Task 3 修复轮 2 重钉**）：这两处 `raw` 都是**守卫自己**的包装点（534 = 顶层 `guarded.raw`，522 = `guardTrx` 里的事务入口），不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」与「M3b」两条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。⑤ 修复轮 1（M3/表名大小写 M4）+ **Task 3 修复轮 2**：`trx.raw` 与顶层 `raw` **共用同一个检查**（`assertRawSafe`），但**各自绑定自己的连接** —— 修复轮 1 曾写成\"复用顶层实现\"，而复用时走的是根连接 ⇒ 事务里的**合法** `trx.raw` 落到事务外，sqlite 池 max=1 时与持有连接的事务**互等**（实测把既有用例挂到 5s 超时）。所以清单里现在是**两处**机械扫点；`mentionsTenantTable` 的比较已**不分大小写**（`delete from O_TASKS` 也拦），`raw` 的判据不变。⑥ 该行的注释文字刻意不写 `.raw` 紧跟左括号的形态（散文里的 `xxx.raw(...)` 会被本门禁的正则算成一处 `raw`），以免清单里出现一个「注释行被当成调用点」的假条目 —— Task 3 修复轮 2 的新注释也遵守了这一条（首录时曾多出 2 处假点，改回后 1→2 处全部是真调用点）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#raw 的处置：提及租户表 → 抛；纯表达式（GROUP_CONCAT）→ 放行",
+        "note": "守卫**自身**的 raw 通道实现：先 `assertRawSafe(sql)`（提及租户表就抛、纯表达式放行）再转发给底层 `trx.raw` / `knex.raw` ⇒ 这两处就是隔离机制本身，不是绕过口。"
+      }
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,
@@ -288,7 +393,12 @@
         42
       ],
       "confirmed": true,
-      "note": "[42 db.raw(\"GROUP_CONCAT(n.chapterIndex)\")] 处置（spec §7.3 / §6.3）：本文件整体改走 u.db 包装层并加租户条件（与 joins 条目同一处改动），raw 要么换成 knex 的聚合写法，要么保留但由包装层显式放行并带上 ctx 条件。跨库注意：目标库换成 MySQL 后 GROUP_CONCAT 受 group_concat_max_len 限制（默认 1024 字节），章节序号多的项目会被**静默截断**，Phase 1b 需在连接级设置或改用应用层聚合。"
+      "note": "[42 db.raw(\"GROUP_CONCAT(n.chapterIndex)\")] 处置（spec §7.3 / §6.3）：本文件整体改走 u.db 包装层并加租户条件（与 joins 条目同一处改动），raw 要么换成 knex 的聚合写法，要么保留但由包装层显式放行并带上 ctx 条件。跨库注意：目标库换成 MySQL 后 GROUP_CONCAT 受 group_concat_max_len 限制（默认 1024 字节），章节序号多的项目会被**静默截断**，Phase 1b 需在连接级设置或改用应用层聚合。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "get-event-tenant-scope.test.ts#① 本租户项目：看得到自己的事件、看不到别人的（含 GROUP_CONCAT 聚合）",
+        "note": "`u.db.raw(\"GROUP_CONCAT(n.chapterIndex)\")` 只作**表达式**（SQL 文本里没有租户表名）⇒ 守卫放行；主表/两处 join 的租户条件由守卫注入。若有人改成 `u.db.raw(\"(select … from o_event …)\")`，守卫会抛 `TenantIsolationError`（有意）。"
+      }
     },
     "apps/api/src/routes/setting/dbConfig/clearData.ts": {
       "count": 3,
@@ -298,7 +408,12 @@
         23
       ],
       "confirmed": true,
-      "note": "[11 读 sqlite_master][16 PRAGMA foreign_keys=OFF][20 PRAGMA foreign_keys=ON] 处置（spec §7.3）：requireAdmin + **默认关闭**（需显式环境变量开启）+ 审计。现状是无鉴权的「drop 全库并重新 initDB」接口；Phase 1b 起这些 raw 只在显式开启后可达，且 PRAGMA/整库操作不参与租户过滤（它们是实例级运维操作，不是租户数据访问）。"
+      "note": "[11 读 sqlite_master][16 PRAGMA foreign_keys=OFF][20 PRAGMA foreign_keys=ON] 处置（spec §7.3）：requireAdmin + **默认关闭**（需显式环境变量开启）+ 审计。现状是无鉴权的「drop 全库并重新 initDB」接口；Phase 1b 起这些 raw 只在显式开启后可达，且 PRAGMA/整库操作不参与租户过滤（它们是实例级运维操作，不是租户数据访问）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ `sqlite_master` 是 sqlite 方言，MySQL 下不可用 ⇒ Phase 1c）"
+      }
     },
     "apps/api/src/routes/setting/dbConfig/clearTable.ts": {
       "count": 2,
@@ -307,7 +422,12 @@
         27
       ],
       "confirmed": true,
-      "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。第 23 行用**表名插值**拼 SQL（仅表名走白名单校验，值没有参数化）；Phase 1b 若要保留，改成 knex 的 .del()/.truncate() 并统一走包装层，避免手写 SQL 成为隔离缺口。"
+      "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。第 23 行用**表名插值**拼 SQL（仅表名走白名单校验，值没有参数化）；Phase 1b 若要保留，改成 knex 的 .del()/.truncate() 并统一走包装层，避免手写 SQL 成为隔离缺口。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ **表名插值** `DELETE FROM \"${tableName}\"`：值本身是参数化的，**表名**只做了「存在」校验、没有「允许被清」的白名单 ⇒ Phase 1c）"
+      }
     },
     "apps/api/src/routes/setting/dbConfig/dbInfo.ts": {
       "count": 2,
@@ -316,7 +436,12 @@
         20
       ],
       "confirmed": true,
-      "note": "[9 读 sqlite_master][15 SELECT COUNT(*) FROM \"${table.name}\"] 处置（spec §7.3 / 附录 B.1）：接口**保留但收权 + 脱敏**。第 15 行是**参数化安全**的（表名来自第 9 行枚举，不含用户输入），Phase 1b 只需 requireAdmin；若将来把行数按租户展示，必须改成经包装层带 userId 的计数，不能用全表 COUNT(*)。"
+      "note": "[9 读 sqlite_master][15 SELECT COUNT(*) FROM \"${table.name}\"] 处置（spec §7.3 / 附录 B.1）：接口**保留但收权 + 脱敏**。第 15 行是**参数化安全**的（表名来自第 9 行枚举，不含用户输入），Phase 1b 只需 requireAdmin；若将来把行数按租户展示，必须改成经包装层带 userId 的计数，不能用全表 COUNT(*)。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ `sqlite_master` 是 sqlite 方言，MySQL 下不可用 ⇒ Phase 1c）"
+      }
     },
     "apps/api/src/routes/setting/dbConfig/exportData.ts": {
       "count": 2,
@@ -325,7 +450,12 @@
         33
       ],
       "confirmed": true,
-      "note": "[9 读 sqlite_master][15 SELECT * FROM \"${table.name}\"] 处置（spec §7.3）：requireAdmin + **脱敏**（剔除 passwordHash / inputValues / tokenKey）+ 审计。现状是「任意登录用户一条 GET 导出整库」，含 o_user 密码哈希与 o_vendorConfig 明文 key；Phase 1b 必须先把脱敏做进导出行，再谈租户过滤（导出是实例级运维动作，不做租户过滤，所以只能靠收权 + 脱敏兜住）。"
+      "note": "[9 读 sqlite_master][15 SELECT * FROM \"${table.name}\"] 处置（spec §7.3）：requireAdmin + **脱敏**（剔除 passwordHash / inputValues / tokenKey）+ 审计。现状是「任意登录用户一条 GET 导出整库」，含 o_user 密码哈希与 o_vendorConfig 明文 key；Phase 1b 必须先把脱敏做进导出行，再谈租户过滤（导出是实例级运维动作，不做租户过滤，所以只能靠收权 + 脱敏兜住）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（另：导出**已剔除** `o_setting.tokenKey` 行，见 `EXCLUDED_EXPORT_ROWS`；`o_user.password`/`o_vendorConfig.inputValues` 的脱敏归 Phase 1c）"
+      }
     },
     "apps/api/src/routes/setting/dbConfig/importData.ts": {
       "count": 7,
@@ -339,44 +469,205 @@
         54
       ],
       "confirmed": true,
-      "note": "[16 读 sqlite_master][20 PRAGMA OFF][24 PRAGMA ON][30 PRAGMA OFF][35 读 sqlite_master][42 DELETE FROM \"${tableName}\"][49 PRAGMA ON] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。现状：任意登录用户 POST 一个 JSON 就能先 drop 所有表再灌入任意数据（第 46 行还用 db(tableName).insert(batch) 直写整库）。Phase 1b 默认关闭该接口；若仍要保留，导入的表名与列必须走白名单，并明确它是「整库恢复」而不是租户级写入。"
+      "note": "[16 读 sqlite_master][20 PRAGMA OFF][24 PRAGMA ON][30 PRAGMA OFF][35 读 sqlite_master][42 DELETE FROM \"${tableName}\"][49 PRAGMA ON] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。现状：任意登录用户 POST 一个 JSON 就能先 drop 所有表再灌入任意数据（第 46 行还用 db(tableName).insert(batch) 直写整库）。Phase 1b 默认关闭该接口；若仍要保留，导入的表名与列必须走白名单，并明确它是「整库恢复」而不是租户级写入。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ 无表名/列白名单；sqlite 方言 `sqlite_master`/PRAGMA ⇒ Phase 1c）"
+      }
+    }
+  },
+  "systemDbUsers": {
+    "apps/api/src/lib/fixDB.ts": {
+      "confirmed": true,
+      "note": "处置（Task 3，**新增条目**）：**改走 systemDb**（裸 knex），不再用默认导出。理由：本文件是 Phase 1a 摘除启动路径后留下的**死代码**（保留只为 `tools/check-copy.cjs:94` 的存在性断言，删除归 Phase 1c），它的动作是\"启动期改库\"（矫正 `state='生成中'` 的残留行、补列、补平台种子行）——**不属于任何租户**；用守卫（默认导出）会让它在无 ctx 时抛错，那种报错在死代码里毫无价值、只会误导下一个人。具体改动：第 40 行 `import db from \"@/utils/db\"` → `import { systemDb as db } from \"@/utils/db\"`；第 38 行 `import u from \"@/utils\"` 换成一行注释（**保持行数**，让清单里本文件的 join 行号 176 不漂）；8 处 `u.db(...)` 改成 `db(...)`（同一行内替换，行数不变）。判据：`tests/tenant-db-bypass.test.ts` 的**逐文件**断言 + 本清单的 bypassFiles 枚举（门禁靠 `as db` 别名恰好仍能扫到，这是巧合不是设计 —— 计划 Task 8 会把 `systemDb` 显式纳入扫描并落地 `systemDbUsers`）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "route-removed-later",
+        "evidence": "tenant-guard.test.ts#没有 ctx → 租户表抛 TenantContextError；平台表读仍然放行（登录前要取 tokenKey）",
+        "note": "启动期改库（无请求上下文）走 `systemDb`；本文件是 Phase 1a 摘掉启动路径后的**死代码** ⇒ Phase 1c 删除。"
+      }
+    },
+    "apps/api/src/routes/setting/dbConfig/clearData.ts": {
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（无 ctx 401 / 非 admin 403）；**\"默认关闭/显式环境变量\"未做** —— 任务书（Ruling 240 #4）明确禁止新增 `MIWO_*` 开关，故只收权。`tests/ops-endpoints-auth.test.ts` 覆盖真应用+真 HTTP：普通 token 403 且**直读快照逐项不变**（一行没被 drop）。⚠ 第 11/16/20 行的 `sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效 ⇒ Phase 1c。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（clearData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
+    },
+    "apps/api/src/routes/setting/dbConfig/clearTable.ts": {
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`；**\"默认关闭\"未做**（禁止新增 `MIWO_*` 开关，Ruling 240 #4）；表名白名单仍归 Phase 1c。判别力：普通 token 403 且**直读确认 marker 行没被删**；admin token 打同一路径 **200 且该行真的没了**（正向对照，见 `tests/ops-endpoints-auth.test.ts` ④）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（clearTable.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
+    },
+    "apps/api/src/routes/setting/dbConfig/dbInfo.ts": {
+      "confirmed": true,
+      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403；admin 200，实测）；返回体仍是 `{name,rowCount}`（**表名 + 总行数**）—— 回填之后行数已能反映租户规模，若将来要按租户展示必须走包装层带 userId 的计数（Phase 1c）。⚠ 第 9 行 `sqlite_master` 是 sqlite 方言，MySQL 下无效。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（dbInfo.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
+    },
+    "apps/api/src/routes/setting/dbConfig/exportData.ts": {
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。**【Task 7 实际处置·2026-10-13】**：① 已挂 `requireAdmin`（普通 token 403）；② **已剔除 `o_setting.tokenKey` 行**（`EXCLUDED_EXPORT_ROWS` 常量）—— 它是 JWT 签名密钥，泄露=可伪造任意用户（含 admin）的 token；剔除**不破坏往返**（`db/legacy/import.ts` 本就把 tokenKey 列为\"绝不导回\"）。用例：admin 导出 200 且响应体**不含密钥值与 key 名**，同时**正向对照**断言导出确实含 `o_setting` 表（防\"什么都没导\"的假绿）。⚠ `o_user.password` / `o_vendorConfig.inputValues` 的脱敏**未做**：掩掉它们会让\"恢复备份后登录不上 / 供应商配置失效\"，是功能取舍，归 Phase 1c（已上报）。⚠ 第 27/33 行 `sqlite_master` 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（exportData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
+    },
+    "apps/api/src/routes/setting/dbConfig/importData.ts": {
+      "confirmed": true,
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403 且直读确认**没有 drop/灌入**）；**\"默认关闭\"与\"表名/列白名单\"未做**（前者禁止新增 `MIWO_*` 开关，Ruling 240 #4；后者归 Phase 1c）。⚠ 本接口**不做租户过滤**（整库恢复语义）⇒ 只能靠\"收权 + 白名单\"兜住，别给它注入租户条件。⚠ 第 21/25/29/35/40/47/54 行的 `sqlite_master`/PRAGMA 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（importData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
     }
   },
   "bypassFiles": [
     {
       "path": "apps/api/src/lib/fixDB.ts",
       "confirmed": true,
-      "note": "处置（Task 3，**新增条目**）：**改走 systemDb**（裸 knex），不再用默认导出。理由：本文件是 Phase 1a 摘除启动路径后留下的**死代码**（保留只为 `tools/check-copy.cjs:94` 的存在性断言，删除归 Phase 1c），它的动作是\"启动期改库\"（矫正 `state='生成中'` 的残留行、补列、补平台种子行）——**不属于任何租户**；用守卫（默认导出）会让它在无 ctx 时抛错，那种报错在死代码里毫无价值、只会误导下一个人。具体改动：第 40 行 `import db from \"@/utils/db\"` → `import { systemDb as db } from \"@/utils/db\"`；第 38 行 `import u from \"@/utils\"` 换成一行注释（**保持行数**，让清单里本文件的 join 行号 176 不漂）；8 处 `u.db(...)` 改成 `db(...)`（同一行内替换，行数不变）。判据：`tests/tenant-db-bypass.test.ts` 的**逐文件**断言 + 本清单的 bypassFiles 枚举（门禁靠 `as db` 别名恰好仍能扫到，这是巧合不是设计 —— 计划 Task 8 会把 `systemDb` 显式纳入扫描并落地 `systemDbUsers`）。"
+      "note": "处置（Task 3，**新增条目**）：**改走 systemDb**（裸 knex），不再用默认导出。理由：本文件是 Phase 1a 摘除启动路径后留下的**死代码**（保留只为 `tools/check-copy.cjs:94` 的存在性断言，删除归 Phase 1c），它的动作是\"启动期改库\"（矫正 `state='生成中'` 的残留行、补列、补平台种子行）——**不属于任何租户**；用守卫（默认导出）会让它在无 ctx 时抛错，那种报错在死代码里毫无价值、只会误导下一个人。具体改动：第 40 行 `import db from \"@/utils/db\"` → `import { systemDb as db } from \"@/utils/db\"`；第 38 行 `import u from \"@/utils\"` 换成一行注释（**保持行数**，让清单里本文件的 join 行号 176 不漂）；8 处 `u.db(...)` 改成 `db(...)`（同一行内替换，行数不变）。判据：`tests/tenant-db-bypass.test.ts` 的**逐文件**断言 + 本清单的 bypassFiles 枚举（门禁靠 `as db` 别名恰好仍能扫到，这是巧合不是设计 —— 计划 Task 8 会把 `systemDb` 显式纳入扫描并落地 `systemDbUsers`）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "route-removed-later",
+        "evidence": "tenant-guard.test.ts#没有 ctx → 租户表抛 TenantContextError；平台表读仍然放行（登录前要取 tokenKey）",
+        "note": "启动期改库（无请求上下文）走 `systemDb`；本文件是 Phase 1a 摘掉启动路径后的**死代码** ⇒ Phase 1c 删除。"
+      }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（无 ctx 401 / 非 admin 403）；**\"默认关闭/显式环境变量\"未做** —— 任务书（Ruling 240 #4）明确禁止新增 `MIWO_*` 开关，故只收权。`tests/ops-endpoints-auth.test.ts` 覆盖真应用+真 HTTP：普通 token 403 且**直读快照逐项不变**（一行没被 drop）。⚠ 第 11/16/20 行的 `sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效 ⇒ Phase 1c。"
+      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（无 ctx 401 / 非 admin 403）；**\"默认关闭/显式环境变量\"未做** —— 任务书（Ruling 240 #4）明确禁止新增 `MIWO_*` 开关，故只收权。`tests/ops-endpoints-auth.test.ts` 覆盖真应用+真 HTTP：普通 token 403 且**直读快照逐项不变**（一行没被 drop）。⚠ 第 11/16/20 行的 `sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效 ⇒ Phase 1c。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（clearData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearTable.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`；**\"默认关闭\"未做**（禁止新增 `MIWO_*` 开关，Ruling 240 #4）；表名白名单仍归 Phase 1c。判别力：普通 token 403 且**直读确认 marker 行没被删**；admin token 打同一路径 **200 且该行真的没了**（正向对照，见 `tests/ops-endpoints-auth.test.ts` ④）。"
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`；**\"默认关闭\"未做**（禁止新增 `MIWO_*` 开关，Ruling 240 #4）；表名白名单仍归 Phase 1c。判别力：普通 token 403 且**直读确认 marker 行没被删**；admin token 打同一路径 **200 且该行真的没了**（正向对照，见 `tests/ops-endpoints-auth.test.ts` ④）。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（clearTable.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/dbInfo.ts",
       "confirmed": true,
-      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403；admin 200，实测）；返回体仍是 `{name,rowCount}`（**表名 + 总行数**）—— 回填之后行数已能反映租户规模，若将来要按租户展示必须走包装层带 userId 的计数（Phase 1c）。⚠ 第 9 行 `sqlite_master` 是 sqlite 方言，MySQL 下无效。"
+      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403；admin 200，实测）；返回体仍是 `{name,rowCount}`（**表名 + 总行数**）—— 回填之后行数已能反映租户规模，若将来要按租户展示必须走包装层带 userId 的计数（Phase 1c）。⚠ 第 9 行 `sqlite_master` 是 sqlite 方言，MySQL 下无效。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（dbInfo.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/exportData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。**【Task 7 实际处置·2026-10-13】**：① 已挂 `requireAdmin`（普通 token 403）；② **已剔除 `o_setting.tokenKey` 行**（`EXCLUDED_EXPORT_ROWS` 常量）—— 它是 JWT 签名密钥，泄露=可伪造任意用户（含 admin）的 token；剔除**不破坏往返**（`db/legacy/import.ts` 本就把 tokenKey 列为\"绝不导回\"）。用例：admin 导出 200 且响应体**不含密钥值与 key 名**，同时**正向对照**断言导出确实含 `o_setting` 表（防\"什么都没导\"的假绿）。⚠ `o_user.password` / `o_vendorConfig.inputValues` 的脱敏**未做**：掩掉它们会让\"恢复备份后登录不上 / 供应商配置失效\"，是功能取舍，归 Phase 1c（已上报）。⚠ 第 27/33 行 `sqlite_master` 是 sqlite 方言。"
+      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。**【Task 7 实际处置·2026-10-13】**：① 已挂 `requireAdmin`（普通 token 403）；② **已剔除 `o_setting.tokenKey` 行**（`EXCLUDED_EXPORT_ROWS` 常量）—— 它是 JWT 签名密钥，泄露=可伪造任意用户（含 admin）的 token；剔除**不破坏往返**（`db/legacy/import.ts` 本就把 tokenKey 列为\"绝不导回\"）。用例：admin 导出 200 且响应体**不含密钥值与 key 名**，同时**正向对照**断言导出确实含 `o_setting` 表（防\"什么都没导\"的假绿）。⚠ `o_user.password` / `o_vendorConfig.inputValues` 的脱敏**未做**：掩掉它们会让\"恢复备份后登录不上 / 供应商配置失效\"，是功能取舍，归 Phase 1c（已上报）。⚠ 第 27/33 行 `sqlite_master` 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（exportData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/importData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403 且直读确认**没有 drop/灌入**）；**\"默认关闭\"与\"表名/列白名单\"未做**（前者禁止新增 `MIWO_*` 开关，Ruling 240 #4；后者归 Phase 1c）。⚠ 本接口**不做租户过滤**（整库恢复语义）⇒ 只能靠\"收权 + 白名单\"兜住，别给它注入租户条件。⚠ 第 21/25/29/35/40/47/54 行的 `sqlite_master`/PRAGMA 是 sqlite 方言。"
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403 且直读确认**没有 drop/灌入**）；**\"默认关闭\"与\"表名/列白名单\"未做**（前者禁止新增 `MIWO_*` 开关，Ruling 240 #4；后者归 Phase 1c）。⚠ 本接口**不做租户过滤**（整库恢复语义）⇒ 只能靠\"收权 + 白名单\"兜住，别给它注入租户条件。⚠ 第 21/25/29/35/40/47/54 行的 `sqlite_master`/PRAGMA 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "运维接口（importData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+      }
+    }
+  ],
+  "bypassFilesHistory": [
+    {
+      "path": "apps/api/src/routes/novel/event/getEvent.ts",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "get-event-tenant-scope.test.ts#② 别人的项目 id：一行都看不到（改前这里会返回 OTHER-EVENT）",
+        "note": "附录 B.1 绕过口之一（裸 `import { db }` + `db.raw`）。**Task 3 已改走守卫**（`u.db` + `u.db.raw`），三处一起改：bypass / 两处 join / 一处 raw；Task 7 用真中间件 + 真 HTTP 钉住跨租户两端。"
+      },
+      "note": "附录 B.1 绕过口之一（裸 `import { db }` + `db.raw`）。**Task 3 已改走守卫**（`u.db` + `u.db.raw`），三处一起改：bypass / 两处 join / 一处 raw；Task 7 用真中间件 + 真 HTTP 钉住跨租户两端。"
+    },
+    {
+      "path": "apps/api/src/routes/other/deleteAllData.ts",
+      "phase1b": {
+        "disposition": "route-removed-later",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "附录 B.1 绕过口之一。**Task 7 已停用**（无条件 HTTP 501，连 admin 也打不动），并摘掉 `initDB`/`systemDb` 依赖 ⇒ **零 DB 面**（因此不在 systemDbUsers/bypassFiles 里）。「修好 vs 彻底删除」登记为 Phase 1c/2 决策项。"
+      },
+      "note": "附录 B.1 绕过口之一。**Task 7 已停用**（无条件 HTTP 501，连 admin 也打不动），并摘掉 `initDB`/`systemDb` 依赖 ⇒ **零 DB 面**（因此不在 systemDbUsers/bypassFiles 里）。「修好 vs 彻底删除」登记为 Phase 1c/2 决策项。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+      },
+      "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/clearTable.ts",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+      },
+      "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/dbInfo.ts",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+      },
+      "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/exportData.ts",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+      },
+      "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+    },
+    {
+      "path": "apps/api/src/routes/setting/dbConfig/importData.ts",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
+      },
+      "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
     }
   ],
   "directDbImports": [
     "apps/api/src/utils.ts",
     "apps/api/src/utils/agent/embedding.ts",
     "apps/api/src/utils/taskRecord.ts"
+  ],
+  "knexImports": [
+    "apps/api/src/db/connect.ts",
+    "apps/api/src/lib/fixDB.ts",
+    "apps/api/src/lib/initDB.ts"
   ]
 }
