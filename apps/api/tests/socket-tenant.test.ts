@@ -209,6 +209,28 @@ describe("B. 真实 socket route handler（handler 层端到端；**不含传输
     expect(ids).not.toContain(FOREIGN_PROJECT);
   });
 
+  it("★ 已包 ctx 的 handler **写**库：只改本租户的行；跨租户 update 影响 0 行（直读库核对）", async () => {
+    const connection = captureConnection(scriptAgentRoute as unknown as (nsp: any) => void);
+    const { socket, fire } = fakeSocket({ token: token7(), projectId: OWN_PROJECT });
+    await connection(socket);
+
+    let affectedOwn: any = null;
+    let affectedForeign: any = null;
+    socket.on("probe", async () => {
+      affectedOwn = await u.db("o_project").where("id", OWN_PROJECT2).update({ name: "socket-updated" });
+      affectedForeign = await u.db("o_project").where("id", FOREIGN_PROJECT).update({ name: "HACKED-BY-7" });
+    });
+    await fire("probe");
+
+    // ⚠ 用 systemDb **直读库**核对真实状态（拿守卫自己的返回值为证会自证循环）
+    const own = await systemDb("o_project").where("id", OWN_PROJECT2).first();
+    const foreign = await systemDb("o_project").where("id", FOREIGN_PROJECT).first();
+    expect(Number(affectedOwn)).toBe(1);
+    expect(Number(affectedForeign)).toBe(0);
+    expect(own.name).toBe("socket-updated");
+    expect(foreign.name, "别人的行必须一字未动").toBe("socket-foreign");
+  });
+
   it("scriptAgent：用**别人**的 projectId → 连接被拒（且不绑定 ctx）", async () => {
     const connection = captureConnection(scriptAgentRoute as unknown as (nsp: any) => void);
     const { socket, fire } = fakeSocket({ token: token7(), projectId: FOREIGN_PROJECT });
