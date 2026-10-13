@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T19:42:10.613Z",
+  "generatedAt": "2026-10-13T20:14:23.660Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -259,7 +259,7 @@
     "apps/api/src/db/connect.ts": {
       "count": 1,
       "lines": [
-        162
+        192
       ],
       "confirmed": true,
       "note": "[162 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。⚠ 行号 112 → **162** 是必做修复轮（【裁定 A】把目标护栏接进 connect()）在文件头新增注释导致的位移；**处数与 SQL 文本均未变**（仍是 `select 1`），本条结论不受影响。"
@@ -293,9 +293,9 @@
     "apps/api/src/routes/setting/dbConfig/clearData.ts": {
       "count": 3,
       "lines": [
-        11,
-        16,
-        20
+        14,
+        19,
+        23
       ],
       "confirmed": true,
       "note": "[11 读 sqlite_master][16 PRAGMA foreign_keys=OFF][20 PRAGMA foreign_keys=ON] 处置（spec §7.3）：requireAdmin + **默认关闭**（需显式环境变量开启）+ 审计。现状是无鉴权的「drop 全库并重新 initDB」接口；Phase 1b 起这些 raw 只在显式开启后可达，且 PRAGMA/整库操作不参与租户过滤（它们是实例级运维操作，不是租户数据访问）。"
@@ -303,8 +303,8 @@
     "apps/api/src/routes/setting/dbConfig/clearTable.ts": {
       "count": 2,
       "lines": [
-        15,
-        23
+        19,
+        27
       ],
       "confirmed": true,
       "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。第 23 行用**表名插值**拼 SQL（仅表名走白名单校验，值没有参数化）；Phase 1b 若要保留，改成 knex 的 .del()/.truncate() 并统一走包装层，避免手写 SQL 成为隔离缺口。"
@@ -312,8 +312,8 @@
     "apps/api/src/routes/setting/dbConfig/dbInfo.ts": {
       "count": 2,
       "lines": [
-        9,
-        15
+        14,
+        20
       ],
       "confirmed": true,
       "note": "[9 读 sqlite_master][15 SELECT COUNT(*) FROM \"${table.name}\"] 处置（spec §7.3 / 附录 B.1）：接口**保留但收权 + 脱敏**。第 15 行是**参数化安全**的（表名来自第 9 行枚举，不含用户输入），Phase 1b 只需 requireAdmin；若将来把行数按租户展示，必须改成经包装层带 userId 的计数，不能用全表 COUNT(*)。"
@@ -321,8 +321,8 @@
     "apps/api/src/routes/setting/dbConfig/exportData.ts": {
       "count": 2,
       "lines": [
-        9,
-        15
+        27,
+        33
       ],
       "confirmed": true,
       "note": "[9 读 sqlite_master][15 SELECT * FROM \"${table.name}\"] 处置（spec §7.3）：requireAdmin + **脱敏**（剔除 passwordHash / inputValues / tokenKey）+ 审计。现状是「任意登录用户一条 GET 导出整库」，含 o_user 密码哈希与 o_vendorConfig 明文 key；Phase 1b 必须先把脱敏做进导出行，再谈租户过滤（导出是实例级运维动作，不做租户过滤，所以只能靠收权 + 脱敏兜住）。"
@@ -330,13 +330,13 @@
     "apps/api/src/routes/setting/dbConfig/importData.ts": {
       "count": 7,
       "lines": [
-        16,
-        20,
-        24,
-        30,
+        21,
+        25,
+        29,
         35,
-        42,
-        49
+        40,
+        47,
+        54
       ],
       "confirmed": true,
       "note": "[16 读 sqlite_master][20 PRAGMA OFF][24 PRAGMA ON][30 PRAGMA OFF][35 读 sqlite_master][42 DELETE FROM \"${tableName}\"][49 PRAGMA ON] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。现状：任意登录用户 POST 一个 JSON 就能先 drop 所有表再灌入任意数据（第 46 行还用 db(tableName).insert(batch) 直写整库）。Phase 1b 默认关闭该接口；若仍要保留，导入的表名与列必须走白名单，并明确它是「整库恢复」而不是租户级写入。"
@@ -351,32 +351,32 @@
     {
       "path": "apps/api/src/routes/other/deleteAllData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**接口删除**。现状是一句 initDB(db, true) 清空所有表，无鉴权、无环境开关、无审计；服务器版没有保留价值，Phase 1b 直接摘掉路由（连同 router 注册）。"
+      "note": "处置（spec §7.3）：**接口删除**。现状是一句 initDB(db, true) 清空所有表，无鉴权、无环境开关、无审计；服务器版没有保留价值，Phase 1b 直接摘掉路由（连同 router 注册）。**【Task 7 实际处置·2026-10-13】**：**未删除**（任务书要求只做\"收权\"且禁止新增开关）⇒ 改为挂 `requireAdmin`（无 ctx 401 / 非 admin 403），走 `systemDb`。收权前\"任意登录用户一条 POST 就能整库清空\"已闭合；`tests/ops-endpoints-auth.test.ts` 用真应用+真 HTTP 钉住（普通 token 403 且**直读确认一行没少**；admin 放行）。⚠ 另发现**预存在 bug**（与本次收权无关）：`initDB(db, true)` 在第一张表 `o_user` 上抛 `drop table \\`o_user\\` - database is locked` ⇒ 本接口当前 **500 且不生效**（实测：BEFORE/AFTER 表与行数完全不变）。未在本任务修（修好它 = 让\"整库清空\"真的能打，超出收权范围），已上报。"
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。"
+      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（无 ctx 401 / 非 admin 403）；**\"默认关闭/显式环境变量\"未做** —— 任务书（Ruling 240 #4）明确禁止新增 `MIWO_*` 开关，故只收权。`tests/ops-endpoints-auth.test.ts` 覆盖真应用+真 HTTP：普通 token 403 且**直读快照逐项不变**（一行没被 drop）。⚠ 第 11/16/20 行的 `sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效 ⇒ Phase 1c。"
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearTable.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。"
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`；**\"默认关闭\"未做**（禁止新增 `MIWO_*` 开关，Ruling 240 #4）；表名白名单仍归 Phase 1c。判别力：普通 token 403 且**直读确认 marker 行没被删**；admin token 打同一路径 **200 且该行真的没了**（正向对照，见 `tests/ops-endpoints-auth.test.ts` ④）。"
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/dbInfo.ts",
       "confirmed": true,
-      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。"
+      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403；admin 200，实测）；返回体仍是 `{name,rowCount}`（**表名 + 总行数**）—— 回填之后行数已能反映租户规模，若将来要按租户展示必须走包装层带 userId 的计数（Phase 1c）。⚠ 第 9 行 `sqlite_master` 是 sqlite 方言，MySQL 下无效。"
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/exportData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。"
+      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。**【Task 7 实际处置·2026-10-13】**：① 已挂 `requireAdmin`（普通 token 403）；② **已剔除 `o_setting.tokenKey` 行**（`EXCLUDED_EXPORT_ROWS` 常量）—— 它是 JWT 签名密钥，泄露=可伪造任意用户（含 admin）的 token；剔除**不破坏往返**（`db/legacy/import.ts` 本就把 tokenKey 列为\"绝不导回\"）。用例：admin 导出 200 且响应体**不含密钥值与 key 名**，同时**正向对照**断言导出确实含 `o_setting` 表（防\"什么都没导\"的假绿）。⚠ `o_user.password` / `o_vendorConfig.inputValues` 的脱敏**未做**：掩掉它们会让\"恢复备份后登录不上 / 供应商配置失效\"，是功能取舍，归 Phase 1c（已上报）。⚠ 第 27/33 行 `sqlite_master` 是 sqlite 方言。"
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/importData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。"
+      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403 且直读确认**没有 drop/灌入**）；**\"默认关闭\"与\"表名/列白名单\"未做**（前者禁止新增 `MIWO_*` 开关，Ruling 240 #4；后者归 Phase 1c）。⚠ 本接口**不做租户过滤**（整库恢复语义）⇒ 只能靠\"收权 + 白名单\"兜住，别给它注入租户条件。⚠ 第 21/25/29/35/40/47/54 行的 `sqlite_master`/PRAGMA 是 sqlite 方言。"
     }
   ],
   "directDbImports": [
