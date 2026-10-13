@@ -33,6 +33,28 @@
       mysqld.exe as a hidden child of this shell, "stop" shuts it down again.
     - --initialize-insecure means user root has NO password. That is acceptable
       only because bind-address is 127.0.0.1 on a developer machine.
+
+  !! READ THIS BEFORE CALLING -Action start FROM AN AGENT SESSION !!
+    "start" succeeds and then the CALLER'S COMMAND DOES NOT RETURN, because it leaves a
+    long-running daemon behind and the harness keeps waiting for the process tree to end.
+    Symptom: you see "mysql is listening on 127.0.0.1:3307" and then the call hangs forever;
+    it looks like a failure but the server is actually UP and usable. Two consequences:
+
+      1. Do NOT treat the hang as "could not start MySQL". Check the port instead:
+           Get-NetTCPConnection -LocalPort 3307 -State Listen
+      2. From an agent/harness session, run "start" as a BACKGROUND job, not inline
+         (the controller's tool for that is the managed background job). A human at a
+         terminal is not affected and can call it inline.
+
+    Also: calling "start" twice used to spawn a SECOND mysqld on the same datadir (that
+    corrupted nothing only by luck). "start" now refuses when an instance for this options
+    file is already up, and refuses when 127.0.0.1:3307 is owned by something else. Port 3307
+    is an EXCLUSIVE resource: one instance at a time.
+
+    "start" and "init" also strip Mark-of-the-Web from the extracted MySQL tree first
+    (see Clear-Motw below). mysqld.exe comes out of a downloaded ZIP, so Windows tags it
+    "from the Internet"; launching such a file pops a modal "Open File - Security Warning"
+    that nobody can click in an unattended session. Unblocking only drops that origin tag.
 #>
 param(
   [Parameter(Mandatory = $true)][ValidateSet("init","start","stop","status","createdb","cli")] [string]$Action,
@@ -50,10 +72,34 @@ $mysqld = Join-Path $mysql "bin\mysqld.exe"
 $mysqlc = Join-Path $mysql "bin\mysql.exe"
 $port   = 3307
 
+# Remove Mark-of-the-Web from the extracted MySQL tree.
+# mysqld.exe comes out of a ZIP that was downloaded, so Windows stamps it "from the Internet".
+# Launching such a file through ShellExecute pops a modal "Open File - Security Warning" dialog;
+# in an unattended (agent) session nobody can click it, so the server silently never starts --
+# which is exactly the "start said ok but nothing is listening" symptom seen in practice.
+# Unblock-File only drops that origin tag, it does NOT touch file content. Cheap and idempotent.
+function Clear-Motw {
+  param([string]$Root)
+  if (-not (Test-Path $Root)) { return }
+  try {
+    Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
+      Unblock-File -ErrorAction SilentlyContinue
+  } catch { }
+  # Unblock-File can miss files it cannot open; delete the ADS directly as a fallback.
+  try {
+    Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+      if (Get-Item -LiteralPath $_.FullName -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) {
+        Remove-Item -LiteralPath $_.FullName -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue
+      }
+    }
+  } catch { }
+}
+
 switch ($Action) {
   "init" {
     if (-not (Test-Path $mysqld)) { throw "mysqld not found: $mysqld (download + unzip first)" }
     if (-not (Test-Path $ini)) { throw "options file not found: $ini (see the 'data layer' section of README.md for its content)" }
+    Clear-Motw $mysql
     New-Item -ItemType Directory -Force -Path $data | Out-Null
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     if (Test-Path (Join-Path $data "auto.cnf")) { Write-Host "already initialized: $data"; break }
@@ -73,16 +119,42 @@ switch ($Action) {
   "start" {
     if (-not (Test-Path $mysqld)) { throw "mysqld not found: $mysqld" }
     if (-not (Test-Path $ini)) { throw "options file not found: $ini" }
+    # 3307 is an EXCLUSIVE resource (controller ruling 95). Refuse to start a second instance:
+    # two mysqld processes sharing one datadir corrupt it, and a duplicate silently doubles cost.
+    # This used to be a discipline ("remember not to start twice"); make the script enforce it.
+    $already = @(Get-CimInstance Win32_Process -Filter "Name='mysqld.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -and $_.CommandLine.Contains($ini) })
+    if ($already.Count -gt 0) {
+      Write-Host ("already running: pid " + (($already | ForEach-Object { $_.ProcessId }) -join ", ") + " (options file $ini) -- NOT starting a second one")
+      break
+    }
+    if (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue) {
+      throw "127.0.0.1:$port is already listening but no mysqld for $ini was found -- refusing to start (something else owns the port)"
+    }
+    Clear-Motw $mysql
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-    # Start-Process lets it detach from this console (mysqld would otherwise hold the prompt).
-    Start-Process -FilePath $mysqld -ArgumentList "--defaults-file=`"$ini`"" -WindowStyle Hidden
+    # Launch with REDIRECTED stdio on purpose. Redirection makes Start-Process go through
+    # CreateProcess instead of ShellExecute, and ShellExecute is the code path that shows the
+    # "Open File - Security Warning" dialog for downloaded executables (see Clear-Motw above).
+    # It also leaves a startup log, which the failure message below can point at.
+    $outLog = Join-Path $tmp "mysqld-start.out.log"
+    $errLog = Join-Path $tmp "mysqld-start.err.log"
+    Start-Process -FilePath $mysqld -ArgumentList "--defaults-file=`"$ini`"" -WindowStyle Hidden `
+      -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru | Out-Null
     for ($i = 0; $i -lt 60; $i++) {
       Start-Sleep -Milliseconds 500
       if (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue) {
         Write-Host "mysql is listening on 127.0.0.1:$port"
         break
       }
-      if ($i -eq 59) { throw "mysql did not start in 30s; see $data\error.log" }
+      if ($i -eq 59) {
+        Write-Host "---- tail of $errLog ----"
+        if (Test-Path $errLog) { Get-Content -LiteralPath $errLog -Tail 20 }
+        Write-Host "---- tail of $data\error.log ----"
+        if (Test-Path (Join-Path $data "error.log")) { Get-Content -LiteralPath (Join-Path $data "error.log") -Tail 20 }
+        Write-Host "-------------------------"
+        throw "mysql did not start in 30s (see the two logs above)"
+      }
     }
   }
   "stop" {
