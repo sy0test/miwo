@@ -153,7 +153,8 @@ describe("守卫：fail-closed", () => {
     const { db } = withCtx(knex, userA);
     expect(() => db("o_unknown_table")).toThrow(PolicyNotFoundError);
     expect(() => db("o_skillList")).toThrow(/退役/);
-    expect(typeof db("knex_migrations")).toBe("object");
+    // 真断言（修复轮 1）：`typeof 拒绝的 Promise === "object"` 会恒真，测不到"放行"方向
+    expect(db("knex_migrations").toSQL().sql).toContain("knex_migrations");
     await knex.destroy();
   });
 
@@ -197,7 +198,10 @@ describe("守卫：fail-closed", () => {
     const knex = await fixture();
     const { db } = withCtx(knex, userA);
     expect(() => db.raw("select count(*) from o_tasks")).toThrow(TenantIsolationError);
-    expect(typeof db.raw("GROUP_CONCAT(name)")).toBe("object");
+    // 真断言（修复轮 1）：纯表达式必须真的能建出 SQL 并执行，而不是 typeof 一个对象
+    expect(db.raw("GROUP_CONCAT(name)").toSQL().sql).toContain("GROUP_CONCAT(name)");
+    const grouped = await db("o_assets").select(db.raw("GROUP_CONCAT(name) as names"));
+    expect(grouped[0].names).toBe("A-asset,A-noimage");
     await knex.destroy();
   });
 });
@@ -257,7 +261,7 @@ describe("守卫：knex 结构契约（升级护栏）", () => {
     expect(() => parseTableSpec(1)).toThrow(PolicyNotFoundError);
   });
 
-  it("策略表里的每个策略值都被守卫实现覆盖（三态都有表或用例）", () => {
+  it("策略表只有 tenant/platform 两态（本阶段无 global 表，结论 2），且租户表 20 张", () => {
     const values = new Set(Object.values(TABLE_POLICIES));
     expect([...values].sort()).toEqual(["platform", "tenant"]); // 本阶段无 global（结论 2）
     expect(TENANT_TABLES.length).toBe(20);
@@ -268,7 +272,7 @@ describe("守卫：knex 结构契约（升级护栏）", () => {
  * 修复轮 1（独立审查 Ruling 188/189/191）。每条都先红后绿，红端原文见 task-2-report.md「修复轮 1」。
  * 这些用例钉的是"fail-closed 契约在哪些路径不成立"，不是新功能。
  */
-describe("守卫：修复轮 1（M1–M5 执行路径）", () => {
+describe("守卫：修复轮 1（M1–M6 / L1 / L5 / L6 / L7）", () => {
   it("M1a: .catch() 也做执行前复核（修复前：租户子查询被 resolve 成 [{n:2}]）", async () => {
     const knex = await fixture();
     const { db } = withCtx(knex, userA);
@@ -351,6 +355,56 @@ describe("守卫：修复轮 1（M1–M5 执行路径）", () => {
       .rejects.toThrow(TenantIsolationError);
     await expect(db("o_setting").select("key").where("key", "tokenKey").havingRaw("1 = (select count(*) from o_tasks)"))
       .rejects.toThrow(TenantIsolationError);
+    await knex.destroy();
+  });
+
+  it("L1: insert 被拒时链条不断（.onConflict().merge() 仍以 TenantIsolationError 拒绝，不留 unhandledRejection）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    await expect(db("o_tasks").insert({ id: 6, userId: 8, state: "x" }).onConflict("id").merge()).rejects.toThrow(TenantIsolationError);
+    expect(await knex("o_tasks").where("id", 6).first()).toBeUndefined();
+    await knex.destroy();
+  });
+
+  it("M6（本轮新增发现）: 租户表的 onConflict() upsert → fail-closed（修复前：逃出守卫，且 merge payload 能把本租户的行改名到别人名下）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    expect(() => db("o_tasks").insert({ id: 1, state: "stolen" }).onConflict("id").merge()).toThrow(TenantIsolationError);
+    expect(() => db("o_tasks").insert({ id: 1, state: "stolen" }).onConflict("id").merge({ userId: 8 })).toThrow(TenantIsolationError);
+    expect((await knex("o_tasks").where("id", 1).first()).userId).toBe(7);
+    await knex.destroy();
+  });
+
+  it("L5: db.trx 与 transaction 是同一个函数（修复前：运行时 undefined，接口声明在撒谎）", () => {
+    const fake: any = () => ({});
+    fake.transaction = () => "tx";
+    const db = makeTenantAware(fake, { getCtx: () => userA });
+    expect(typeof db.trx).toBe("function");
+    expect(db.trx).toBe(db.transaction);
+  });
+
+  it("L6: transaction(container, config) 把 config 透传给 knex（修复前 arg2 被丢掉）", () => {
+    const calls: any[][] = [];
+    const fake: any = () => ({});
+    fake.transaction = (...args: any[]) => { calls.push(args); return "tx"; };
+    const db = makeTenantAware(fake, { getCtx: () => userA });
+    const container = async (trx: any) => trx;
+    const config = { doNotRejectOnRollback: true };
+    expect(db.transaction(container, config)).toBe("tx");
+    expect(calls.length).toBe(1);
+    expect(calls[0][1]).toBe(config);          // config 原样透传
+    expect(calls[0][0]).not.toBe(container);   // container 被 guardTrx 包过
+  });
+
+  it("L7: clone 不共享 joins 数组（平台表上：本体的 join 不再误伤克隆体的 orWhere）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    const base: any = db("o_setting");
+    const clone: any = base.clone();
+    base.join("o_tasks", "o_tasks.id", "=", "o_setting.key").select("o_setting.key").toSQL();
+    expect(() => clone.orWhere("key", "x")).not.toThrow(); // 修复前：共享 joins ⇒ 误禁
+    clone.join("o_tasks", "o_tasks.id", "=", "o_setting.key");
+    expect(() => clone.orWhere("key", "x")).toThrow(TenantIsolationError); // 自己 join 过之后仍然禁
     await knex.destroy();
   });
 });

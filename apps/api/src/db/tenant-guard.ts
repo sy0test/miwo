@@ -13,21 +13,37 @@
  *     就是它。拿不到 JoinClause / 没有 `andOnVal` → **直接抛错**（fail-closed，绝不静默放行）。
  *  3. `insert` → 给每一行补 `userId`；显式写了别人的 `userId` → 抛错。
  *  4. `update/delete/del` → 靠规则 1 已注入的主表条件限定（实测：不带 where 的 update
- *     只影响本租户的 1 行，跨租户 update 影响 0 行）。`truncate` 无法限定 → 禁。
+ *     只影响本租户的 1 行，跨租户 update 影响 0 行）；`update` 的 payload 显式把
+ *     `userId` 改成别人的 → 抛（修复轮 1 / M2）。`truncate` 无法限定 → 禁。
  *  5. 能绕过注入的方法（`orWhere*`/`whereRaw`/`joinRaw`/`crossJoin`/`union*`/`with*`/
  *     `having*`/`whereExists`/`whereNotExists`）在租户查询上禁；`joinRaw` 另加"SQL 文本
- *     提及租户表即禁"。⚠ 全仓实测这些方法当前 **0 处调用**，所以这是零回归的封堵。
- *  6. 执行前再做一次 SQL 复核：SELECT 的投影/FROM 段里提到的每张租户表，都必须在
- *     WHERE 里有 `<别名>.userId = ?` 且绑定值就是 `ctx.userId`。实测它能抓住
- *     "把租户子查询塞进平台查询的投影"和"注入被人为拆掉"两种情形，且对现有查询零误报。
+ *     提及租户表即禁"；`onConflict()`（upsert）在租户表上禁 —— 冲突分支无法被租户条件
+ *     限定（sqlite 会把注入的 where 当成 `DO UPDATE` 的过滤，MySQL 的
+ *     `ON DUPLICATE KEY UPDATE` 根本没有 WHERE ⇒ 跨方言行为不一致，只能 fail-closed）。
+ *     ⚠ 全仓实测这些方法**经守卫的调用 0 处**：`db/legacy/import.ts:373` 的 `havingRaw`、
+ *     `db/migrations/002_platform_seed.ts:133` 的 `whereRaw` 各 1 处，但两者都走裸 knex
+ *     （legacy 导入 / 迁移器），**不经过本守卫**（见 task-2-report.md「修复轮 1」L8）。
+ *  6. 执行前再做一次 SQL 复核：`then` / `catch` / `finally` **三条入口都做**（修复轮 1 / M1），
+ *     先把 SQL 里的**字符串字面量剥掉**，再扫**整条** SQL（不再只看第一个 `where` 之前，
+ *     修复轮 1 / M5）。SQL 里提到的每张租户表（**大小写不敏感**，修复轮 1 / M4）都必须在
+ *     SQL 里有 `userId = ?` 且绑定值就是 `ctx.userId`；`insert` 例外 —— 它的隔离由构建期的
+ *     `fill()` 保证（SQL 里不会有 `userId = ?`），这里只要求"SQL 里的租户表就是守卫登记的那张"
+ *     （防 `.from()`/`.into()` 换表）。实测它能抓住"租户子查询塞进平台查询的投影/WHERE/
+ *     HAVING"、"注入被人为拆掉"、"平台 builder 换表后写租户表"三种情形，且对现有查询零误报。
  *  7. 平台表：读放行（含无 ctx，登录前取 tokenKey 需要）；写要求 `ctx.role === "admin"`，
  *     否则 `PlatformWriteDeniedError`。
  *  8. 未声明策略的表 → `PolicyNotFoundError`；退役表 → 同一个错误但文案点明"已退役"。
+ *  9. 事务：`transaction(container, config)` 把 container 包成 `guardTrx` —— `trx("表")` 走守卫、
+ *     `trx.raw` 与顶层 `raw` **同一个实现**（修复轮 1 / M3）、`config` 原样透传 knex
+ *     （修复轮 1 / L6）。`db.trx` 只是 `transaction` 的别名（修复轮 1 / L5）。
  *
  * ⚠ 已知**有意不支持**的形态（都是 fail-closed，不是静默降级）：
  *  - `join({别名: "表"})` 对象形式 → `parseTableSpec` 抛（全仓 0 处使用）
  *  - `joinRaw` / `crossJoin` / `with` / `union` / `whereRaw` 在租户查询上一律抛
- *  - `select` 之外的语句不做执行前复核（update/delete 由主表条件保证；insert 单独补列）
+ *  - 租户表上的 `onConflict()`（含 `.merge()` / `.ignore()`）：冲突分支限定不了 → 一律抛；
+ *    真有实例级 upsert 就走 `systemDb`
+ *  - 写入语句的隔离由"主表条件 + 执行前复核"共同兜底；函数形式的 `update` payload
+ *    （`.update(fn)`）无法在构建期静态检查，只有第 6 条 SQL 复核兜底
  */
 import type { Knex } from "knex";
 import { PolicyNotFoundError, TABLE_POLICIES, TENANT_TABLES, USER_COLUMN, policyOfIn, type TablePolicy } from "@/db/policies";
@@ -89,8 +105,10 @@ const WRITE_METHODS: ReadonlySet<string> = new Set(["insert", "update", "delete"
 
 /**
  * "执行前复核"（规则 6）专用错误：**不是**新分类，而是给守卫内部一个可判别的标记。
- * 构建期同步触发复核时（`.select()` 会同步 `toSQL()`），守卫据此把错误"延到 await"，
- * 见 `wrapBuilder` 里 `deferred` 的注释。对调用方而言它仍是 `TenantIsolationError`（403）。
+ * 构建期 catch-all 里若复核同步抛出（knex 结构变化时才会发生，见 `wrapBuilder` 的注释），
+ * 守卫据此把错误换成"注定失败对象"而不是当场断链。对调用方而言它仍是
+ * `TenantIsolationError`（403）—— **不给它另立 `code`**（Task 4 的错误分支只认
+ * `TENANT_ISOLATION`）。
  */
 class SqlScopeError extends TenantIsolationError {
   constructor(message: string) {
@@ -150,19 +168,6 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
     return ctx;
   };
 
-  /**
-   * 把"守卫在**构建期**就发现的违规"变成**拒绝的 Promise**，而不是同步抛。
-   *
-   * 为什么必须有这条路径（本机实跑，brief Step 1 的用例钉住了它）：
-   *  - `await expect(db("o_tasks").insert({userId: 别人})).rejects.toThrow(...)`：knex 的
-   *    `.insert()` 本身是同步的；若守卫同步抛，`await expect(...)` 拿不到 promise（用例失败）。
-   *    守卫必须像 knex 一样"把错误延到 await 时才响"。
-   *  - `db("o_setting").select(<租户子查询>)`：knex 的 `.select()` 会**同步**调 `toSQL()`
-   *    （SQLite 方言要展开子查询），于是执行前复核在构建期就被触发，同样必须变成拒绝。
-   *  - 失败方向不变：这个 promise **只 reject、永不 resolve**（fail-closed，绝不静默放行）。
-   */
-  const asRejection = (err: unknown): Promise<never> => Promise.reject(err);
-
   /** 构建期"某一行显式写了别人的 userId"的统一检查（`insert` 与 `update` payload 共用，修复轮 1 / M2）。 */
   const assertOwnUserId = (row: any, what: string, ctx: TenantCtx): void => {
     if (row === null || typeof row !== "object" || Array.isArray(row)) return;
@@ -214,27 +219,29 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
 
   function wrapBuilder(qb: any, self: { policy: string | null; alias: string | null; table: string | null; joins: string[] }): any {
     /**
-     * 构建期发现的"执行前复核"违规（`deferred`）：**留到 await 时才响**。
+     * "注定失败"的统一应答（`rejectWith`）。
      *
-     * 为什么不能当场同步抛：`db("t").select(<租户子查询>).where(...)` 会立刻断链
-     * （`.where()` 拿到的是抛出的异常而不是 builder），且 `await expect(...).rejects` 也不认同步抛。
+     * ⚠ 形状是本机实测出来的（红绿证据在 task-2-report.md「修复轮 1」）：
+     *  ① **绝不能在 `then` 里 `return Promise.reject(...)`**：knex 的 QueryBuilder 是
+     *     thenable，而 ECMAScript 的 `PromiseResolveThenableJob` **忽略 `then` 的返回值**
+     *     ⇒ `await`/`Promise.resolve()` 永不 settle，错误另走 `unhandledRejection`
+     *     （**这是语言语义，不是 Node 24/vitest 特有**）。所以有 `onRejected` 时**直接调用它**。
+     *  ② 没有 `onRejected` 的入口（构建期 catch-all、被拒的 `insert`）返回一个**真拒绝
+     *     Promise**，并把 builder 方法（含 `onConflict`/`merge`/`ignore` 这类链上方法，
+     *     修复轮 1 / L1）装饰成"调用即返回它自己"，这样调用方还能继续链式写下去。
      *
-     * ⚠ 形状是本机实测出来的（四种写法都试过，红绿证据在 task-2-report.md）：
-     *  ① `then()` 里返回拒绝 promise（真 Promise / Proxy 包真 Promise 都试过）：
-     *     Node 24 + V8 + vitest 3.2.7 下 `await` **永不 settle**（8s 超时，错误另走
-     *     unhandledRejection）。⇒ 必须**直接调用 then 的 onRejected**（`rejectWith`）。
-     *  ② 构建期 catch-all 那条路没有 onRejected，只能返回"注定失败对象"；而 vitest 的
-     *     `.rejects` 只认**真 Promise 实例**，同时调用方还要能继续 `.where()`。⇒ 一个
-     *     已拒绝的真 Promise + 把 builder 方法装饰成"调用即返回它自己"（见 `rejectWith`）。
+     * `deferred` 已按 Ruling 189 删除：当前 knex 方言下 `.select(<raw 子查询>)` **不会**
+     * 同步调 `toSQL()`（实测 `instanceof Promise === false`），所以"构建期就发现复核违规"
+     * 这条路当前**不可达**；catch-all 里的 `SqlScopeError` 分支保留为**结构变化护栏**
+     * （knex 哪天改成构建期执行，它保证失败方向仍然是"拒绝"而不是断链）。
      */
-    let deferred: unknown = null;
     let doomed: any = null;
     /**
-     * "注定失败"的统一应答（本机实测唯一可行形状）：
+     * 每个 wrapBuilder 一个"注定失败对象"的惰性缓存（`doomed`）：
      *  - 有 `onRejected`（thenable 协议入口）→ **直接调用它**，而不是返回拒绝 promise（见上面 ①）。
-     *  - 没有（构建期 catch-all）→ 造一个"真拒绝 Promise + 可继续链式调用"的对象：
-     *    `instanceof Promise === true`（vitest `.rejects` 的硬要求），builder 方法装饰成
-     *    "调用即返回它自己"（`.select(...)` 之后还能 `.where(...)` 的硬要求）。
+     *  - 没有（构建期 catch-all / 被拒的 insert）→ 造一个"真拒绝 Promise + 可继续链式调用"的对象：
+     *    `instanceof Promise === true`（vitest `.rejects` 的硬要求，且比 thenable 更直接），
+     *    builder 方法装饰成"调用即返回它自己"。
      *  - 失败方向不变：只拒绝、永不 resolve，且**不会真的执行 SQL**（knex builder 从未被 await）。
      */
     const rejectWith = (err: unknown, thenArgs?: any[]): any => {
@@ -246,11 +253,16 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
         for (let o: any = qb; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
           for (const key of Object.getOwnPropertyNames(o)) names.add(key);
         }
+        // `onConflict/merge/ignore` 不在 QueryBuilder 原型上（`onConflict()` 返回的是一个
+        // OnConflictBuilder，`merge()/ignore()` 在它身上）⇒ 被拒的 insert 若只装饰 QueryBuilder
+        // 的方法，`.insert({别人}).onConflict("id").merge()` 仍会在 `merge` 处断成 TypeError，
+        // 而原始拒绝没人消费 → unhandledRejection（Node 默认终止进程）。修复轮 1 / L1。
+        for (const key of ["onConflict", "merge", "ignore"]) names.add(key);
         for (const key of names) {
           if (key === "then" || key === "catch" || key === "finally" || key === "constructor") continue;
           if (key.startsWith("_")) continue; // knex 内部状态：装饰它只会制造误用
           try {
-            if (typeof Reflect.get(qb, key) !== "function") continue;
+            if (key !== "onConflict" && key !== "merge" && key !== "ignore" && typeof Reflect.get(qb, key) !== "function") continue;
             Object.defineProperty(p, key, { value: () => p, enumerable: false, configurable: true, writable: true });
           } catch {
             /* 只读属性跳过：只求"可继续链"，不要因为装饰失败改变失败方向 */
@@ -262,7 +274,6 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
     };
     /** 查询真正被执行的地方（`then`）：先做执行前复核，再交给 knex。 */
     const run = (target: any, thenFn: AnyFn, args: any[]): any => {
-      if (deferred) return rejectWith(deferred, args);
       try {
         assertSqlScoped(target, self);
       } catch (err) {
@@ -301,8 +312,10 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
           };
         }
 
-        // clone 出来的 builder 仍然要在守卫里（否则 clone 之后的 join 不会被注入）
-        if (prop === "clone") return (...args: any[]) => wrapBuilder(value.apply(target, args), self);
+        // clone 出来的 builder 仍然要在守卫里（否则 clone 之后的 join 不会被注入）；
+        // ⚠ `joins` 必须**拷贝**（修复轮 1 / L7）：共享同一个数组会让同源 clone 互相误伤
+        //    ——本体 join 过租户表之后，没 join 的克隆体会被误禁 `orWhere`。
+        if (prop === "clone") return (...args: any[]) => wrapBuilder(value.apply(target, args), { ...self, joins: [...self.joins] });
 
         if (prop === "insert") {
           return (...args: any[]) => {
@@ -311,20 +324,17 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
                 const ctx = needCtx();
                 const fill = (row: any) => {
                   if (row === null || typeof row !== "object" || Array.isArray(row)) return row;
-                  const current = row[USER_COLUMN];
-                  if (current !== undefined && current !== null && Number(current) !== Number(ctx.userId)) {
-                    throw new TenantIsolationError(`insert 显式写了别人的 ${USER_COLUMN}=${current}（ctx=${ctx.userId}）—— 已阻断`);
-                  }
+                  assertOwnUserId(row, "insert", ctx);
                   return { ...row, [USER_COLUMN]: ctx.userId };
                 };
                 args = args.map((a) => (Array.isArray(a) ? a.map(fill) : fill(a)));
               } catch (err) {
                 // ⚠ 非法 insert 必须是**拒绝的 Promise**而不是同步抛：契约是
                 //    `await expect(db("t").insert({userId: 别人})).rejects.toThrow(...)`。
-                //    这里能直接用 `Promise.reject`（真 Promise）是因为 `insert` 是**普通构建期方法**、
-                //    不在 thenable 协议路径上；`run()`/catch-all 那两条才必须走 `rejectWith` 的
-                //    "有 onRejected 就调它"（原因见 `rejectWith` 注释）。失败方向一致：只拒绝、不执行 SQL。
-                return Promise.reject(err);
+                //    但**不能**用裸 `Promise.reject`（修复轮 1 / L1）：`.insert(...)` 之后常见的
+                //    `.onConflict("id").merge()` 会在裸 Promise 上断成 TypeError，而原始拒绝
+                //    没人消费 → unhandledRejection。统一走 `rejectWith` 的"注定失败对象"。
+                return rejectWith(err);
               }
             } else {
               assertPlatformWriteAllowed(self);
@@ -352,7 +362,7 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
                     }
                   });
                 } catch (err) {
-                  return rejectWith(err); // 保链 + 不留 unhandledRejection
+                  return rejectWith(err); // 同上：保链 + 不留 unhandledRejection
                 }
               }
             } else {
@@ -395,6 +405,23 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
           };
         }
 
+        if (prop === "onConflict") {
+          return (...args: any[]) => {
+            // 修复轮 1 / M6（本轮新增发现，超出审查清单）：`onConflict()` 返回的是另一个对象
+            // （OnConflictBuilder），它 `.merge()` 之后**直接返回裸 QueryBuilder** ⇒ 不但绕过
+            // 第 6 条的 SQL 复核，而且冲突分支根本限定不了：实测 sqlite 只把注入的 where 当
+            // `DO UPDATE` 的过滤（跨租户的冲突行侥幸没被改），而 MySQL 的
+            // `ON DUPLICATE KEY UPDATE` **没有 WHERE** ⇒ 同一句代码在两种方言下隔离性不同。
+            // 按"限定不了就禁"（与 `truncate` 同族）处理；实例级 upsert 走 `systemDb`。
+            if (self.policy === "tenant") {
+              throw new TenantIsolationError(
+                "租户表禁用 onConflict()（upsert）：冲突分支无法被租户条件限定（fail-closed）；实例级运维请走 systemDb",
+              );
+            }
+            return keep(value.apply(target, args));
+          };
+        }
+
         if (/^orWhere/.test(String(prop)) || WIDENING_METHODS.has(String(prop))) {
           return (...args: any[]) => {
             if (self.policy === "tenant" || self.joins.length) {
@@ -416,16 +443,13 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
         }
 
         return (...args: any[]) => {
-          if (deferred) return rejectWith(deferred, args); // 已注定失败：只保链，不再动 builder
           try {
             return keep(value.apply(target, args));
           } catch (err) {
-            // 构建期方法（如 `.select()`、`.orderBy()`）内部会同步调 `toSQL()`，
-            // 复核因此在这里抛出。用 `rejectWith` 应答（见它的注释）。
-            if (err instanceof SqlScopeError) {
-              deferred = err;
-              return rejectWith(err, args);
-            }
+            // 结构变化护栏（当前不可达，见 `rejectWith` 上方注释）：如果哪天 knex 改成
+            // "构建期方法内部同步执行 SQL"，复核会在 `value.apply` 里抛出，这里把同步抛
+            // 换成"注定失败对象"，失败方向仍然是拒绝、不是断链。
+            if (err instanceof SqlScopeError) return rejectWith(err, args);
             throw err;
           }
         };
@@ -468,8 +492,8 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
    * 事务对象也要守卫：`persistShots.ts:54` 那条链路全部走 `trx("表")`。
    *
    * ⚠ `trx.raw` 必须复用**顶层 `guarded.raw` 的同一个实现**（修复轮 1 / M3）：之前是
-   * `value.bind(trx)` 直接透传，实测 `await db.transaction(trx => trx.raw("update o_tasks
-   * set state='hacked' where id=2"))` **真的改了别人的行**。
+   * `value.bind(trx)` 直接透传，实测在事务回调里让 `trx.raw` 执行一条
+   * `update o_tasks set state='hacked' where id=2` —— **真的改了别人的行**。
    */
   function guardTrx(trx: any): any {
     const guardedTrx: any = (tableSpec: string) => guardBuilder(trx(tableSpec), tableSpec);
@@ -488,13 +512,23 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
     }
     return knex.raw(sql, bindings as any);
   };
-  for (const key of ["fn", "ref", "schema", "client", "destroy", "migrate", "seed", "trx"]) {
+  for (const key of ["fn", "ref", "schema", "client", "destroy", "migrate", "seed"]) {
     const value: any = (knex as any)[key];
     if (typeof value === "function") guarded[key] = value.bind(knex);
   }
+  /**
+   * `transaction(container, config)`：knex 的签名是 `(container, config)`，**两个参数都要透传**
+   * （修复轮 1 / L6：原实现丢掉 `arg2`，调用方设的 `doNotRejectOnRollback`/`isolationLevel`
+   * 之类会被静默忽略）。
+   */
   guarded.transaction = (arg1: any, arg2?: any) => {
-    if (typeof arg1 === "function") return (knex as any).transaction((trx: any) => arg1(guardTrx(trx)));
+    if (typeof arg1 === "function") return (knex as any).transaction((trx: any) => arg1(guardTrx(trx)), arg2);
     return (knex as any).transaction(arg1, (trx: any) => (typeof arg2 === "function" ? arg2(guardTrx(trx)) : undefined));
   };
+  // 修复轮 1 / L5：接口声明了 `trx`，但 knex 实例上**没有** `trx` 方法 ⇒ 之前运行时是
+  // `undefined`（声明在撒谎，Task 3 若照接口写 `u.db.trx(...)` 会 TypeError）。
+  // knex 的语义里 `trx` 是 `transaction(container)` 里那个"事务对象"，这里显式指成
+  // `transaction` 的别名，让声明与运行时一致。
+  guarded.trx = guarded.transaction;
   return guarded as TenantAwareDb;
 }
