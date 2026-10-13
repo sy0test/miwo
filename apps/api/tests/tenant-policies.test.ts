@@ -23,6 +23,21 @@ function schemaTables(): { created: string[]; dropped: string[] } {
   return { created: [...new Set(created)].sort(), dropped: [...new Set(dropped)].sort() };
 }
 
+/**
+ * 抓取同步抛出的错误对象（`toThrow` 只能证明"抛了"，钉不住 `code` / `httpStatus`）。
+ * ⚠ 为什么要钉：Task 4 的 `ISOLATION_CODES` 与 403/500 映射**按这两个字面量判分支**
+ *   （`ISOLATION_CODES.has(err.code)` / `Number(err.httpStatus) || 500`）：字符串一改，
+ *   隔离错误就会从 403/500 掉进"交给既有错误中间件"的兜底分支 —— 且不会有任何用例变红。
+ */
+function grabError(fn: () => unknown): { code?: unknown; httpStatus?: unknown } {
+  try {
+    fn();
+  } catch (e) {
+    return e as { code?: unknown; httpStatus?: unknown };
+  }
+  return {};
+}
+
 describe("策略表（spec §6.2 / 附录 A）", () => {
   it("001_schema 的镜像没变（27 建 / 2 删）——变了就必须回来核对策略表", () => {
     const { created, dropped } = schemaTables();
@@ -67,6 +82,10 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
   it("未声明的表与退役表都必须抛错，不许静默放行", () => {
     expect(() => policyOf("o_unknown_table")).toThrow(PolicyNotFoundError);
     expect(() => policyOf("sqlite_master")).toThrow(PolicyNotFoundError);
+    // L2：策略错误的 code / httpStatus 必须被钉住（Task 4 的 ISOLATION_CODES + 500 映射依赖这两个字面量）。
+    const notFound = grabError(() => policyOf("o_unknown_table"));
+    expect(notFound.code).toBe("POLICY_NOT_FOUND");
+    expect(notFound.httpStatus).toBe(500);
     // ⚠ 原型链键必须也抛错：裸下标 `tableMap[table]` 会让 Object.prototype 的继承键
     //    绕过 fail-closed（独立审查实跑证实：policyOf("constructor") 曾返回 <function Object>，
     //    toString/valueOf/__proto__ 全部不抛）；把 hasOwnProperty 判定删掉，这条即变红。
@@ -74,6 +93,9 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
       expect(() => policyOf(protoKey)).toThrow(PolicyNotFoundError);
     }
     for (const t of DROPPED_TABLES) expect(() => policyOf(t)).toThrow(/退役/);
+    // L1：`DROPPED_TABLES` 的**成员**必须逐个钉死 —— 只遍历集合成员的话，把它清空（或增删一个）
+    //     本文件仍然全绿，而 Task 2 的守卫要消费这张集合。
+    expect([...DROPPED_TABLES].sort()).toEqual(["o_skillAttribution", "o_skillList"]);
     expect(isTenantTable("o_assets")).toBe(true);
     expect(isTenantTable("o_setting")).toBe(false);
   });
@@ -100,6 +122,10 @@ describe("租户上下文（spec §6.4）", () => {
   it("没有 ctx 时 requireTenantCtx 必须抛，而不是返回默认值", () => {
     expect(() => requireTenantCtx()).toThrow(TenantContextError);
     expect(() => requireTenantCtx()).toThrow(/fail-closed/);
+    // L2：同样钉住 code / httpStatus（Task 4 的 ISOLATION_CODES 认 "TENANT_NO_CONTEXT"）。
+    const noCtx = grabError(() => requireTenantCtx());
+    expect(noCtx.code).toBe("TENANT_NO_CONTEXT");
+    expect(noCtx.httpStatus).toBe(500);
   });
 
   it("⚠ 在 run() 内注册、之后才触发的监听器拿不到 ctx —— 这是 socket 必须显式包装的原因", async () => {
