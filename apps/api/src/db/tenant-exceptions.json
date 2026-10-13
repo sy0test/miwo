@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-13T16:28:01.000Z",
+  "generatedAt": "2026-10-13T17:09:09.481Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 244,
+    "tsFilesScanned": 245,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)",
     "bypassFiles": "直接命名导入裸 db：import { db } from \"@/utils/db\"（spec 附录 B.1 的判据）",
@@ -272,6 +272,14 @@
       ],
       "confirmed": true,
       "note": "[1341/1351 src.raw(\"?? as ??\", [col, \"__v\"])] 处置（Task 8 Step 1）：这是 `extremeRowPicks()` 的**边界抽样**取数。两条都是 knex 的**标识符占位符**（`??` = 转义列名/表名，不是值绑定），实参只有 `col`（来自 `columnInfo()` 的**真实列名**）与常量 `\"__v\"` —— 没有任何来自请求/用户的字符串被拼进 SQL；返回的也只是主键 + 那一列，不返回整行业务数据。\n它读的**不是**应用库：调用方是 `scripts/extreme-picks-runner.ts`，传进来的 `src` 是它用 `createKnex({ db: { driver: \"sqlite\", file: SRC } })` 建的 **knex 句柄**（`extreme-picks-runner.ts:68-70`）—— **不是** `better-sqlite3` 的 `{ readonly: true }` 连接（那个连接在同一文件里**另建**，见 `:81-83`，只用于按主键取整行）。knex 这条句柄**没有** readonly 开关：它的\"只读\"来自两点 —— ① `extremeRowPicks()` 只发 SELECT；② 源库快照的 sha256 前后一致断言（`scripts/export-sqlite.cjs`；注意那条只覆盖**导出**那一步，不覆盖这一步）。Phase 1b 判策略时请按**「不在请求上下文的 knex 句柄、只发 SELECT」**理解，**不要**按\"已打开为 readonly 的连接\"理解。没有请求上下文、不对 `o_*` 表做 join、也完全不碰目标库，因此**不参与租户过滤**；Phase 1b 的 `policies.ts` 不得给它注入租户条件。\n为什么用 raw：要按 `LENGTH(col)` 排序 / 取极值，query builder 表达不了\"列名\"这一维（同函数里的 `orderByRaw(\"LENGTH(??) DESC\", [col])` 是同一套参数化写法，只是没被本门禁的正则扫到）。"
+    },
+    "apps/api/src/db/tenant-guard.ts": {
+      "count": 1,
+      "lines": [
+        396
+      ],
+      "confirmed": true,
+      "note": "[396/407 guarded.raw(...) 的透传] 处置（Task 2 Step 3）：这一处 `raw` 是**守卫自己**的包装点，不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」一条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。"
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,
