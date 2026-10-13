@@ -16,7 +16,17 @@ import { currentTenant, currentUserId, requireTenantCtx, runWithTenant, TenantCo
 
 const SCHEMA_SRC = fs.readFileSync(path.resolve(__dirname, "../src/db/migrations/001_schema.ts"), "utf8");
 
-/** 从 001_schema.ts 里机械抽出建表名与删表名（与 DDL 静态断言同一套路）。 */
+/**
+ * 从 001_schema.ts 里机械抽出建表名与删表名（与 DDL 静态断言同一套路）。
+ *
+ * ⚠ **已知边界：这条正则只认一种 `createTable` 写法**——`createTable(` 之后紧跟**双引号**
+ *   字面量表名，且表名字符集限 `[A-Za-z0-9_]`。写成 `createTable(\n  'o_x'`（单引号）、
+ *   模板串、变量/常量名、或经 `knex.schema` 别名调用时**抽不到**。
+ *   ⚠ 此时**长度兜底 `expect(created).toHaveLength(27)` 拦不住**：非常规写法新增的表若**也没登记**
+ *   进 `TABLE_POLICIES`，则"长度仍是 27"与下面那条 `declared` ↔ `created` 双向相等**同时成立**
+ *   （两边**一起**少了同一张表）⇒ 静默放行。要真封住这条边界得改用 AST（TypeScript compiler API），
+ *   或落到 Task 8 的 `tools/check-tenant-policies.cjs`（它的正则也须一并收紧）。
+ */
 function schemaTables(): { created: string[]; dropped: string[] } {
   const created = [...SCHEMA_SRC.matchAll(/createTable\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
   const dropped = [...SCHEMA_SRC.matchAll(/dropTableIfExists\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);

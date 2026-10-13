@@ -11,8 +11,14 @@
  *     但 `dbInfo` / `exportData` 这类会枚举表名的运维接口一旦经包装层碰它们，
  *     没有声明就会抛错（Phase 1a 计划的 deferred #4 就是这么登记的）。
  *  4. `global`（全平台只读）在本阶段**没有分配给任何表**：spec §6.2 的策略定义里有它，
- *     但附录 A 把 `o_artStyle`/`o_vendorConfig` 都判成了 `platform`。语义在守卫里实现并单测，
- *     表映射留空；要让某张表"连管理员都不能写"时，只需在这里改一行 + 一条测试。
+ *     但附录 A 把 `o_artStyle`/`o_vendorConfig` 都判成了 `platform`。**它的语义（写一律抛错）
+ *     由 Task 2 的守卫实现**；本任务（Task 1）既没有实现守卫、也没有对应用例，表映射留空。
+ *     要让某张表"连管理员都不能写"时，只需在这里改一行 + 一条测试。
+ *  5. **"29" 的口径（本表 vs spec 附录 A：数字相同、成员不同，别混用）**：
+ *     本表的 29 = **27 张在库表**（7 platform + 20 tenant）+ **2 张 knex 基础设施表**
+ *     （`knex_migrations` / `knex_migrations_lock`，001_schema 不建、由迁移器自建）；
+ *     spec 附录 A 的 29 = 27 张在库表 + **2 张退役表**（`o_skillList` / `o_skillAttribution`，
+ *     即 `DROPPED_TABLES`，**不在本表里**，任何访问都抛错）。引用"29"时必须写明口径。
  */
 export type TablePolicy = "tenant" | "platform" | "global";
 
@@ -29,8 +35,10 @@ export class PolicyNotFoundError extends Error {
 }
 
 /**
- * 表 → 策略。**新增表必须在这里登记**（门禁 tools/check-tenant-policies.cjs 会断言
- * 本文件与 001_schema.ts 的建表清单双向相等）。
+ * 表 → 策略。**新增表必须在这里登记**（该门禁由计划 **Task 8** 新增的
+ * `tools/check-tenant-policies.cjs` 断言"本文件与 001_schema.ts 的建表清单双向相等"；
+ * ⚠ **该脚本当前并不存在**（Task 1 交付时 `tools/` 下没有它），这条判据眼下由
+ * `tests/tenant-policies.test.ts` 的"双向相等"用例承担）。
  *
  * policy 语义（与 spec §6.2 的行为表一字对应）：
  *  - tenant   读：自动 andWhere("userId", ctx.userId)；写：自动填 userId；显式写别人的 userId → 抛错
