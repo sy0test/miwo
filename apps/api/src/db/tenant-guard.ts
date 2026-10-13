@@ -36,6 +36,10 @@
  *  9. 事务：`transaction(container, config)` 把 container 包成 `guardTrx` —— `trx("表")` 走守卫、
  *     `trx.raw` 与顶层 `raw` **同一个实现**（修复轮 1 / M3）、`config` 原样透传 knex
  *     （修复轮 1 / L6）。`db.trx` 只是 `transaction` 的别名（修复轮 1 / L5）。
+ * 10. 成员面与 Phase 1a 的显式白名单**逐项对齐**：函数成员 `bind(knex)`、对象成员原样挂
+ *     （`fn/ref/schema/client/destroy/migrate/seed`）；`transaction`/`raw`/`trx` 是守卫自己的
+ *     实现，不被覆盖。⚠ **接线时实测发现原实现只挂函数 ⇒ 对象成员全丢**（Task 3 修复，
+ *     见下方 `MEMBER_SHAPES` 的注释）。
  *
  * ⚠ 已知**有意不支持**的形态（都是 fail-closed，不是静默降级）：
  *  - `join({别名: "表"})` 对象形式 → `parseTableSpec` 抛（全仓 0 处使用）
@@ -512,9 +516,43 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
     }
     return knex.raw(sql, bindings as any);
   };
-  for (const key of ["fn", "ref", "schema", "client", "destroy", "migrate", "seed"]) {
-    const value: any = (knex as any)[key];
-    if (typeof value === "function") guarded[key] = value.bind(knex);
+  /**
+   * 成员镜像：**按 Phase 1a 的显式白名单逐项核对形状**，不是黑名单。
+   *
+   * ⚠ 修复（Task 3 接线时实测发现）：这里原先只挂 `typeof === "function"` 的成员，于是
+   *   knex 3.x 下**对象成员全丢**。实测 `knex.fn` / `knex.schema` / `knex.client` /
+   *   `knex.migrate` / `knex.seed` 的 `typeof` 全是 `"object"` ⇒ 接线后 `u.db.fn` / `u.db.schema`
+   *   / `u.db.client` / `u.db.migrate` / `u.db.seed` 通通变 `undefined`：
+   *     ① `tests/db-driver.test.ts` 的"白名单契约"断言（`schema.createTable` / `migrate.latest`
+   *        / `seed.run` / `fn.now` 可用）**必红**；
+   *     ② 真实代码里 `u.db.schema` / `u.db.migrate` 这类用法会 `TypeError`。
+   *   `TenantAwareDb` 接口一直声明它们存在 —— 声明与运行时不一致，与修复轮 1 / L5 同族。
+   *
+   * 判据（与 `utils/db.ts` 的 `DB_MEMBERS` 一字对应）：函数成员要 `bind(knex)`（`ref` 必须，
+   * 否则 `this` 丢失）；**对象成员原样挂**（`bind` 只会把它们弄坏）。
+   * `transaction` / `raw` / `trx` 不走这里：它们是**守卫自己的实现**（上面已挂），不能被覆盖。
+   *
+   * ⚠ 白名单的意义：只读这些名字，`caller` / `arguments` 在**结构上不可能**被读到
+   *   （严格模式下读它们直接抛，见 `utils/db.ts` 的历史真机 bug）。
+   */
+  const MEMBER_SHAPES = {
+    ref: "function",
+    destroy: "function",
+    fn: "object",
+    schema: "object",
+    client: "object",
+    migrate: "object",
+    seed: "object",
+  } as const;
+  for (const [key, shape] of Object.entries(MEMBER_SHAPES)) {
+    let value: any;
+    try {
+      value = (knex as any)[key];
+    } catch {
+      continue; // getter 会抛就跳过，别让模块初始化挂掉
+    }
+    if (typeof value !== shape) continue; // 形状与白名单不符 → 不挂（宁缺勿错，也不抛）
+    guarded[key] = shape === "function" ? value.bind(knex) : value;
   }
   /**
    * `transaction(container, config)`：knex 的签名是 `(container, config)`，**两个参数都要透传**

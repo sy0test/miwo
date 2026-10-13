@@ -408,3 +408,42 @@ describe("守卫：修复轮 1（M1–M6 / L1 / L5 / L6 / L7）", () => {
     await knex.destroy();
   });
 });
+
+describe("守卫：成员面与 Phase 1a 白名单一致（Task 3 接线时发现的缺口）", () => {
+  it("对象成员 fn/schema/client/migrate/seed 原样挂上（修复前：全是 undefined）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    const u: any = db;
+    // 形状必须与 utils/db.ts 的 DB_MEMBERS / tests/db-driver.test.ts 的口径**一字不差**：
+    // knex 3.x 实测 `fn/schema/client/migrate/seed` 是 object、`ref/destroy` 是 function。
+    for (const m of ["fn", "schema", "client", "migrate", "seed"]) {
+      expect(typeof u[m], m).toBe("object");
+      expect(u[m], m).not.toBeNull();
+    }
+    for (const m of ["ref", "destroy"]) expect(typeof u[m], m).toBe("function");
+    // "object" 不等于"空对象占位"：点名关键成员（这才是"真的挂上去了"的证据）
+    expect(typeof u.schema.createTable, "schema.createTable").toBe("function");
+    expect(typeof u.schema.hasTable, "schema.hasTable").toBe("function");
+    expect(typeof u.migrate.latest, "migrate.latest").toBe("function");
+    expect(typeof u.seed.run, "seed.run").toBe("function");
+    expect(typeof u.fn.now, "fn.now").toBe("function");
+    expect(u.client, "client 是 knex 的 Client 实例").toBeTruthy();
+    // 对象成员必须是 knex 自己的那类对象（不能是形状不同的替身）。
+    // ⚠ 不能用 `toBe(knex.schema)` 判同一性：`schema` 是 getter，**每次访问都新建**一个
+    //   SchemaBuilder（实测 `knex.schema !== knex.schema`）—— 1a 的白名单同样是"取一次快照"。
+    //   所以判据取"构造函数同类"（`client` 也一并钉住）。
+    expect((u.schema as any).constructor.name).toBe((knex as any).schema.constructor.name);
+    expect((u.client as any).constructor.name).toBe((knex as any).client.constructor.name);
+    await knex.destroy();
+  });
+
+  it("守卫自己的 transaction/raw/trx 不被成员镜像覆盖（仍是守卫实现）", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    const u: any = db;
+    // 覆盖它就等于把守卫换回裸 knex：`raw` 必须仍然拦租户表 SQL
+    expect(() => u.raw("delete from o_tasks where id = 1")).toThrow(TenantIsolationError);
+    expect(u.trx).toBe(u.transaction);
+    await knex.destroy();
+  });
+});
