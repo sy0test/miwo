@@ -11,8 +11,22 @@ declare const guard: {
   API_ROOT: string;
   HOWTO: string;
   OPT_IN_FLAGS: string[];
+  /** 【Ruling 139】仓库外备份目录的默认位置：`<仓库根>/../../.db-backups`。 */
+  defaultBackupDir(): string;
   describeTarget(opts?: { env?: NodeJS.ProcessEnv }): string;
   driverOf(opts?: { env?: NodeJS.ProcessEnv }): string;
+  /**
+   * 【Ruling 139】建立/复用"可恢复点"（备份）。只读目标库。
+   * 返回 `{ ok: true, sha256, reused|created, ... }` 或 `{ ok: false, error }`。
+   */
+  ensureRecoverablePoint(opts?: {
+    target?: string;
+    backupDir?: string;
+    log?: (s: string) => void;
+    now?: () => number;
+  }):
+    | { ok: true; target: string; sha256: string | null; reused: string | null; created: string | null; note?: string }
+    | { ok: false; error: string };
   repoDevDbFile(): string;
   repoDevDbVerdict(opts?: {
     env?: NodeJS.ProcessEnv;
@@ -29,6 +43,8 @@ declare const guard: {
     resolved?: string;
     canonicalDevFile?: string;
     repoRoot?: string;
+    /** 只在"目标就是仓库内 dev 库 + 带了放行开关"时出现（**语法层**放行，可恢复点由硬版本建立）。 */
+    optIn?: { flag: string; recoverablePoint: string };
   };
   repoRoot(): string;
   resolvedSqliteFile(opts?: { env?: NodeJS.ProcessEnv }): string;
@@ -43,7 +59,15 @@ declare const guard: {
     what?: string;
     log?: (s: string) => void;
     exitCode?: number;
-  }): { checked: boolean; blocked: boolean; target: string; reason: string };
+    /** 测试/自证用：覆盖备份目录（默认 `defaultBackupDir()`）。 */
+    backupDir?: string;
+  }): {
+    checked: boolean;
+    blocked: boolean;
+    target: string;
+    reason: string;
+    optIn?: { flag: string; recoverablePoint: string };
+  };
   samePath(a: string, b: string): boolean;
 };
 

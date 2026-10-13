@@ -166,9 +166,11 @@ for (const rel of [
   const optedIn = guard.repoDevDbVerdict({ env: {}, argv: ["--allow-repo-dev-db"] });
   pass(
     G_FILES,
-    "A/裁定A 反向：显式开关（--allow-repo-dev-db）才放行",
-    optedIn.blocked === false,
-    `blocked=${optedIn.blocked}`,
+    "A/裁定A 反向：显式开关（--allow-repo-dev-db）才放行（**语法层**；【Ruling 139】可恢复点由 requireRepoDevDbAllowed 建立）",
+    // 比原来"只断言 blocked===false"更强：还要求 verdict 如实标出"这一层只是语法层放行、
+    // 可恢复点由硬版本建立"。放行开关单独不再等于放行（见 db-target-guard.cjs 护栏 ③）。
+    optedIn.blocked === false && !!optedIn.optIn && /可恢复点/.test(String(optedIn.optIn.recoverablePoint)),
+    `blocked=${optedIn.blocked} optIn=${JSON.stringify(optedIn.optIn || null)}`,
   );
   const elsewhere = guard.repoDevDbVerdict({ env: { MIWO_DATA_DIR: os.tmpdir() }, argv: [] });
   pass(
@@ -309,7 +311,10 @@ db.close();
   } else {
     const out = path.join(API_ROOT, ".tmp-migrate", "phase1a-export");
     // ⚠ 必须带 `--import=tsx`：脚本内部要 knex 加载 `001_schema.ts`（见文件头差异 2）。
-    const e = run(process.execPath, ["--import=tsx", "scripts/export-sqlite.cjs", `--out=${out}`], {
+    // ⚠ `--allow-repo-out` 是**显式放行**（Ruling 113/125）：`export-sqlite.cjs` 默认拒绝把产物写进仓库
+    //    （`o_setting.ndjson` 含真实 tokenKey）。这里的产物是**一次性**的，本组收尾会递归删掉它 —— 
+    //    所以放行是"承担 + 有收尾"，不是绕过护栏。（另一处导出给的是 `os.tmpdir()`，在仓库外，不需要放行。）
+    const e = run(process.execPath, ["--import=tsx", "scripts/export-sqlite.cjs", `--out=${out}`, "--allow-repo-out"], {
       cwd: API_ROOT,
       env: { MIWO_DATA_DIR: DEV_DATA_DIR },
     });

@@ -3,8 +3,13 @@
  * 从 SQLite 导出为"按表分文件的 NDJSON"（搬迁链的第一步，可单独重跑）。
  *
  * 用法（都从 apps/api 下跑，或走 `pnpm.cmd run db:export`）：
- *   node scripts/export-sqlite.cjs [--db=路径] [--out=目录]
+ *   node scripts/export-sqlite.cjs [--db=路径] [--out=目录] [--allow-repo-out]
  * 默认：--db=./data/db2.sqlite  --out=./.tmp-migrate/export
+ *
+ * ⚠ 默认的 `--out` **落在仓库内**，所以默认调用现在会被**拒绝**（见下面的硬护栏，Ruling 113/125）：
+ *   推荐显式给仓库外的目录（`--out=%TEMP%\miwo-export`）；确要在仓库内留产物才加 `--allow-repo-out`。
+ * ⚠ 本脚本是**开发机工具**（Ruling 109）：它靠 `tsx` 从 `001_schema` 推导长度上限，**不在生产
+ *   镜像的运行路径上**（生产只跑构建产物 `data/serve/app.js`）。
  *
  * 输出：
  *   <out>/<table>.ndjson   每行一个 JSON 对象（列名与源库一致）
@@ -36,6 +41,9 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+// 只借它的 `repoRoot()`（`git rev-parse --show-toplevel`，不是从 .env 反推 —— 那会循环论证）。
+// 本文件仍是纯 CJS、不读 `@/config`，所以命令行护栏可以在任何连库动作之前先拒绝。
+const guard = require("./db-target-guard.cjs");
 
 const API_ROOT = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);
@@ -125,6 +133,36 @@ if (IS_MAIN) {
     die(`拒绝执行：${SRC}\n  这是用户机正在使用的真实库（%APPDATA%\\ToonFlow\\data）。搬迁链只处理仓库内的 dev 库快照，对它连只读比对都不做。`);
   }
   if (!fs.existsSync(SRC)) die(`源库不存在：${SRC}`);
+}
+
+// ---- 【Ruling 113 / 125】硬护栏：**输出目录不得落在仓库内**（除非显式放行）----
+//
+// 为什么是"拒绝"而不是"提醒"：导出物里 `o_setting.ndjson` 含老库那一行**真实 `tokenKey`（JWT 密钥）**。
+// Phase 1a 已经因此残留过一次（默认 `--out=./.tmp-migrate/export` 就在仓库里）。`.tmp-migrate/` 虽然被
+// `.gitignore` 忽略，但 gitignore **不是加密** —— 密钥就躺在工作区里，任何 `git add -f`、打包、
+// 复制目录都会把它带走。
+//
+// 放行只有一条路：命令行显式 `--allow-repo-out`。**故意不给环境变量形式**（与 Ruling 139 同族）：
+// "我要把密钥写进仓库"这种判断必须每一次都打在命令行上，不能靠一个继承来的 env 悄悄生效。
+//
+// ⚠ Ruling 109：`db:export` 是**开发机工具**（它靠 `tsx` + `001_schema` 推导长度上限），
+//    **不在生产镜像的运行路径上**（生产只跑 `data/serve/app.js`）。
+const ALLOW_REPO_OUT = args.includes("--allow-repo-out");
+if (IS_MAIN) {
+  const repoRoot = path.resolve(guard.repoRoot());
+  const norm = (p) => (process.platform === "win32" ? p.toLowerCase() : p);
+  const outAbs = path.resolve(OUT);
+  const insideRepo = norm(outAbs) === norm(repoRoot) || norm(outAbs).startsWith(norm(repoRoot) + path.sep);
+  if (insideRepo && !ALLOW_REPO_OUT) {
+    die(
+      `拒绝执行：输出目录落在仓库内（${outAbs}；仓库根 ${repoRoot}）。\n` +
+        "  `o_setting.ndjson` 里有老库那一行**真实 tokenKey（JWT 密钥）** —— 本阶段已经残留过一次。\n" +
+        "  两条出路（二选一）：\n" +
+        "    · 换个仓库外的目录（推荐）：--out=%TEMP%\\miwo-export\n" +
+        "    · 明确承担并留下可恢复的痕迹：加 --allow-repo-out（用完**必须**删掉产物，并 `Test-Path` 复核 False）\n" +
+        "  另注：`db:export` 是**开发机工具**（靠 tsx 推导长度上限），不在生产镜像的运行路径上。",
+    );
+  }
 }
 
 // ⚠ 为什么余下全部包在一个 async 块里：长度上限要**从 `001_schema` 机械推导**（修复轮 1），

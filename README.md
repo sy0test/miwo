@@ -61,9 +61,39 @@ pnpm.cmd dev
 > 本节由 **Task 7** 起草（Task 12 定稿）。下面每一段输出都是**本机实测原文**（Windows / MySQL **8.4.11** / 端口 **3307**）。
 > ⚠ 计划文本里写的 `apps/api/README-db.md` **全仓不存在**：数据层的登记落点一律是根 `README.md`（本节 + 下面「迁移纪律」「真实数据搬迁」「启动期副作用」「`db:repair-stuck`」几节）。
 
-### 0. 现在的启动序列
+### 数据层（Phase 1a 起）
 
-连接 → `migrate.latest()` → 监听端口。**迁移失败即 fail-fast 退出**（`utils/db.ts` 的 `dbReady` 是唯一消费者，`src/db/connect.ts` 的 `connect()` 在探活失败时给出可操作的报错）。
+- **驱动**：knex + `mysql2`（MySQL）/ `better-sqlite3`（SQLite，回归网与 `verify-phase0` 用）；由 `MIWO_DB_DRIVER` 决定（缺省 `sqlite`）。
+- **表结构**：唯一真相是 `apps/api/src/db/migrations/`（版本化迁移），**不再**由启动期的 `lib/initDB.ts` / `lib/fixDB.ts` 建/改（那两个文件是死代码，见「迁移纪律」末条与 `tools/check-dead-ddl.cjs`）。
+- **启动序列**：连接 → `migrate.latest()` → 监听端口；迁移失败即退出（见下面 §0 的图）。
+- **手册**：本文件（`README.md`）的「数据层手册（Phase 1a）」一节（新增迁移 / 回滚 / 本机 MySQL / 老库搬迁 / 降级口径）。
+- **验收**：`pnpm.cmd run verify:phase1a`；当前 baseline 见 §5（**60/60**，sqlite 与 MySQL 双口径）。
+- **本阶段已知项**（不是 bug）：重启不再自动把 `state='生成中'` 改判失败（Phase 1d 的队列租约接管）；
+  `userId` 列已建出但**未回填**（Phase 1b）；`o_skillList`/`o_skillAttribution` 已不再创建。
+- **deferred 登记表**：文末「Phase 1a deferred 登记表」（16 条，每条点名归属 Phase 与依据）。
+
+### 0. 现在的启动序列（图）
+
+```text
+  进程启动
+    |
+    |  src/config.ts        loadConfig()   —— 模块级 fail-fast：缺 MIWO_ENV / MIWO_JWT_SECRET 等直接抛 ConfigError
+    v
+  src/utils/db.ts           createKnex()   —— client 由 config.db.driver 决定（sqlite | mysql）
+    |                       export const dbReady = (async () => { await connect(); ... })()
+    v
+  src/db/connect.ts         connect()      —— 建连接 → 探活 `select 1` → knex migrate.latest()
+    |                                        成功 → 返回 { applied }
+    |                                        失败 → 抛（带可操作信息的报错，不是裸的 tarn 超时）
+    v
+  src/app.ts                await dbReady  —— **迁移完成之前不许 listen**（spec §3.3 的启动竞态）
+    v
+  server.listen(MIWO_PORT)  —— 只有走到这里，端口才开始接请求
+```
+
+`dbReady` 一旦 reject，`src/utils/db.ts` 的 `.catch()` 会 `console.error` 后 `process.exit(1)`
+（**fail-fast**：不允许"看起来起来了、实际半残"）。所以生产上线顺序必须是「**备份 → 迁移 → 起服务**」，
+而迁移本身由服务启动时自动执行（`migrate.latest()` 幂等）。
 
 ### 1. 本机 MySQL（免安装，不用 Docker）
 
@@ -171,30 +201,66 @@ pnpm.cmd run db:migrate
 （`charset=utf8mb4` / `timezone=+08:00` / `supportBigNumbers` / `bigNumberStrings` / `connectTimeout=5000`）
 是**项目策略**、写死在 `src/db/connect.ts` 的 `DBCONFIG` 里，不开放成旋钮。
 
-### 2. 迁移操作手册
+### 2. 迁移操作手册（**新增一条迁移**照这个顺序做）
 
-#### 新增一条迁移
-1. `pnpm.cmd run db:generate -- <kebab-case>`（生成 `NNN_<name>.ts`）
-2. 把新文件 import 进 `src/db/migrations/index.ts` 的 `MIGRATIONS`（**必须手工加、且必须追加到末尾** —— 脚本不会替你改；
-   `MIGRATIONS` 的顺序就是执行顺序，`tests/migrations.test.ts` 只断言了清单↔文件一一对应）
-3. `up` 只写结构；种子写"只插不改"
-4. `down` 必须能精确撤销 `up`
-5. `pnpm.cmd run db:migrate:status` 看状态 → `db:migrate` 应用
+> 这一节是 Task 12 定稿的**操作手册**：`db:generate` → 手工注册 → `up`/`down` → `status` → `migrate` → 回归。
+> ⚠ 计划文本把它写成 `apps/api/README-db.md`，**该文件全仓不存在** —— 落点就是这里。
 
-#### 迁移纪律（违反会有人踩坑）
-- **幂等**：迁移系统层面靠 `knex_migrations` 跳过；`createTable` 不要加 `hasTable` 守卫（会掩盖结构漂移）。
-  但"清理老库"的动作（`dropTableIfExists`）必须用 `*IfExists` 形式。
-- **`up` 必须用传入的 `trx`**，不能用外层 `db`（实测会 `KnexTimeoutError`）。
-- **schema 迁移只允许用 schema builder**（不能 `raw`、不能查表）—— 这样 mysql 侧的静态断言才能收集到完整 DDL。
-- **种子里绝不写 UPDATE。**
-- **不许在 `up` 里 import app 的业务模块**（迁移要能在最小依赖下跑）。
-- ⚠ **`--status` 也会写库**：`migrationStatus()` 先调 `migrate.list()`，它的 `ensureTable` 会建
-  `knex_migrations` + `knex_migrations_lock` → 只读账号跑 `--status` 会失败。
-- ⚠ **库里出现清单外的迁移行时，`--status`/`--down`/`--redo` 全部硬报错**
-  （knex 的 `validateMigrationList`：`The migration directory is corrupt, the following files are missing: …`）
-  → 回退代码版本后**连 `--down` 都不可用**（只能手改 `knex_migrations` 或先恢复代码）。
+1. **生成骨架**：`pnpm.cmd run db:generate -- <kebab-case>` → 产 `src/db/migrations/NNN_<name>.ts`（序号自动取当前最大 +1）。
+2. **手工注册**：把新文件 import 进 `src/db/migrations/index.ts` 的 `MIGRATIONS`，**追加到末尾** —— 脚本**不会**替你改。
+   `MIGRATIONS` 的**数组顺序就是执行顺序**（knex 不排序，Task 2 已用断言钉住），`tests/migrations.test.ts` 断言"清单 ↔ 文件"一一对应。
+3. **写 `up` / `down`**：`up` 只写结构；`down` 必须能**精确撤销** `up`（逐表逐列对称）。种子（若有）写"**只插不改**"，绝不写 `UPDATE`。
+4. **看状态**：`pnpm.cmd run db:migrate:status` —— ⚠ 它**不是只读的**（见纪律 ②）。
+5. **应用**：`pnpm.cmd run db:migrate`（幂等：已应用的条目靠 `knex_migrations` 跳过）。
+6. **回归**：`pnpm.cmd exec vitest run tests/migrations.test.ts tests/migration-schema.test.ts tests/migration-ddl-mysql.test.ts`；
+   有真 MySQL 时再加 `$env:MIWO_TEST_MYSQL="1"; pnpm.cmd exec vitest run` 与 `node scripts/verify-mysql-migration.cjs`（8/8）。
+
+#### 迁移纪律（**四条** —— 违反会有人踩坑）
+
+1. **"幂等"只到"迁移系统层面"**：靠 `knex_migrations` 跳过已执行条目，**不是** DDL 字面可重放。
+   ⇒ **不要**给 `createTable` 加 `hasTable` 守卫（那会掩盖真实的**结构漂移**：dev 库被手工补过列、而迁移里没有）。
+   只有对**老库**的兼容路径（退役表清理）才用真幂等守卫 `dropTableIfExists`。
+2. **`--status` 也会写库**：`migrationStatus()` 先调 `migrate.list()`，它的 `ensureTable` 会建
+   `knex_migrations` + `knex_migrations_lock` → **只读账号跑 `--status` 会失败**（knex 的行为，不是本项目的取舍）。
+3. **`up(knex)` 拿到的那个 knex 必须用**：在 `up` 里改用外层 `db` 做 DDL 会与迁移事务争抢同一条连接/库锁，
+   直到驱动超时失败（`MIWO_TEST_SLOW=1 pnpm test` 有一条 180s 的用例专门守这条约定）。
+4. **schema 迁移只允许用 schema builder**（`knex.schema.createTable` / `dropTableIfExists` / `alterTable`），
+   不得出现 `knex.raw` 或查询调用 —— `tests/migration-ddl-mysql.test.ts` 用一个"假 knex"收集编译出来的 DDL
+   来断言 MySQL 合法性，而那条路径**只覆盖 schema builder**。另：**不许在 `up` 里 import app 的业务模块**
+   （迁移要能在最小依赖下跑）。
+
+⚠ 两条**运维必知**事实（超出四条纪律，但直接决定你还能不能回滚）：
+
+- **库里出现清单外的迁移行时，`--status`/`--down`/`--redo` 全部硬报错**（knex `validateMigrationList`：
+  `The migration directory is corrupt, the following files are missing: …`）
+  → 回退代码版本后**连 `--down` 都不可用**（只能手改 `knex_migrations`，或先恢复代码版本再回滚）。
+- **迁移清单是 prod 产物的一部分，不是磁盘目录**：prod 跑的是 esbuild 打出的单文件 `data/serve/app.js`，
+  `MIGRATIONS` 被内存 `MigrationSource` 内联（磁盘迁移目录在容器里 ENOENT）⇒ **`knex migrate` CLI 不可用**是
+  **有意取舍**，必须用 `db:migrate` / `db:migrate:status` / `db:migrate:down` / `db:generate` 这四个自建脚本。
+
+#### prod 产物里的种子（`seed/` 必须跟产物一起走 —— 裁定 60）
+
+`002_platform_seed` 用 `fs.readFileSync` 读 `seed/*.ndjson`（**不是 `import`**），所以 esbuild **不会**把它们打进 `app.js`。
+该迁移的候选路径只有三条（`src/db/migrations/002_platform_seed.ts` 的 `SEED_DIR_CANDIDATES`）：
+
+| # | 候选路径 | 谁来命中 |
+|---|---|---|
+| 1 | `path.join(__dirname, "seed")` → 产物旁 `data/serve/seed` | **不依赖 cwd**，容器里 `WORKDIR` 怎么设都命中 |
+| 2 | `process.cwd()/src/db/migrations/seed` | **只有 dev**（cwd=`apps/api`）；容器里源码树不存在 |
+| 3 | `process.cwd()/data/serve/migrations/seed` | cwd=仓库根时命中 |
+
+⇒ `apps/api/scripts/build.ts` 在打包成功后会**两条都拷**（1 与 3），源目录缺失/为空则**直接 `exit 1`**
+（在 `esbuild.build()` **之前**预检，连 `app.js` 都不产出 —— 不留"有产物、没种子"的半成品，那会在**生产才炸**）。
+三条路径**一条都不命中时 `seedDir()` 抛错并指名尝试过的路径**（有意如此：绝不能静默地 seed 0 行）。
+
+```powershell
+cd apps\api
+pnpm.cmd run build                                      # 日志会打印「已拷贝 seed/ → data/serve/migrations/seed/（4 个文件）」
+Test-Path data\serve\migrations\seed\o_prompt.ndjson     # True
+```
 
 #### 回滚
+
 - `pnpm.cmd run db:migrate:down`（回滚最近一批）
 - `node --import=tsx scripts/db-migrate.ts --down --all`（全回滚；⚠ 必须在 `apps/api` 下跑，`tsx` 只装在 `@miwo/api`）
 - ⚠ 回滚会 drop 表；先备份（`db:export` 或直接拷库）
@@ -213,16 +279,59 @@ pnpm.cmd run db:migrate
   另外：**回滚后重建的库里不会自动有老库数据** —— `--down` 是"撤销结构"，搬迁数据要靠
   `db:import --apply` 再灌一遍（顺序：`--down --all` → `db:migrate` → `db:import --apply` → `db:compare`）。
 
-### 3. 老 sqlite 库怎么办
+### 3. 老 sqlite 库怎么办（**不原地跑**；导出 → 导入 → 比对）
 
-**不要在已有的 29 张表的老库上原地跑 `001_schema`** —— 它会 `createTable` 撞"表已存在"（症状与处置见下一节）。
-正确路径（Task 6 的工具链）：
+**不要在已有的 29 张表的老库上原地跑 `001_schema`** —— 它会 `createTable` 撞"表已存在"（症状与处置见下面「不支持在老库上原地跑迁移」一节）。
+正确路径（Task 6 的工具链，**四条命令**）：
 
-1. `scripts/export-sqlite.cjs`（导出 NDJSON + manifest，含查重与 id 越界检查）
-2. 目标库先跑迁移到最新（空库）
-3. `scripts/import-mysql.cjs --apply`（进空库校验 + 列交集 + id 保真）
-4. `scripts/compare-db.cjs`（行数 + 抽样比对）
-5. 回滚：`db:migrate:down --all`（或从 `.db-backups` 恢复 sqlite）
+```powershell
+cd apps\api
+# ① 导出：只读源库 → NDJSON + manifest（含查重与 id 越界检查）。
+#    ⚠ 输出目录**不得在仓库内**（默认拒绝）：o_setting.ndjson 里有真实 tokenKey（JWT 密钥）。
+$out = "$env:TEMP\miwo-export"
+pnpm.cmd run db:export -- --out=$out                                   # 推荐：产物落在仓库外
+# 若确要在仓库内留产物：pnpm.cmd run db:export -- --out=<仓库内目录> --allow-repo-out（用完必须删）
+
+# ② 目标库先迁移到最新（空库）：把 MIWO_DATA_DIR / MIWO_DB_* 指向目标
+$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:migrate
+
+# ③ 导入（默认 dry-run，先看报告；--apply 才写库）
+pnpm.cmd run db:import -- --in=$out
+pnpm.cmd run db:import -- --in=$out --apply
+
+# ④ 比对（行数 + 均匀/边界两层抽样，逐行比全部列）
+pnpm.cmd run db:compare -- --manifest=$out
+```
+
+回滚：`db:migrate:down --all`（或从 `D:\sy_workspace\.db-backups\` 恢复 sqlite 快照）。
+上面的 5 个环节（导出/迁移/导入/比对/回滚）分别由 `scripts/export-sqlite.cjs`、`scripts/db-migrate.ts`、
+`scripts/import-mysql.cjs`、`scripts/compare-db.cjs` 承担，核心逻辑在 `src/db/legacy/import.ts`。
+
+> ⚠ **`db:export` 是"开发机工具"**（【Ruling 109/113/125】）：它靠 `tsx` + `001_schema` 推导长度上限，
+> **不在生产镜像的运行路径上**（生产只跑 `data/serve/app.js`）。它的两大风险面都有硬护栏：
+> ① 源库只读（前后 sha256 必须相等）；② **输出目录不得落在仓库内**（默认直接拒绝，除非命令行显式 `--allow-repo-out`）。
+
+#### 数据库目标护栏（`apps/api/scripts/db-target-guard.cjs`）
+
+会写库的命令行脚本（`db:migrate` / `db:migrate:down` / `db:repair-stuck` / `db:import` / `db:compare`）
+都必须先过这道护栏。它有三条**故意不对称**的规则（全部是机制，不是提醒）：
+
+| # | 规则 | 判别力（为什么会红） |
+|---|---|---|
+| ① | **意图用 MySQL 的脚本漏设 `MIWO_DB_DRIVER=mysql` → 立刻拒绝**，绝不静默回落 sqlite | 默认驱动是 `sqlite` + 默认数据目录是 `apps/api/data` ⇒ "根本没连 MySQL" 会被伪装成 "MySQL 有 bug"；Task 10 就因此写坏过 dev 库 |
+| ② | **`up`/`down`/`rollback`/导入/比对默认不许打到仓库内 dev 库**（判据是**解析后的目标路径**，不是"你有没有写 `MIWO_DATA_DIR`"） | 显式写 `MIWO_DATA_DIR=./data` 解析出来**还是**那份 dev 库 —— 原来把它当豁免，等于"把同一件事多打了一遍" |
+| ③ | **显式放行 = 显式承担 + 留下可恢复点**（【Ruling 139】）：给了 `--allow-repo-dev-db`（或 `MIWO_ALLOW_REPO_DEV_DB=1`）之后，护栏会先在**仓库外**备份目录（默认 `<仓库根>/../../.db-backups`，本机 = `D:\sy_workspace\.db-backups`）里找一份 **sha256 与当前 dev 库相同**的既有备份；找不到就现备一份并**校验拷贝的 sha256**。两条都做不到（目录建不出来 / 校验不一致）→ **仍然拒绝** | 本阶段 dev 库被误写 **3 次**（Task 10 一次、Task 11 两次：为做红绿，`--status` 真的把 29 表改成 31 表），三次都靠"**恰好**有 sha256 相同的备份"救回 —— 可恢复性不该交给运气。自证两端：无备份→先建可恢复点再放行；有备份→复用且不重复造；备份建不出来→拒绝 |
+
+```powershell
+cd apps\api
+# ① 正常用法：把目标指向**仓库外**的一次性目录（无需任何放行开关）
+$env:MIWO_DATA_DIR="$env:TEMP\miwo-target"; pnpm.cmd run db:migrate
+# ② 确要动仓库内 dev 库：显式放行（护栏会先备份到 D:\sy_workspace\.db-backups\，并打印 sha256）
+pnpm.cmd run db:migrate:status -- --allow-repo-dev-db
+```
+
+⚠ `--allow-repo-dev-db` / `MIWO_ALLOW_REPO_DEV_DB` 与 `--allow-repo-out` 都是**进程级一次性开关**，
+**不是**新的 `MIWO_*` 配置变量（`config.ts` 不读它们、它们不影响任何配置派生）。
 
 ### 4. 本阶段已知的语义变化（不是 bug）
 
@@ -233,15 +342,48 @@ pnpm.cmd run db:migrate
 - `userId` 列已建出但**未回填**（回填归 Phase 1b）。
 - 全新库的 JWT 密钥来自配置 `MIWO_JWT_SECRET`（`o_setting.tokenKey` 不进新库）。
 
-### 5. 测试
+### 5. 测试（含**降级口径**与**验收基线**）
 
-- 默认（无 MySQL）：`pnpm test` —— 所有 sqlite 用例 + **MySQL 集成用例 skip**
-- 真 MySQL：先 `mysql-local.ps1 -Action start|createdb`，然后
-  `$env:MIWO_TEST_MYSQL="1"; pnpm test`（或只跑 `pnpm.cmd exec vitest run tests/mysql-integration.test.ts`）
-- 慢用例（约 60s）：`$env:MIWO_TEST_SLOW="1"`
+```powershell
+cd apps\api
+pnpm.cmd exec vitest run                 # 默认（无 MySQL）：所有 sqlite 用例；MySQL 集成用例**跳过**
+$env:MIWO_TEST_MYSQL="1"; pnpm.cmd exec vitest run   # 真跑 MySQL（先 mysql-local.ps1 -Action start|createdb）
+pnpm.cmd exec vitest run tests/mysql-integration.test.ts   # 只跑 MySQL 集成
+$env:MIWO_TEST_SLOW="1"; pnpm.cmd exec vitest run          # 慢用例（约 60s）
+```
 
-⚠ `MIWO_TEST_MYSQL` 是**测试门控**，不是应用配置：它**不进** `apps/api/.env.example`、
-**不进** `deploy/`、也不在 `tools/check-deploy-config.cjs` 的白名单里（`check-deploy-config` 会红）。
+**当前验收基线**（Task 12 实测，口径数字若漂移请先查清是哪条断言变了，**不要**改数字了事）：
+
+| 门禁 | 命令 | 期望 |
+|---|---|---|
+| 默认套件 | `pnpm.cmd exec vitest run`（`apps/api` 下） | **140 passed \| 8 skipped** |
+| MySQL 套件 | `$env:MIWO_TEST_MYSQL="1"; pnpm.cmd exec vitest run` | **147 passed \| 1 skipped** |
+| Phase 0 验收 | `node apps/api/scripts/verify-phase0.cjs` | **43/43** |
+| Phase 1a 验收 | `pnpm.cmd run verify:phase1a` | **60/60**（sqlite 与 MySQL **两条口径**皆是） |
+
+（表里的数字只增不减：Task 5 把 `verify-phase0` 由 31/31 抬到 36/36，Task 10 → 41/41，Task 11 → **43/43**；
+Task 12 给 `tests/db-driver.test.ts` 加了 2 条 `u.db` 白名单用例，套件 138\|8 → **140\|8**、145\|1 → **147\|1**。）
+
+#### 降级口径：本机没有 MySQL 时怎么自证
+
+不用装 MySQL 也能把**大部分**结论钉住（下面四条都不连服务端）：
+
+1. **静态 DDL 断言**：`pnpm.cmd exec vitest run tests/migration-ddl-mysql.test.ts` —— 用"假 knex"（`knex({client:"mysql2"})`）
+   把 `001_schema` 编译成 MySQL DDL 串，断言自增主键 / `varchar(191)` 主键 / 唯一键 / `tinyint` 等形状；
+2. **类型装得下**：`pnpm.cmd exec vitest run tests/migration-column-fit.test.ts` —— 老库逐列实测值域
+   （`tests/fixtures/legacy-column-stats.json`）vs 编译出的 MySQL 类型上界，判定复用生产函数 `outOfRangeValues` / `oversizeValues`；
+3. **迁移机制**：`tests/migrations.test.ts` + `tests/migration-schema.test.ts`（在一次性 **sqlite** 库上真跑 up/status/down/幂等/退役表）；
+4. **端到端验收**：`node apps/api/scripts/verify-phase1a.cjs`（A/B/D/E 组全在 sqlite 口径下成立；C 组跑导出→导入→比对，F 组才是真 MySQL）。
+   ⚠ 它**证明不了**"全新 MySQL 库的结构对不对"：它建的是全新 **sqlite** 库，漏一列会两边**一致地错** —— 这正是上面 1/2 两条存在的原因。
+
+**CI 的真 MySQL job 在哪**：`.github/workflows/ci.yml` 的 `mysql` job（**mysql:8.4 service container**，
+`MIWO_TEST_MYSQL=1` + 独立库名，跑迁移往返 + 集成测试 + 搬迁链），结构由 `node tools/check-ci-yaml.cjs` 机械断言。
+⚠ 如实登记：**真 GitHub runner 从未执行过它**（仓库无 remote），它目前只有"YAML 结构断言 + 本机等价命令"两层证据。
+
+⚠ `MIWO_TEST_MYSQL` 是**测试门控**，不是应用配置：它**不进** `deploy/`，也**不能**写进 `apps/api/.env.example`
+（**连注释行都不行**）—— `tools/check-deploy-config.cjs` 的规则 2 把「注释形式的声明」也算作"声明"，
+而它不在 `config.ts` 里，于是 `pnpm.cmd run verify:deploy` 会报
+「apps/api/.env.example 声明了 MIWO_TEST_MYSQL，但 config.ts 不读它」。（Task 12 实跑复现过；原文见 `task-12-report.md`。）
 
 ### 6. MySQL 特有行为（Task 7 首次真连的实测记录）
 
@@ -313,8 +455,9 @@ pnpm.cmd run db:migrate
   （迁移名册、`o_prompt` 4 行、`o_agentDeploy` 19 行、`o_setting` 只有平台键、`o_vendorConfig` 8 个空模板），
   最后才起应用、轮询、收尾。
   - 它**不再需要** Task 4 那段临时脚手架（`apps/api/scripts/verify-phase0-seed-min.ts`）—— 该文件与其调用点
-    已随 Task 5 删除（断言只增不减：31/31 → **36/36**，用"种子四张表都落地 + 库里没有 tokenKey"取代了
-    原来的"种了 tokenKey 就能起服务"）。
+    已随 Task 5 删除（断言**只增不减**：27/27 → 31/31 → **36/36**（Task 5）→ 41/41（Task 10）→ **43/43**（Task 11），
+    用"种子四张表都落地 + 库里没有 tokenKey"取代了原来的"种了 tokenKey 就能起服务"）。
+    当前口径见 §5 的「当前验收基线」表。
   - ⚠ `o_setting.tokenKey` **不进新库**（`002_platform_seed` 有一条显式断言兜住它）：JWT 密钥取自配置
     `MIWO_JWT_SECRET`（`src/app.ts` 的鉴权中间件在库里没有 `tokenKey` 行时回退到它）。把密钥从库里搬进配置
     正是 spec §6.2 / Phase 1c 的方向，所以"新库里没有 tokenKey"是**预期状态**。
@@ -327,10 +470,13 @@ pnpm.cmd run db:migrate
 
 ```powershell
 cd apps\api
-pnpm.cmd run db:export                              # SQLite → .tmp-migrate/export/*.ndjson + manifest.json
-$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:import            # dry-run（默认不写）
-$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:import -- --apply # 真的写
-pnpm.cmd run db:compare                             # 行数 + 抽样单元格深比较
+# ⚠ 输出目录**不得落在仓库内**（Task 12 / Ruling 113·125 起默认直接拒绝）：产物含真实 tokenKey。
+$out = "$env:TEMP\miwo-export"
+pnpm.cmd run db:export -- --out=$out                                        # SQLite → $out/*.ndjson + manifest.json
+$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:import -- --in=$out              # dry-run（默认不写）
+$env:MIWO_DATA_DIR="C:\Temp\miwo-target"; pnpm.cmd run db:import -- --in=$out --apply      # 真的写
+pnpm.cmd run db:compare -- --manifest=$out                                  # 行数 + 抽样单元格深比较
+# 确要在仓库内留产物（会留 tokenKey）：加 --allow-repo-out，用完**必须**删掉并 `Test-Path` 复核 False
 ```
 
 - **搬迁链三步**：`scripts/export-sqlite.cjs`（只读源库 → NDJSON + manifest）→
@@ -341,12 +487,16 @@ pnpm.cmd run db:compare                             # 行数 + 抽样单元格�
   `apps/api/data/db2.sqlite` 的 sha256 是硬约束，任何验收都不许改写它。
 - ⚠ **用户机真实库（`%APPDATA%\ToonFlow\data\db2.sqlite`）不在搬迁范围**：脚本对它**硬拒绝**
   （连只读打开都不做）。搬迁只针对仓库里的 dev 库快照。
-- ⚠ **导出物是机密**：`o_vendorConfig.inputValues` 里存着真 API key。所以导出目录
-  `apps/api/.tmp-migrate/` 被 gitignore（见 `.gitignore` 的说明），用完即删。
+- ⚠ **导出物是机密**：`o_setting.ndjson` 里有老库那一行**真实 `tokenKey`（JWT 密钥）**、
+  `o_vendorConfig.ndjson` 的 `inputValues` 里存着真 API key。所以
+  **① 输出目录默认不许落在仓库内**（Task 12 / 【Ruling 113·125】：`export-sqlite.cjs` 解析出目标在仓库内就
+  **直接拒绝**，除非命令行显式 `--allow-repo-out`；本阶段已经因为"产物残留在仓库里"出过一次事故）；
+  **② `apps/api/.tmp-migrate/` 已被 gitignore**（见 `.gitignore` 的说明），但它**不是加密** —— 用完即删，
+  删完用 `Test-Path` 复核 False（只写"已清"不算证据）。
 - **导入的四条硬闸门**（任一不满足即拒绝，见 `import.ts` 的 `preflightImport`）：
   ① manifest 的 `duplicates` / `badIds` 必须为空；② 目标库必须已有全部表；
   ③ 目标库的**业务表必须全空**（四张平台种子表例外，见下）；④ **目标列表示不了的值**在 MySQL 目标下阻断。
-- ⚠ **两条"只在真 MySQL 暴露"的真实缺口**（Task 6 实跑体检结果，处置需拍板；`001_schema` 本 Task 不改）：
+- ⚠ **两条"只在真 MySQL 暴露"的真实缺口**（Task 6 实跑体检结果；**`001_schema` 本 Task 不改**）：
   1. **超长文本**：老库 `o_agentWorkData.data`（productionAgent 的 JSON）**最大 103,624 字符 / 5 行超 255**、
      `o_tasks.relatedObjects` **最大 614 字符 / 2 行超 255**，而 `001_schema` 里这两列是 `varchar(255)` ——
      sqlite 不强制长度所以看不出问题，**真 MySQL 严格模式会 `Data too long for column`**。
@@ -355,6 +505,13 @@ pnpm.cmd run db:compare                             # 行数 + 抽样单元格�
      MySQL 的 `int` 上限 2147483647 → 严格模式 `Out of range value`，非严格模式**静默夹断**（数据损坏）。
      sqlite 的 INTEGER 是 64 位，本机永远看不出问题。
   3. `memories.isolationKey` 收窄到 `varchar(191)`（老库 TEXT）：实测最大 31 字符 → **安全**。
+  - ⚠⚠ **Task 12 更正（这段文字记录的是 Task 6 当时的状态，后来已被修复轮改掉）**：上面第 1、2 条
+    **已经不在 `001_schema` 里成立了** —— 现在 `o_agentWorkData.data` / `o_tasks.relatedObjects` 是 `t.text()`
+    （MySQL `longtext`）、`o_segment.projectId` / `o_shot.projectId` 是 `t.u64()`（MySQL `bigint unsigned`）。
+    机械守卫：`tests/migration-column-fit.test.ts` 的判据 B/C（老库实测值域 vs 编译出的目标类型，
+    当前实测 `扫描 27 张表 / 226 列 → 越界 0 / 超长 0`）与 `tests/migration-schema.test.ts`。
+    **这段"缺口"保留在文档里是因为 preflightImport 的两条闸门（`oversize-value` / `numeric-overflow`）仍然存在且必须存在** ——
+    换一列、换一次老库快照就会重新有值可报，闸门不该随"当前恰好没有超长值"而删。
   - 这两类都在**写入之前**由 `preflightImport` 报出来（`oversize-value` / `numeric-overflow`）：
     sqlite 目标只登记（不阻断），MySQL 目标阻断。`--allow-oversize` 是"已确认可丢"的显式开关
     —— **整行丢弃并逐条登记，绝不截断、绝不夹断**（`expectedAbsent` 里可逐条复核）。
@@ -425,8 +582,24 @@ pnpm.cmd run db:compare                             # 行数 + 抽样单元格�
 - **实测差距**：只跑第一层时 27 张表全绿；加上第二层立刻红了 1 处
   （`o_vendorConfig.enable @ {"id":"volcengine"}`，见下面第 4 条）。所以"全绿"必须读成
   "**抽到的**行一致"，不是"数据一致"。
-- 边界查询只 `SELECT` 主键 + 那一列（不能把 10 万字符的行 ×226 列整行拉回来），
+- 边界查询只 `SELECT` 主键 + 那一列（不能把 10 万字符的行 ×**207** 列整行拉回来），
   抽中的行再按主键回源库取**整行**，与均匀层同口径（整行、逐列）。
+  - ⚠ **这里的 207 是"搬迁范围"口径**（【Ruling 93 + 138】）—— 两套机械口径都逐条登记，不许再有"无人覆盖的数字"：
+
+    | 口径 | 怎么算出来的 | 表 | 列 | 行 |
+    |---|---|---|---|---|
+    | **搬迁范围** | `export-sqlite.cjs` / `import.ts` 的 27 张表白名单（**边界抽样扫的就是这一套**） | **27** | **207** | **2373** |
+    | **整库** | `gen-legacy-column-stats.cjs` 全扫 `sqlite_master` → `tests/fixtures/legacy-column-stats.json` | **29** | **219** | **2408** |
+
+    差**恰好**是退役的两张表（`o_skillList` + `o_skillAttribution` = **12 列 / 35 行**：`219−207=12`、`2408−2373=35`），
+    已钉成断言：`apps/api/scripts/verify-phase1a.cjs` 的 C 组**现算**这两个口径并逐项对账（fixture 与导出物双向）。
+  - ⚠ 本行**原文写的是"×226 列"**（沿用 Task 6 报告里的一个数）。它不属于上面任何一套口径，
+    而是在**第三套口径 —— 目标 schema** 上成立的数：`001_schema` 建出的 27 张表共 **226** 列
+    （机械钉在 `apps/api/tests/migration-column-fit.test.ts:268` 的 `expect(totalTargetColumns).toBe(226)`；
+    它比**源库**同样这 27 张表的 207 列多 19 列 —— 目标结构里有源库没有的列，本阶段新增的 `userId` 等）。
+    **"源库 207 列"与"目标 226 列"是两个方向，不能混用**：本行讲的是"从**源库**按列取极值时不要把整行拉回来"，
+    所以口径是 **207**（整库口径则是 219）。
+    （同一处口径也写在代码注释里：`apps/api/scripts/extreme-picks-runner.ts` 的文件头。）
 - 比对口径 `equivalentForCompare()`：先跑 `valuesEqual()`（**不 trim、不忽略大小写**，
   【Ruling 77】），只在判不等时回退到 `String(a) === String(b)`（容忍 `0`/`"0"`、`null`/`undefined`）。
   所以 `"a "` vs `"a"`、`"A"` vs `"a"` **仍然报差异**，而 `"0"` vs `0` 不算差异。
@@ -539,4 +712,39 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
    `verify-phase0.cjs` **刻意不执行也不断言**它 —— 执行它会向旧仓库写 `version.txt`、留下进程与监听端口，
    与 Phase 0 的硬约束（绝不修改旧仓库、不留残留进程）直接冲突。
    ⇒ 这一条由人按 Step 4 手工确认，脚本不代劳。
+
+## Phase 1a deferred 登记表（Task 12 定稿；16 条）
+
+> **性质**：Phase 1a 结束时**仍未具备**的能力与**有意不做**的事，逐条登记"归属 Phase"与"依据"。
+> 每条的"依据"都指向 Phase 0/1a 的具体条目（spec 章节 / Ruling / 实测报告），不是泛泛而谈。
+> ⚠ 本表是**决策登记**，不是 TODO 池：没被登记的"以后再说"等于没做决定。
+
+| # | deferred 项 | 归属 | 依据 / 说明 |
+|---|---|---|---|
+| 1 | `o_imageFlow` 的 `userId` **回填** | Phase 1b | 本阶段已给结论（tenant）+ 加列；回填依据 `o_imageFlow.id = o_assets.flowId → o_assets.projectId → o_project.userId`（实测 `flowData` 里的图片路径形如 `{projectId}/role/...`，与 `uploadImage.ts:40` 同源） |
+| 2 | `o_event.userId` 回填（经 `o_eventChapter → o_novel → o_project`） | Phase 1b | spec 附录 A「`o_event` 无任何归属列」；本阶段只加列 |
+| 3 | 其余 16 张租户表的 `userId` 回填 | Phase 1b | spec §6.2 / §14 R5 |
+| 4 | `knex_migrations` / `knex_migrations_lock` 的策略声明 | Phase 1b | 本阶段实测这两张表会被 knex 创建（Task 7 Step 4）；`policies.ts` 是 fail-closed 的，**必须显式声明**否则将来碰它们就报错 |
+| 5 | `o_project.id` 去掉 `Date.now()` | Phase 1b | spec §5.3（同批改 `addProject.ts:29`） |
+| 6 | 35 处 `insert` 的 `insertId` 语义复核 | Phase 1b | spec §5.3；本阶段已在 Task 3 Step 9 与 Task 7 Step 6 把差异钉成断言 |
+| 7 | 删除 `lib/initDB.ts` / `lib/fixDB.ts`（+ 把 `check-copy` 的 `.ts` 下限再降） | Phase 1c | 本阶段已摘除启动路径 + 删掉危险分支；删文件会撞 `verify-phase0` 的构件清单与 `check-copy` 下限 |
+| 8 | `o_user` 重建（argon2id / role / tokenVersion / 删 `admin/admin123`） | Phase 1c | spec §7.1；本阶段按现状建表（`bigint unsigned` 无自增） |
+| 9 | `o_setting` 的 `tokenKey` 彻底移出 DB + 7 个用户级键迁 `o_userSetting` | Phase 1c | spec §6.2；本阶段的 `002_platform_seed` **不 seed** `tokenKey` 与用户级键（且有断言禁止 `tokenKey` 入新库） |
+| 10 | 重启后"生成中"不再自动改判失败 | **Phase 1d** | spec §5.2 ② 要求删除那 6 条 UPDATE；替代机制是队列租约超时（§9.2）。**中间窗口的语义变化已在 Task 4 Step 6 盖章** |
+| 11 | `o_agentWorkData.data` 是 `varchar(255)` | 观察项（Phase 1b 评估） | 现状 sqlite 也是 `varchar(255)`，无回归；但中文 JSON 摘要超 255 字符会截断/报错 |
+| 12 | `MIWO_TEST_MYSQL` **不能**写进 `apps/api/.env.example`（**连注释行都不行**） | 有意（**Task 12 实测更正**） | 计划原写"以注释形式出现即可，`check-deploy-config` 允许注释声明"——**实跑证伪**：`check-deploy-config.cjs` 规则 2 把注释形式的 `# NAME=` 也算作"声明"，而它不在 `config.ts` 里 ⇒ `verify:deploy` 变红。它是 **vitest 的门控**，用法见 §5；实跑原文见 `task-12-report.md` |
+| 13 | `data/vendor/*.ts` 的 13 个适配器与 `vendor.json` 模板的对账结果 | 观察项 | Task 10 Step 5 的输出；本阶段只报告不写盘（`003_vendor_asset_sync` 的 `up` 只登记不写文件） |
+| 14 | `apps/api/LICENSE`、`data/vendor/*.ts` 的 `author` 字段（写着**旧品牌名**）、前端 i18n 品牌残留 | Phase 1c / Phase 3 | Phase 0 ledger 的既有 deferred 裁定（本阶段不动，`check-brand` 有**逐条带理由**的豁免机制） |
+| 15 | `NOTICES.txt` 仍列 electron 系许可证 | Phase 1c | Phase 0 ledger（用 `pnpm license` 重生成） |
+| 16 | `deploy/` 的容器路径整体未验证 + 无 `.dockerignore` | Phase 1d 准入前必修 | Phase 0 ledger **N1**；`seed/*.ndjson` 在容器里也要能读到 —— **代码侧**由 `002_platform_seed` 的三条候选路径处理，**产物侧**由 Task 12 Step 4（裁定 60）的构建拷贝处理（源目录缺失即 `exit 1`，不静默） |
+
+### 本阶段完成后**仍未**具备的能力（P2 汇总，如实登记）
+
+1. **`userId` 没有回填** —— 18 张租户表的 `userId` 都是 NULL（除 `o_project` 原有的 7 行）；隔离策略与回填在 Phase 1b。
+2. **重启后"生成中"不再自动改判失败** —— 在 Phase 1d 的队列租约落地前，界面上可能有永久"生成中"的残留行；
+   过渡期用 `pnpm.cmd run db:repair-stuck`（默认 dry-run）。
+3. **MySQL 的 CI 证据来自 YAML 结构断言 + 本机等价命令**，真 GitHub runner 从未执行过（仓库无 remote）。
+4. **`deploy/` 的容器路径仍未验证**（本机无 Docker）。
+5. **`o_agentWorkData.data` 仍是 `varchar(255)`**（中文长 JSON 有截断风险，Phase 1b 评估）。
+6. **老 sqlite 库不能"原地迁移"** —— 必须先导出再导入一个空目标库（见「⚠ 不支持"在老库上原地跑迁移"」一节）。
 

@@ -134,3 +134,70 @@ describe("types() 的 sqlite 行为（可在本机真跑）", () => {
     await db.destroy();
   });
 });
+
+/**
+ * `u.db` 的成员白名单（Phase 1a / Task 12 Step 6；历史**真机** bug：`db.transaction is not a function`）。
+ *
+ * ⚠ 这里 import 的是**真模块** `../src/utils/db` —— 它在求值时就会 `connect()` + `migrate.latest()`
+ *   （`dbReady`）。**这是有意的**：它顺带验证"模块加载 = 迁移完成"，而这条路径正是旧黑名单 hack
+ *   会把整个模块初始化搞崩的地方（严格模式下读 `caller` 直接抛）。
+ *   数据目录是 `vitest.config.ts` 的 `MIWO_DATA_DIR`（`D:\tmp\miwo-test-data`，**仓库外**的一次性目录）；
+ *   **不碰** `apps/api/data/db2.sqlite`（那是本阶段的硬约束，sha256 冻结）。
+ *
+ * ⚠ 与计划文本的一处**实测差异**：计划写的是"9 个成员 `typeof` 全是 `function`"。实测（knex 3.x）
+ *   `fn` / `schema` / `client` / `migrate` / `seed` 是**对象** —— 照抄那条用例会红。
+ *   这里改成**逐成员断言真实形状**：比"全是函数"更强，它同时把"函数要 `bind(db)`、对象不能 `bind`"
+ *   钉住了（`schema.createTable` / `migrate.latest` 的存在性断言就是"不是空对象占位"的证据）。
+ */
+describe("u.db 的成员白名单", () => {
+  it("白名单成员按真实形状可用，且 u.transaction / u.raw 真的能跑", async () => {
+    // 先清掉上一次跑留下的一次性库，让这次 import 真的走"建库 + 迁移"（而不是复用旧文件）。
+    const dataDir = process.env.MIWO_DATA_DIR || TMP;
+    fs.rmSync(path.join(dataDir, "db2.sqlite"), { force: true });
+    const mod = await import("../src/utils/db");
+    const u = mod.default as any;
+    expect(typeof u).toBe("function"); // db("表") 的调用形态不变
+    for (const m of ["transaction", "raw", "ref", "destroy"]) expect(typeof u[m], m).toBe("function");
+    for (const m of ["fn", "schema", "client", "migrate", "seed"]) expect(typeof u[m], m).toBe("object");
+    // "对象"不等于"空对象占位"：逐个点名它们的关键成员
+    expect(typeof u.schema.createTable, "schema.createTable").toBe("function");
+    expect(typeof u.migrate.latest, "migrate.latest").toBe("function");
+    expect(typeof u.seed.run, "seed.run").toBe("function");
+    expect(typeof u.fn.now, "fn.now").toBe("function");
+    expect(u.client, "client 是 knex 的 Client 实例").toBeTruthy();
+
+    // `u.transaction` 绑的是**模块自己的** knex（不是本文件里那些一次性库）：
+    // 原 bug 下它是 undefined → 这里会 `TypeError: u.transaction is not a function`。
+    const inTx = await u.transaction(async (trx: any) => trx.raw("select 1 as one"));
+    expect(inTx).toBeTruthy();
+    expect(await u.raw("select 1 as one")).toBeTruthy();
+
+    // 真实的 transaction 往返（这就是 persistShots 那条链路的前提）
+    const db = createKnex(cfgSqlite());
+    await db.schema.createTable("t", (T) => { T.increments("id"); T.string("v"); });
+    await db.transaction(async (trx) => { await trx("t").insert({ v: "a" }); });
+    expect((await db("t").select("v")).map((r: any) => r.v)).toEqual(["a"]);
+    await db.destroy();
+  });
+
+  it("判别力：毒药属性既不会在初始化时被读到，也不会被挂上（黑名单 → 白名单）", async () => {
+    const mod = await import("../src/utils/db");
+    const u = mod.default as any;
+    // 白名单是"只读这些名字"，`caller` / `arguments` 在结构上就不可能被读到；
+    // 它们也**不是**包装函数的自有属性（旧黑名单 hack 曾把这两位当作要处理的常规键）。
+    expect(Object.prototype.hasOwnProperty.call(u, "caller")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(u, "arguments")).toBe(false);
+    // 而旧 hack 的遍历空间（实测 `Object.getPrototypeOf(knex) === Function.prototype`）里**有**它们：
+    // 黑名单必须先知道要跳哪些，而"要跳的名单"只能靠猜 —— 这就是换白名单的理由。
+    const probe = createKnex(cfgSqlite(path.join(TMP, "fproto.sqlite")));
+    expect(Object.getPrototypeOf(probe)).toBe(Function.prototype);
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(probe))).toEqual(
+      expect.arrayContaining(["caller", "arguments"]),
+    );
+    void probe.destroy();
+    // 严格模式函数上读它们**直接抛** —— 包装函数本身（定义在 ESM 模块里）就是严格函数，
+    // 所以"读一下再跳过"的写法在 esbuild 产物里必然炸；本用例跑得完 = 白名单没读它们。
+    expect(() => (u as any).caller).toThrow(/caller|arguments/);
+    expect(() => (u as any).arguments).toThrow(/caller|arguments/);
+  });
+});

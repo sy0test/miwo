@@ -67,46 +67,59 @@ dbReady.catch((err) => {
 });
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
-dbClient.schema = db.schema;
+
 /**
- * ⚠ `Object.assign` 只拷**自有属性**，而 knex 的实例方法（`transaction` / `raw` / `fn` / `ref` …）
- * 都在**原型**上 —— 于是 `u.db("表")` 能用，`u.db.transaction(fn)` 却是 undefined
- *（真机表现：`db.transaction is not a function`，事务落库整条路径静默失败）。
- * 这里把原型上的方法一并绑到包装函数上：既有调用方式不变，同时让 `u.db` 真正像 knex 一样可用。
+ * `u.db` 的形状：函数 + **显式白名单**成员（spec §5.1）。
+ *
+ * ⚠ 历史（这里原先是一个**黑名单 hack**，实测过两层都是坏的）：
+ *
+ *   第一层：`Object.assign(wrapper, db)` —— 拷不到任何 knex 方法。knex 把 `transaction` / `raw` /
+ *   `schema` … 定义成 **db 函数自己的、`enumerable: false` 的属性**（`schema` / `client` 还是 getter），
+ *   而 `Object.assign` 只拷**自有可枚举**属性 ⇒ `u.db("表")` 能用、`u.db.transaction(fn)` 是 `undefined`
+ *   （真机表现：`db.transaction is not a function`，事务落库整条路径静默失败）。
+ *
+ *   第二层：`for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(db)))` + 一张
+ *   `SKIP = {constructor, caller, arguments, prototype, length, name}` 黑名单。实测
+ *   **`Object.getPrototypeOf(db) === Function.prototype`**（knex 的成员是自有属性，不在原型上）
+ *   ⇒ 这个循环遍历到的恰好是 `Function.prototype` 的 `caller`/`arguments`/… —— 在**严格模式**
+ *   （esbuild 打出来的包带 "use strict"）下读它们**直接抛**：
+ *     TypeError: 'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions
+ *   后果是整个 `utils/db` 模块初始化失败 → 所有 `db(...)` 调用点都拿到 undefined
+ *   → 打包版启动报「服务启动失败 / db_default is not a function」，后端起不来。
+ *   （dev 用 tsx 转成非严格模式，读 `.caller` 只是拿到 null，所以本地测不出来。）
+ *
+ *   净效果：那个"拷贝原型方法"的循环**一个方法都没拷到**（真正起作用的是紧随其后的小名单），
+ *   却引入了唯一的崩溃源。黑名单永远会漏 —— 现在换成**白名单**：只有下面这些成员会被挂上去，
+ *   其余（含 `caller`/`arguments`）**在结构上不可能**被读到，不是"读到了再跳过"。
+ *
+ * 白名单的选取依据 = 全仓实际使用到的（`transaction` / `raw` / `schema`）+ knex 公共 API 里形状必需的那几个。
+ * **形状必须逐个写对**（`typeof` 实测，knex 3.x）：`transaction` / `raw` / `ref` / `destroy` 是**函数**
+ * （要 `bind(db)`，否则 `this` 丢失）；`fn` / `schema` / `client` / `migrate` / `seed` 是**对象**
+ * （`bind` 只会把它们弄坏）。
+ *
+ * 若要新增，**必须同时在这里与 `tests/db-driver.test.ts` 的断言里加**（否则测试会红）。
  */
-{
-  const proto = Object.getPrototypeOf(db);
-  // ⚠ `getOwnPropertyNames(Function.prototype)` 里有 **`caller` / `arguments` / `prototype`**：
-  // 在**严格模式**（esbuild 打出来的包带 "use strict"）下**读取它们会直接抛**
-  //   TypeError: 'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions
-  // 后果是整个 `utils/db` 模块初始化失败 → 所有 `db(...)` 调用点都拿到 undefined
-  //   → 打包版启动报「服务启动失败 / db_default is not a function」，后端起不来。
-  //（dev 用 tsx 转成非严格模式，读 `.caller` 只是拿到 null，所以本地测不出来 —— 必须跳过。）
-  const SKIP = new Set(["constructor", "caller", "arguments", "prototype", "length", "name"]);
-  for (const key of Object.getOwnPropertyNames(proto)) {
-    if (SKIP.has(key)) continue;
-    let value: any;
-    try {
-      value = (db as any)[key];
-    } catch {
-      continue; // 万一还有别的"毒药属性"，跳过就好，不能让模块初始化挂掉
-    }
-    if (typeof value === "function" && typeof (dbClient as any)[key] !== "function") {
-      (dbClient as any)[key] = value.bind(db);
-    }
+const DB_MEMBERS = {
+  transaction: "function",
+  raw: "function",
+  ref: "function",
+  destroy: "function",
+  fn: "object",
+  schema: "object",
+  client: "object",
+  migrate: "object",
+  seed: "object",
+} as const;
+
+for (const [key, shape] of Object.entries(DB_MEMBERS)) {
+  let value: any;
+  try {
+    value = (db as any)[key];
+  } catch {
+    continue; // 万一某个属性是 getter 且会抛，跳过而不是让模块初始化挂掉
   }
-  // 链式构造器（db.select/from/...）与顶部调用同为函数属性，一并兜住
-  for (const key of ["transaction", "raw", "destroy", "fn", "ref", "schema", "client"] as const) {
-    let value: any;
-    try {
-      value = (db as any)[key];
-    } catch {
-      continue;
-    }
-    if (typeof value === "function" && typeof (dbClient as any)[key] !== "function") {
-      (dbClient as any)[key] = value.bind(db);
-    }
-  }
+  if (typeof value !== shape) continue; // 形状与白名单不符 → 不挂（宁缺勿错，也不抛）
+  (dbClient as any)[key] = shape === "function" ? value.bind(db) : value;
 }
 export default dbClient;
 

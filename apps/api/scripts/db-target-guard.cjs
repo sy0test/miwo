@@ -33,6 +33,14 @@
  *     `MIWO_ALLOW_REPO_DEV_DB` 是**进程级一次性开关**（`config.ts` 不读它、它有值也不影响
  *     任何配置派生），与 `MIWO_GEN_DB_TYPES` 同类。
  *
+ *   护栏 ③ `ensureRecoverablePoint(opts)` ——【Ruling 139】**放行开关不足以放行**：
+ *     "显式放行 = 显式承担 + **留下可恢复点**"。`requireRepoDevDbAllowed()` 在语法层放行之后
+ *     会**先**在仓库外（默认 `<仓库根>/../../.db-backups`）找到一份 sha256 相同的既有备份，
+ *     或者现备一份并**校验拷贝的 sha256**；两条都做不到就**仍然拒绝**。
+ *     为什么必须这样：本阶段 dev 库被误写过 **3 次**（Task 10 一次、Task 11 两次），
+ *     三次都靠"**恰好**存在一份 sha256 相同的备份"救回 —— 可恢复性不能交给运气。
+ *     它只读目标库（`readFileSync` / `copyFileSync`），**绝不打开、绝不改写** dev 库。
+ *
  * ── 为什么放在 `scripts/` 而不是 `src/db/` ──
  *   `tools/check-tenant-exceptions.cjs` 把 `apps/api/src/**` 的 `.ts` 文件数钉成逐项快照
  *   （`scanScope.tsFilesScanned`）：往 `src/` 加一个 `.ts` 就要重跑 `--record` 并把新文件
@@ -50,6 +58,7 @@
  */
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 
 const API_ROOT = path.resolve(__dirname, "..");
@@ -243,6 +252,14 @@ function repoDevDbVerdict(opts) {
       resolved,
       canonicalDevFile,
       driver,
+      // ⚠⚠ 【Ruling 139】这里只是**语法层**放行：真正的强制在 `requireRepoDevDbAllowed()` ——
+      //    它会先建立/复用"可恢复点"（备份），再放行；建不出来就**仍然拒绝**。
+      //    把这一层留在 verdict 里（而不是在这里做 I/O）是为了让 verdict 保持纯函数：
+      //    `verify-phase1a.cjs` 与单测都可以随便调它，不会顺手写盘。
+      optIn: {
+        flag: argvFlag ? "--allow-repo-dev-db" : "MIWO_ALLOW_REPO_DEV_DB=1",
+        recoverablePoint: "未建立 —— requireRepoDevDbAllowed() 会先建立可恢复点（备份到仓库外）再放行",
+      },
       reason: `已显式放行（${argvFlag ? "--allow-repo-dev-db" : "MIWO_ALLOW_REPO_DEV_DB=1"}）：${how} ${resolved}`,
     };
   }
@@ -260,14 +277,149 @@ function repoDevDbVerdict(opts) {
 }
 
 /**
+ * 仓库外备份目录的**默认位置**：`<仓库根>/../../.db-backups`。
+ *
+ * ⚠ 为什么不放进仓库：本仓库的既有约定就是 `D:\sy_workspace\.db-backups\`（见根 `AGENTS.md`
+ *   与 repo dev 库的历史备份命名）。放仓库里既会被 `check-copy` 的体积断言看到，
+ *   也有被 `git add -A` 带进去的风险 —— 而"备份"本身必须比被测对象**更安全**。
+ *   （本机布局：仓库根 `D:\sy_workspace\code\miwo` → 上两级 `D:\sy_workspace`。）
+ */
+function defaultBackupDir() {
+  return path.resolve(repoRoot(), "..", "..", ".db-backups");
+}
+
+function fileSha256(p) {
+  return crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+}
+
+/** 备份目录里所有**可能是 sqlite 备份**的文件（大小写归一后按命名约定筛）。
+ *  ⚠ 匹配的是"名字里出现 `.sqlite` / `.sqlite3` / `.db` 且后面是 `.` 或结尾"——
+ *    本机既有备份的命名有 `.sqlite` 结尾的，也有 `db2.sqlite.bak-pre-retire` 这种**中间**出现的，
+ *    只按扩展名结尾筛会漏掉后者（而后者正是当年救回 dev 库的那批）。 */
+function backupCandidates(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && /\.(sqlite3?|db)(\.|$)/i.test(e.name))
+    .map((e) => path.join(dir, e.name));
+}
+
+/**
+ * 【Ruling 139】**"显式放行 = 显式承担 + 留下可恢复点"**。
+ *
+ * ── 为什么必须加固（已发生的事故，不是假想）──
+ * 本阶段 dev 库被误写过 **3 次**（Task 10 一次、Task 11 两次：为做"裁定 A"的红绿，
+ * `--allow-repo-dev-db --status` / `MIWO_ALLOW_REPO_DEV_DB=1 --status` 真的改写了
+ * `apps/api/data/db2.sqlite`，29 表 → 31 表）。三次都是靠"**恰好**存在一份 sha256 相同的备份"救回来的
+ * —— 也就是说，原来的放行开关把"能不能恢复"交给了运气。
+ *
+ * 现在：放行时**要么**复用一份 sha256 与当前 dev 库相同的既有备份，**要么**先把它备份到仓库外的
+ * `.db-backups/` 并**校验拷贝的 sha256**；两者都做不到（目录建不出来 / 拷贝校验不一致）就**拒绝执行**。
+ *
+ * 返回 `{ ok: true, ... }` 或 `{ ok: false, error }`（调用方负责拒绝）。
+ *
+ * ⚠ 只读目标：全程只 `readFileSync` + `copyFileSync`，**不打开、不改写** dev 库。
+ *
+ * @param {{target?: string, backupDir?: string, log?: (s: string) => void, now?: () => number}} [opts]
+ */
+function ensureRecoverablePoint(opts) {
+  const o = opts || {};
+  const target = o.target || repoDevDbFile();
+  const backupDir = o.backupDir || defaultBackupDir();
+  const log = o.log || (() => {});
+  const now = o.now || (() => Date.now());
+
+  // 目标不存在 = 没有任何东西可丢（例如全新克隆 / CI）：放行，但如实说明没有建立可恢复点。
+  if (!fs.existsSync(target)) {
+    return { ok: true, target, reused: null, created: null, sha256: null, note: "目标文件不存在，无需备份" };
+  }
+  let sha256;
+  try {
+    sha256 = fileSha256(target);
+  } catch (e) {
+    return { ok: false, error: `读不出目标库的 sha256：${e && e.message}` };
+  }
+
+  // ① 复用：备份目录里已经有一份**内容完全相同**的？那就已经有一个可恢复点了。
+  let reused = null;
+  try {
+    for (const p of backupCandidates(backupDir)) {
+      if (samePath(p, target)) continue;
+      try {
+        if (fileSha256(p) === sha256) { reused = p; break; }
+      } catch {
+        /* 单个文件读不了不影响其它候选 */
+      }
+    }
+  } catch (e) {
+    return { ok: false, error: `扫不了备份目录 ${backupDir}：${e && e.message}` };
+  }
+  if (reused) return { ok: true, target, sha256, reused, created: null };
+
+  // ② 现备一份（仓库外），并**校验拷贝**（拷贝本身也可能是错的，不能假设它成功）。
+  const dest = path.join(backupDir, `${path.basename(target)}.allowdevdb-${now()}-${sha256.slice(0, 8)}.sqlite`);
+  try {
+    fs.mkdirSync(backupDir, { recursive: true });
+    fs.copyFileSync(target, dest);
+  } catch (e) {
+    return { ok: false, error: `建不出可恢复点（${dest}）：${e && e.message}` };
+  }
+  let copiedSha = null;
+  try {
+    copiedSha = fileSha256(dest);
+  } catch (e) {
+    return { ok: false, error: `备份写完后读不回来（${dest}）：${e && e.message}` };
+  }
+  if (copiedSha !== sha256) {
+    try { fs.unlinkSync(dest); } catch { /* 删不掉也照实报告 */ }
+    return { ok: false, error: `备份校验不一致（${dest}：${copiedSha} != ${sha256}），已丢弃该备份` };
+  }
+  log(`[guard] 已建立可恢复点：${dest}`);
+  log(`[guard]   sha256 校验一致：${sha256}`);
+  return { ok: true, target, sha256, reused: null, created: dest };
+}
+
+/**
  * 护栏 ②的**硬版本**：`blocked` 就抛异常（默认）；给了 `exitCode` 就 `process.exit`。
- * @param {{env?: NodeJS.ProcessEnv, argv?: string[], what?: string, log?: (s: string) => void, exitCode?: number}} [opts]
+ *
+ * ⚠ 【Ruling 139】放行开关**不足以**放行：`requireRepoDevDbAllowed()` 会先建立/复用"可恢复点"
+ *   （见 `ensureRecoverablePoint()`），建不出来就**照样拒绝**（`MIWO_REPO_DEV_DB_BLOCKED`）。
+ *
+ * @param {{env?: NodeJS.ProcessEnv, argv?: string[], what?: string, log?: (s: string) => void, exitCode?: number, backupDir?: string}} [opts]
  */
 function requireRepoDevDbAllowed(opts) {
   const v = repoDevDbVerdict(opts);
-  if (!v.blocked) return v;
-  const what = (opts && opts.what) || "迁移脚本";
   const log = (opts && opts.log) || ((s) => console.error(s));
+  let finalReason = v.reason;
+  if (!v.blocked) {
+    if (v.optIn) {
+      const what = (opts && opts.what) || "迁移脚本";
+      const point = ensureRecoverablePoint({
+        target: v.resolved,
+        backupDir: opts && opts.backupDir,
+        log,
+      });
+      if (!point.ok) {
+        const msg =
+          `${what}：拒绝执行 —— 已显式放行（${v.optIn.flag}），但**建不出可恢复点**：${point.error}。\n` +
+          `  【Ruling 139】"显式放行 = 显式承担 + 留下可恢复点"：本阶段 dev 库已被误写 3 次，\n` +
+          "  三次都靠「恰好有一份 sha256 相同的备份」救回 —— 放行不再允许把可恢复性交给运气。\n" +
+          `  目标：${v.resolved}\n` +
+          `  备份目录：${(opts && opts.backupDir) || defaultBackupDir()}（可写、可建，才能放行）`;
+        log(msg);
+        if (opts && typeof opts.exitCode === "number") process.exit(opts.exitCode);
+        const e = new Error(`${what}: 已显式放行但建不出可恢复点（${point.error}）`);
+        e.code = "MIWO_RECOVERABLE_POINT_REQUIRED";
+        throw e;
+      }
+      finalReason = point.reused
+        ? `已显式放行（${v.optIn.flag}）且**复用既有可恢复点** ${point.reused}（sha256 ${point.sha256}）`
+        : `已显式放行（${v.optIn.flag}）且**先建立了可恢复点** ${point.created}（sha256 ${point.sha256}）`;
+      log(`[guard] ${finalReason}`);
+    }
+    return { ...v, reason: finalReason };
+  }
+  const what = (opts && opts.what) || "迁移脚本";
   log(`${what}：拒绝执行 —— ${v.reason}。`);
   log(`  解析出的目标：${v.target}`);
   log("  这是**硬护栏**（Task 11 / 控制器裁定 A：禁止 up/down/rollback 默认打到真实 dev 库）：");
@@ -276,7 +428,9 @@ function requireRepoDevDbAllowed(opts) {
   log("  要跑就必须**显式**说出目标，二者任一：");
   log(`    · 显式给数据目录（推荐，指向一次性目录）：MIWO_DATA_DIR=<目录>`);
   log("    · 显式确认就是要动这份 dev 库：加 --allow-repo-dev-db 或 MIWO_ALLOW_REPO_DEV_DB=1");
-  log("  动它之前先备份：Copy-Item apps/api/data/db2.sqlite D:\\sy_workspace\\.db-backups\\<名字>");
+  log("      ⚠ 【Ruling 139】这条路会**先**把 dev 库备份到仓库外（或在仓库外找到一份 sha256 相同的备份），");
+  log("        备份建不出来 / 校验不一致 → 仍然拒绝。");
+  log("  动它之前也可以自己先备份：Copy-Item apps/api/data/db2.sqlite D:\\sy_workspace\\.db-backups\\<名字>");
   if (opts && typeof opts.exitCode === "number") process.exit(opts.exitCode);
   const e = new Error(`${what}: 目标解析成仓库内真实 dev 库（${v.devFile}）且未显式放行`);
   e.code = "MIWO_REPO_DEV_DB_BLOCKED";
@@ -290,8 +444,10 @@ module.exports = {
   API_ROOT,
   HOWTO,
   OPT_IN_FLAGS,
+  defaultBackupDir,
   describeTarget,
   driverOf,
+  ensureRecoverablePoint,
   repoDevDbFile,
   repoDevDbVerdict,
   repoRoot,
