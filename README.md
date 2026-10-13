@@ -334,6 +334,45 @@ pnpm.cmd run db:migrate:status -- --allow-repo-dev-db
 ⚠ `--allow-repo-dev-db` / `MIWO_ALLOW_REPO_DEV_DB` 与 `--allow-repo-out` 都是**进程级一次性开关**，
 **不是**新的 `MIWO_*` 配置变量（`config.ts` 不读它们、它们不影响任何配置派生）。
 
+#### 手动点击测试：`pnpm.cmd run verify:manual-test`（Ruling 158 / 162 的落点）
+
+阶段边界的验收口径是**"可以运行并且手动点击测试"**，不是"门禁绿"。这条命令就是那个口径的载体：
+构建前端 → 接到后端站点目录 → 准备一份**可启动的数据库** → 起后端 → **打印可访问 URL + 四步人工清单**。
+
+```powershell
+# 仓库根运行；结束时按提示保留 URL，浏览器打开它
+pnpm.cmd run verify:manual-test
+# 停掉它自己起的那个进程（只停它记下的 PID，见下）
+pnpm.cmd run verify:manual-test -- -Stop
+# 换端口
+pnpm.cmd run verify:manual-test -- -Port 10589
+```
+
+打开 URL 后按四步点（这就是"人工清单"）：
+
+| 步 | 做什么 | 现在能不能成 |
+|---|---|---|
+| 1 | **登录**（用现状账号；Phase 1c 后走注册/登录） | ✅ 能（本机实测 `POST /api/login/login` → 200） |
+| 2 | **新建一个项目** | ✅ 能（项目列表返回 dev 库里的真实项目） |
+| 3 | 走一条生成流程（Phase 1d 前为同步、1d 后为入队） | 需要模型/厂商凭据，本 Harness 不替你造数据 |
+| 4 | 看到媒体/额度（媒体 Phase 1e 前走本地、Phase 2 后看额度扣减） | 同 3 |
+
+脚本**打印的不只是 URL**：它还会 `GET /` 与构建产物里的每个 `.js`/`.css` 并逐条打印 HTTP 状态 ——
+**"服务起来了"不等于"页面打得开"**，这一条是为了让"页面打得开"也有原文证据。
+
+⚠ **两个必须知道的事实**（都是本机实测，脚本头注释里有完整理由）：
+
+1. **手测跑的是 `apps/api/data/db2.sqlite` 的一次性副本，不是那个文件本身。**
+   那份 dev 库是**迁移时代之前的旧快照**（30 张表、有真实数据、**没有 `knex_migrations`**），
+   启动路径一跑 `migrate.latest()` 就 `table o_user already exists` 直接失败，并会把它的 sha256
+   从 `44716850…` 改成 `8C3C2F38…`（这正是上面「不支持在老库上原地跑迁移」那条）。
+   所以脚本把它拷到仓库外、补上"这些迁移已经跑过"的 knex 记账行，再让后端连副本 ——
+   **仓库内 dev 库的 sha256 全程不变**，而真实数据（`o_user` 的 admin、8 个项目、`o_setting.tokenKey`）都在，
+   登录因此可用（全新迁移出来的空库**没有**用户也没有 `tokenKey`，第 1 步根本没法点）。
+2. **`vite build` 必须让 `TMP`/`TEMP` 指向仓库外的自有目录**：用系统 `%TEMP%` 时 esbuild 会
+   `remove C:\Users\…\Temp\esbuild-<hash>: Access is denied.` 而整个构建失败（同一个构建换个 TMP 就 exit 0）。
+   脚本已自行处理；手动跑 `vite build` 遇到它按这条排查，不要当成前端代码坏了。
+
 ### 4. 本阶段已知的语义变化（不是 bug）
 
 - 重启后**不再**把 `state='生成中'` 自动改判为失败（旧 `fixDB.ts` 已删除）→ Phase 1d 的队列租约超时接管；

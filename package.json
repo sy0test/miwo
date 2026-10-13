@@ -28,7 +28,8 @@
     "verify:test-shape": "node tools/check-test-early-return.cjs",
     "verify:legacy-freeze": "node tools/record-legacy-freeze.cjs --check",
     "verify:exceptions": "node tools/check-tenant-exceptions.cjs",
-    "verify:exceptions:record": "node tools/check-tenant-exceptions.cjs --record"
+    "verify:exceptions:record": "node tools/check-tenant-exceptions.cjs --record",
+    "verify:manual-test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual-test.ps1"
   },
   "devDependencies": {
     "yaml": "^2.9.1"
