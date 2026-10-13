@@ -1,6 +1,6 @@
 import express from "express";
 import u from "@/utils";
-import { db } from "@/utils/db";
+// ⚠ spec 附录 B.1 的绕过口已删：本文件全程走守卫（`u.db` 默认导出）；GROUP_CONCAT 走 `u.db.raw`（不含表名，守卫放行）。
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
@@ -39,7 +39,7 @@ export default router.post(
     // 分页查询：每个事件对应多个 chapterIndex，用 GROUP_CONCAT 聚合
     const rows = await baseQuery
       .clone()
-      .select("e.id", "e.name as eventName", "e.detail", "e.createTime", db.raw("GROUP_CONCAT(n.chapterIndex) as chapterIndexes"))
+      .select("e.id", "e.name as eventName", "e.detail", "e.createTime", u.db.raw("GROUP_CONCAT(n.chapterIndex) as chapterIndexes"))
       .groupBy("e.id")
       .limit(limit)
       .offset(offset);

@@ -1,6 +1,6 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
-import { db } from "@/utils/db";
+import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
 import initDB from "@/lib/initDB";
 
 const router = express.Router();
