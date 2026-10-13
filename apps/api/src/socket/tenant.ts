@@ -1,0 +1,105 @@
+/**
+ * WebSocket 侧的租户上下文（spec §6.4 / §10.2 Tier 0 #9）。
+ *
+ * ⚠ 为什么必须 `bindSocketTenant`：**实测**（计划正文探针 A）
+ *    「在 `als.run()` 内注册、之后才被 emit 触发的监听器，`getStore()` 是 `undefined`」。
+ *    也就是说"连接时进过一次 run()"对后续的 `socket.on("chat", …)` **无效** ——
+ *    必须在**注册时**把每个 handler 显式包进 `runWithTenant`。没有这一层，agent 链路会在第一次
+ *    `u.db` 访问时抛 `TenantContextError`（响亮，但 `src/socket/**` + `src/agents/**` 的
+ *    19 处 `u.db("o_…")` 全部拿不到 ctx ⇒ **AI 剧本/视频生成功能是死的**）。
+ *
+ * ⚠ 只包"**事件回调入口**"，**不要**再给回调内部的 timer/`await` 套一层：
+ *    ALS 跟随 async 资源的**创建点**，`run()` 内创建的 await/timer 回调本来就带 ctx
+ *    （Ruling 219/220 的实测口径；过度包裹只会增加复杂度）。
+ *
+ * ⚠ 归属校验：改造前 `isolationKey` / `projectId` 完全由客户端指定（spec §3.2 的决定性证据），
+ *    本模块把它们改成"服务端从 token + 库里推导"。`buildIsolationKey` 就是**唯一**的键格式真相，
+ *    HTTP 侧（`getMemory` / `clearMemory` / `delProject`）必须用同一个函数，否则读写键会静默错开。
+ *
+ * ⚠ 密钥优先级与 HTTP 中间件**逐字对齐**（Ruling 220 #3 的裁定）：库值优先、
+ *    `config.jwtSecret` 兜底（`config.ts` 的模块级 fail-fast ⇒ 兜底恒非空）、都拿不到才拒连。
+ *    连接期读 `o_setting` 继续走 `u.db`（platform 表读**无 ctx 也放行**），
+ *    **不**新增第 8 个 `systemDb` 使用者（Ruling 220 #4）。
+ */
+import { randomUUID } from "node:crypto";
+import jwt from "jsonwebtoken";
+import type { Socket } from "socket.io";
+import u from "@/utils";
+import { config } from "@/config";
+import { roleOfUserId } from "@/db/policies";
+import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
+
+/** 连接期验签 → 租户 ctx（失败一律 `null`，调用方据此 `socket.disconnect()`）。 */
+export async function decodeSocketToken(rawToken: unknown): Promise<TenantCtx | null> {
+  const setting: any = await u.db("o_setting").where("key", "tokenKey").select("value").first();
+  const tokenKey = (setting && setting.value) || config.jwtSecret;
+  if (!tokenKey) return null;
+  const token = String(rawToken ?? "").replace("Bearer ", "");
+  if (!token) return null;
+  try {
+    const decoded: any = jwt.verify(token, tokenKey as string);
+    const userId = Number(decoded?.id);
+    if (!Number.isInteger(userId) || userId <= 0) return null;
+    return { userId, role: roleOfUserId(userId), requestId: randomUUID(), source: "socket" };
+  } catch {
+    return null;
+  }
+}
+
+/** 把该 socket **之后注册**的每个事件 handler 都包进同一个 ctx（返回原 socket，便于链式写法）。 */
+export function bindSocketTenant(socket: Socket, ctx: TenantCtx): Socket {
+  const originalOn = socket.on.bind(socket);
+  (socket as any).on = (event: string, handler: (...args: any[]) => any) => {
+    originalOn(event, (...args: any[]) => runWithTenant(ctx, () => handler(...args)));
+    return socket;
+  };
+  return socket;
+}
+
+/**
+ * 集号取值：**按值判定**，不是 `??`。
+ * 前端在"还没选集"时会发 `-1` / `0` / `undefined`（`apps/web/src/stores/productionAgent.ts:44-48`），
+ * `??` 拦不住 `-1` —— 那会拼出一个带 `:-1` 的键，与 HTTP 侧的键静默错开。
+ * 规则：**正整数才采用**，其余一律当作"没有集号"。
+ */
+export function pickEpisodesId(...candidates: unknown[]): number | undefined {
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return undefined;
+}
+
+/**
+ * 归属校验：必须在**与 `ctx` 匹配的 `runWithTenant(ctx, …)`** 里调用 ——
+ * 守卫按 ALS 里的 `ctx.userId` 过滤，"别人的 id"查不到（`whereIn` 后返回 undefined）。
+ * 这里额外核对一次"当前 ALS 里的 ctx 就是传进来的 ctx"：不匹配 ⇒ 直接 `null`（fail-closed），
+ * 免得调用方拿着 A 的 ctx 却在 B 的 run 里拿到 B 的行。
+ */
+async function resolveOwned(table: "o_project" | "o_script", ctx: TenantCtx, rawId: unknown): Promise<number | null> {
+  const live = currentTenant();
+  if (!live || live.userId !== ctx.userId) return null;
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const row = await u.db(table).where("id", id).first();
+  return row ? id : null;
+}
+
+/** 该项目是否存在**且属于 `ctx.userId`**；否则 `null`。 */
+export async function resolveOwnedProject(ctx: TenantCtx, projectIdRaw: unknown): Promise<number | null> {
+  return resolveOwned("o_project", ctx, projectIdRaw);
+}
+
+/** 该剧本是否存在**且属于 `ctx.userId`**；否则 `null`。 */
+export async function resolveOwnedScript(ctx: TenantCtx, scriptIdRaw: unknown): Promise<number | null> {
+  return resolveOwned("o_script", ctx, scriptIdRaw);
+}
+
+/**
+ * spec §6.2 / §10.2 #12 的键格式真相：`${userId}:${projectId}:${agentType}[:episodesId]`。
+ * Task 6 的回填用**同一条规则**改写历史 key（老格式没有 userId 前缀 ⇒ 新代码看不到，必须回填）。
+ */
+export function buildIsolationKey(ctx: TenantCtx, projectId: number, agentType: string, episodesId?: number | null): string {
+  const ep = pickEpisodesId(episodesId);
+  return [ctx.userId, projectId, agentType, ...(ep ? [ep] : [])].join(":");
+}

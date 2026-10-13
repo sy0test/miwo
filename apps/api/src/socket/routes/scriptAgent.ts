@@ -1,43 +1,34 @@
-import jwt from "jsonwebtoken";
 import u from "@/utils";
 import { Namespace, Socket } from "socket.io";
 import * as agent from "@/agents/scriptAgent/index";
 import ResTool from "@/socket/resTool";
-
-async function verifyToken(rawToken: string): Promise<Boolean> {
-  const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
-  if (!setting) return false;
-  const { value: tokenKey } = setting;
-  if (!rawToken) return false;
-  const token = rawToken.replace("Bearer ", "");
-  try {
-    jwt.verify(token, tokenKey as string);
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
+import { runWithTenant } from "@/db/tenant-context";
+import { bindSocketTenant, buildIsolationKey, decodeSocketToken, pickEpisodesId, resolveOwnedProject } from "@/socket/tenant";
 
 export default (nsp: Namespace) => {
   nsp.on("connection", async (socket: Socket) => {
-    const token = socket.handshake.auth.token;
-    if (!token || !(await verifyToken(token))) {
+    // ① 验签 → ctx（⚠ 连接回调**本身不在** ctx 里：ALS 只覆盖 `run()` 内创建的资源）
+    const tenant = await decodeSocketToken(socket.handshake.auth?.token);
+    if (!tenant) {
       console.log("[scriptAgent] 连接失败，token无效");
       socket.disconnect();
       return;
     }
-    const isolationKey = socket.handshake.auth.isolationKey;
-    if (!isolationKey) {
-      console.log("[scriptAgent] 连接失败，缺少 isolationKey");
+    // ② 归属校验必须在 ctx 里做（守卫按 ctx.userId 过滤）：客户端传的 projectId 只是**待校验输入**
+    const projectId = await runWithTenant(tenant, () => resolveOwnedProject(tenant, socket.handshake.auth?.projectId));
+    if (!projectId) {
+      console.log("[scriptAgent] 连接失败：projectId 缺失或不属于当前用户");
       socket.disconnect();
       return;
     }
+    // ③ isolationKey 由服务端推导；客户端传的那个**不再采信**（spec §3.2：改造前它可被任意指定）
+    const isolationKey = buildIsolationKey(tenant, projectId, "scriptAgent", pickEpisodesId(socket.handshake.auth?.episodesId));
+    // ④ 之后所有 socket.on(…) 的 handler 都带 ctx（只包"事件回调入口"，内部 await/timer 自动继承）
+    bindSocketTenant(socket, tenant);
 
-    console.log("[scriptAgent] 已连接:", socket.id);
+    console.log("[scriptAgent] 已连接:", socket.id, isolationKey);
 
-    const resTool = new ResTool(socket, {
-      projectId: socket.handshake.auth.projectId,
-    });
+    const resTool = new ResTool(socket, { projectId });
     let abortController: AbortController | null = null;
 
     const thinkConfig: agent.AgentContext["thinkConfig"] = {
