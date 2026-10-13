@@ -15,12 +15,22 @@
  *   · `scriptCheckRejected` 是否**因为集号归属校验**被拒（区分"没回填/别人的集"与其它原因）
  *   · `handlers`            成功连上后注册的事件名（被 bindSocketTenant 包过的入口）
  *
- * ⚠ 只读：本脚本不写任何数据（tokenKey 也只读）。
+ * ⚠ **非破坏性**（Lead 审查 P2-1 后的口径，别再写成"只读"）：
+ *   ① **先过目标护栏**（`guard.requireRepoDevDbAllowed`）：解析成仓库内 `apps/api/data/db2.sqlite`
+ *      且没有显式放行 ⇒ **拒绝执行**，而且这一步在**任何**会碰库的代码之前（旧版会先建库/跑迁移）；
+ *   ② sqlite 目标**不存在就直接拒**（`DB_NOT_FOUND`）—— 不新建空库；
+ *   ③ tokenKey 用 `createKnex()` **裸读**，**不再** `u.db`/`await dbReady`（那会触发启动迁移）；
+ *   ④ ⚠ **残留**：为了复用**真实**连接逻辑，第 ③ 步之后会 import `@/socket/routes/productionAgent`
+ *      → 连带加载 `@/utils/db`，其模块级启动 IIFE 会 `connect()` + `migrate.latest()`（**幂等**）。
+ *      也就是说：**对已存在的、迁移过的目标库，它仍会走一遍应用启动路径**。所以别把它当"零副作用"
+ *      工具用在生产库上（在 `MIWO_DB_DRIVER=mysql` 上误用会真的跑迁移）。
+ *      要"零副作用"就只能放弃真 route 保真度（用守卫层复刻判定）——那会削弱 P1 的取证强度，故保留。
  */
+import fs from "node:fs";
 import jwt from "jsonwebtoken";
-import u from "@/utils";
-import { dbReady } from "@/utils/db";
-import productionAgentRoute from "@/socket/routes/productionAgent";
+import { config } from "@/config";
+import { createKnex, describeTarget } from "@/db/connect";
+import guard from "./db-target-guard.cjs";
 
 /** 收集 console.log（同时原样转发，人工仍能看到）；返回收集到的行。 */
 function captureLogs(): { lines: string[]; restore: () => void } {
@@ -68,15 +78,35 @@ async function main(): Promise<void> {
     console.error("用法：--project=<id> --script=<id> [--user=<id>]");
     process.exit(2);
   }
-  // 连接期要读的库必须已就绪（本脚本不跑迁移；请先用 db:migrate 或让应用启动过）
-  await dbReady;
-  const setting: any = await u.db("o_setting").where("key", "tokenKey").select("value").first();
-  if (!setting?.value) {
+  // ① 目标护栏：**在**任何会碰库的代码之前（旧版会先建库/跑迁移）
+  guard.requireRepoDevDbAllowed({ argv: args, what: "probe-agent-connect" });
+  // ② sqlite 目标不存在就直接拒（不新建空库）
+  if (config.db.driver === "sqlite" && !fs.existsSync(config.db.file)) {
+    console.error(`[probe-agent-connect] 目标库不存在：${describeTarget()}（拒绝新建；先用 db:migrate 或指定正确的 MIWO_DATA_DIR）`);
+    emitResult({ ok: false, reason: "DB_NOT_FOUND", disconnected: true }, 2);
+    return;
+  }
+  // ③ tokenKey 用**裸 knex 直读**（不走 `u.db` ⇒ 不触发启动迁移）
+  const db = createKnex();
+  let tokenKey: unknown;
+  try {
+    const setting: any = await db("o_setting").where("key", "tokenKey").select("value").first();
+    tokenKey = setting?.value;
+  } catch (e: any) {
+    console.error(`[probe-agent-connect] 读 o_setting 失败：${String(e?.message ?? e)}`);
+    emitResult({ ok: false, reason: "DB_NOT_MIGRATED", disconnected: true }, 2);
+    return;
+  } finally {
+    await db.destroy();
+  }
+  if (!tokenKey) {
     emitResult({ ok: false, reason: "NO_TOKEN_KEY", disconnected: true });
     return;
   }
-  const token = "Bearer " + (jwt.sign as any)({ id: userId, name: "probe" }, String(setting.value), { expiresIn: "1h" });
+  const token = "Bearer " + (jwt.sign as any)({ id: userId, name: "probe" }, String(tokenKey), { expiresIn: "1h" });
 
+  // ④ 真 route（**动态 import**：护栏/存在性/裸读都在它之前；这是唯一会拉起应用数据层的一步）
+  const { default: productionAgentRoute } = await import("@/socket/routes/productionAgent");
   let connection: any = null;
   const nsp: any = { on(event: string, handler: any) { if (event === "connection") connection = handler; return nsp; } };
   productionAgentRoute(nsp as any);

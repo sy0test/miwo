@@ -34,7 +34,7 @@ const USAGE = [
   "  node --import=tsx scripts/backfill-userid.ts [--apply] [--assign-to=<正整数>] [--report=<文件>]",
   "  不带 --apply  = DRY-RUN（只报告，不写库）",
   "  --assign-to= 把**孤儿**（推不出归属的行）归给指定 userId；不写就保持 NULL（谁都看不见）",
-  "  --report=    把报告文本同时写到文件",
+  "  --report=    把**完整 JSON**（BackfillReport；孤儿/多义名单不截断）写到文件",
   "  --allow-repo-dev-db  显式确认\"目标就是仓库内真实 dev 库\"（不建议；请优先用 MIWO_DATA_DIR 指到别处）",
 ].join("\n");
 
@@ -74,8 +74,11 @@ async function main(): Promise<void> {
     assertBackfillConsistent(report);
     const out = valueOf("--report=");
     if (out) {
-      fs.writeFileSync(out, text, "utf8");
-      console.log(`[backfill-userid] 报告已写入 ${out}`);
+      // ⚠ **写完整 JSON**（不是控制台那份文本）：控制台为了可读只点前 5 条孤儿/多义，
+      //   而预裁定 1 要求"孤儿留 NULL + **报告**，归属由操作者显式决定" —— 名单被截断的话，
+      //   操作者得自己写 SQL 才能枚举（审查 P3-1）。JSON 是 `BackfillReport` 全量、孤儿数组不截断。
+      fs.writeFileSync(out, JSON.stringify(report, null, 2) + "\n", "utf8");
+      console.log(`[backfill-userid] 完整 JSON 报告已写入 ${out}（孤儿/多义名单不截断；控制台那份只点前 5 条）`);
     }
   } finally {
     await db.destroy();

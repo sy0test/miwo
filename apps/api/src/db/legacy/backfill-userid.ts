@@ -43,8 +43,22 @@ export interface BackfillReport {
     ambiguous: Array<Record<string, unknown>>;
   }>;
   memoriesKeys: { total: number; rewritten: number; skipped: number };
-  /** 自检（审查输入 D/E）：三张关键表的 NULL 计数与"键首段 == userId"违规计数。 */
-  selfCheck: Array<{ table: string; userIdNull: number; expectedNull: number; keyHeadMismatch: number }>;
+  /**
+   * 自检（审查输入 D/E + 审查 P2-2）：**每一张目标表**（19 + `o_project`）的 NULL 计数与
+   * "键首段 == userId"违规计数。只覆盖 3 张时，"某张表整表被误判孤儿"在自检里看不见。
+   */
+  selfCheck: Array<{
+    table: string;
+    userIdNull: number;
+    expectedNull: number;
+    keyHeadMismatch: number;
+    updated: number;
+    orphans: number;
+    /** "整表都是孤儿"的可疑信号（警告级，不抛错；理由见 `assertBackfillConsistent`）。 */
+    suspiciousAllOrphan: boolean;
+  }>;
+  /** 可疑信号的可读文案（`formatBackfillReport` 逐条打印）。 */
+  warnings: string[];
 }
 
 type Row = Record<string, any>;
@@ -172,30 +186,47 @@ const userOfProject = (idx: ProjectIndex, projectId: number | null | undefined):
   projectId === null || projectId === undefined ? null : idx.project.get(projectId) ?? null;
 
 /** 一行 + 索引 → userId；`"ambiguous"` 表示"推得出多个归属，必须人来定"。 */
-type Derive = (row: Row, idx: ProjectIndex) => number | null | "ambiguous";
+type DeriveFn = (row: Row, idx: ProjectIndex) => number | null | "ambiguous";
+/**
+ * `derive` 规格：**它自己要用的列**跟着函数一起走（`columns`）。
+ *
+ * ⚠ 为什么必须这样（审查 P2-2 / 本任务 D3 的根因）：brief 初稿把"要 select 哪些外键列"写成
+ *   **另一个手写清单**（`fk`），两个清单一旦漂移 ⇒ `projectId` 没被选出来 ⇒ `row.projectId === undefined`
+ *   ⇒ **整表被误判成孤儿、回填静默不做**（实测 `o_assets.updated=0`；审查者用真快照复现同一形态）。
+ *   现在 select 列**从 derive 规格派生**，并在 select 之后 `assertDeriveColumns()` 断言"这些列真的在返回行里"。
+ */
+interface Derive extends DeriveFn {
+  columns: readonly string[];
+}
 
-const viaProject =
-  (fk: string): Derive =>
-  (row, idx) =>
-    userOfProject(idx, num(row[fk]));
+function deriveWith(columns: readonly string[], fn: DeriveFn): Derive {
+  const d = ((row: Row, idx: ProjectIndex) => fn(row, idx)) as Derive;
+  (d as any).columns = columns;
+  return d;
+}
 
-const viaIndex =
-  (fk: string, index: keyof ProjectIndex): Derive =>
-  (row, idx) =>
-    userOfProject(idx, (idx[index] as Map<number, number>).get(num(row[fk]) ?? -1));
+const viaProject = (fk: string): Derive => deriveWith([fk], (row, idx) => userOfProject(idx, num(row[fk])));
 
-const viaEither =
-  (primaryFk: string, primaryIndex: keyof ProjectIndex, fallbackFk: string, fallbackIndex: keyof ProjectIndex): Derive =>
-  (row, idx) =>
+const viaIndex = (fk: string, index: keyof ProjectIndex): Derive =>
+  deriveWith([fk], (row, idx) => userOfProject(idx, (idx[index] as Map<number, number>).get(num(row[fk]) ?? -1)));
+
+const viaEither = (
+  primaryFk: string,
+  primaryIndex: keyof ProjectIndex,
+  fallbackFk: string,
+  fallbackIndex: keyof ProjectIndex,
+): Derive =>
+  deriveWith([primaryFk, fallbackFk], (row, idx) =>
     userOfProject(idx, (idx[primaryIndex] as Map<number, number>).get(num(row[primaryFk]) ?? -1)) ??
-    userOfProject(idx, (idx[fallbackIndex] as Map<number, number>).get(num(row[fallbackFk]) ?? -1));
+    userOfProject(idx, (idx[fallbackIndex] as Map<number, number>).get(num(row[fallbackFk]) ?? -1)));
 
-const deriveEvent: Derive = (row, idx) => {
+/** `o_event` 的归属靠 `o_eventChapter → o_novel`，事件行自己只需要主键（`id` 已在 `key` 里）。 */
+const deriveEvent: Derive = deriveWith([], (row, idx) => {
   const projectIds = idx.event.get(Number(row.id)) ?? [];
   const users = [...new Set(projectIds.map((p) => idx.project.get(p)).filter((u): u is number => u !== undefined))];
   if (users.length === 0) return null;
   return users.length > 1 ? "ambiguous" : users[0];
-};
+});
 
 /**
  * `memories` 的归属：**老键首段是 projectId、新键首段是 userId**，两者要分得开。
@@ -204,42 +235,42 @@ const deriveEvent: Derive = (row, idx) => {
  * ⚠ brief 初稿要求 `parts.length >= 3` —— 那会把 `100:scriptAgent`（2 段老键）误判成孤儿
  *   （fixture 里 `m1` 就是这种键，brief 自己的 apply 断言要求它变 7）。这里按 2 段也认。
  */
-const deriveMemories: Derive = (row, idx) => {
+const deriveMemories: Derive = deriveWith(["isolationKey"], (row, idx) => {
   const parts = String(row.isolationKey ?? "").split(":");
   if (parts.length < 2 || !/^\d+$/.test(parts[0])) return null;
   const head = Number(parts[0]);
   const knownUserIds = new Set(idx.project.values());
   if (knownUserIds.has(head) && idx.project.has(Number(parts[1]))) return head;
   return userOfProject(idx, head);
-};
+});
 
-interface BackfillTarget {
+export interface BackfillTarget {
   table: string;
   /** 定位行的列（复合主键表给全部列） */
   key: string[];
+  /** 归属推导规格；它自带的 `columns` 就是"必须 select 出来的列"（不再有第二份手写清单）。 */
   derive: Derive;
-  /**
-   * `derive` 需要的**外键列**（不含 `key` 里已有的）。必须显式列出来：
-   * brief 初稿只 select `userId` + key ⇒ `viaProject("projectId")` 拿不到 `projectId`
-   * （`row.projectId === undefined`）⇒ **所有行都被判成孤儿、回填静默不做**（实测：`o_assets.updated=0`）。
-   */
-  fk?: string[];
+}
+
+/** 测试/诊断用：取某张目标表的规格（`key` + `derive`，含 `derive.columns`）。 */
+export function targetSpecOf(table: string): BackfillTarget | undefined {
+  return TARGETS.find((t) => t.table === table);
 }
 
 /** 20 张租户表里"需要回填"的 19 张（`o_project` 自己单独处理：它是链的源头）。 */
 const TARGETS: BackfillTarget[] = [
-  { table: "o_tasks", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_novel", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_script", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_assets", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_storyboard", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_agentWorkData", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_video", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_videoTrack", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_segment", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
-  { table: "o_shot", key: ["id"], derive: viaProject("projectId"), fk: ["projectId"] },
+  { table: "o_tasks", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_novel", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_script", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_assets", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_storyboard", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_agentWorkData", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_video", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_videoTrack", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_segment", key: ["id"], derive: viaProject("projectId") },
+  { table: "o_shot", key: ["id"], derive: viaProject("projectId") },
   { table: "o_image", key: ["id"], derive: viaIndex("id", "image") },
-  { table: "o_eventChapter", key: ["id"], derive: viaIndex("novelId", "novel"), fk: ["novelId"] },
+  { table: "o_eventChapter", key: ["id"], derive: viaIndex("novelId", "novel") },
   { table: "o_event", key: ["id"], derive: deriveEvent },
   { table: "o_assets2Storyboard", key: ["storyboardId", "assetId"], derive: viaEither("storyboardId", "storyboard", "assetId", "assets") },
   { table: "o_scriptAssets", key: ["scriptId", "assetId"], derive: viaEither("scriptId", "script", "assetId", "assets") },
@@ -248,6 +279,23 @@ const TARGETS: BackfillTarget[] = [
   { table: "o_imageFlow", key: ["id"], derive: viaIndex("id", "imageFlow") },
   { table: "memories", key: ["id"], derive: deriveMemories },
 ];
+
+/**
+ * **根因级拦截**（审查 P2-2 第 1 条）：`derive.columns` 里每一列都必须真的出现在返回行里。
+ * `select` 漏列时 `row[col] === undefined` ⇒ 推导全部返回 null ⇒ **整表被静默判成孤儿**，
+ * 而自检算术（`expectedNull = nullBefore - updated`）用的是**同一套错误分类** ⇒ 自洽、永不发火。
+ * 所以必须在"开始分类之前"就响亮失败。导出以便单测直接钉这条（无需构造真实误配）。
+ */
+export function assertDeriveColumns(rows: Row[], derive: Derive, table: string): void {
+  if (!rows.length) return;
+  const missing = derive.columns.filter((column) => rows[0][column] === undefined);
+  if (missing.length) {
+    throw new Error(
+      `[backfill-userid] ${table}: select 没把归属推导需要的外键列选出来（缺 ${missing.join(", ")}）` +
+        ` —— 这会让**整表被误判成孤儿**、回填静默不做（D3 根因）。请修 select 列的来源，不要绕过。`,
+    );
+  }
+}
 
 function pickKey(row: Row, key: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -274,6 +322,7 @@ export async function backfillUserIds(knex: Knex, options: { apply: boolean; ass
     tables: [],
     memoriesKeys: { total: 0, rewritten: 0, skipped: 0 },
     selfCheck: [],
+    warnings: [],
   };
 
   // ① o_project 自己：没有任何链能推出归属，只能靠显式 --assign-to
@@ -321,10 +370,11 @@ export async function backfillUserIds(knex: Knex, options: { apply: boolean; ass
       continue;
     }
 
-    // ⚠ 只取 `userId` + 主键 + `derive` 需要的外键列：`isolationKey` 只有 `memories` 有（那条链单独处理），
-    //   而 `projectId` 这类外键**必须**选出来（brief 初稿两者都没做对，实测 `no such column` + 全行误判孤儿）。
-    const columns = ["userId", ...target.key, ...(target.fk ?? [])].filter((c, i, arr) => arr.indexOf(c) === i);
+    // ⚠ 只取 `userId` + 主键 + **`derive` 规格自带的外键列**（不再有第二份手写清单，避免两者漂移）：
+    //   漏列会让 `row.projectId === undefined` ⇒ 整表被静默判成孤儿（D3），所以下面**紧接着**断言。
+    const columns = ["userId", ...target.key, ...target.derive.columns].filter((c, i, arr) => arr.indexOf(c) === i);
     const rows: Row[] = await knex(target.table).whereNull("userId").select(columns);
+    assertDeriveColumns(rows, target.derive, target.table);
     tableReport.nullBefore = rows.length;
     const groups = new Map<number, Row[]>();
     for (const row of rows) {
@@ -360,38 +410,56 @@ export async function backfillUserIds(knex: Knex, options: { apply: boolean; ass
     report.tables.push(tableReport);
   }
 
-  // ② 自检（审查输入 D/E）：写库**之后**再数一遍
-  const tableOf = (name: string) => report.tables.find((t) => t.table === name);
-  const scriptT = tableOf("o_script");
-  const memT = tableOf("memories");
+  // ② 自检（审查输入 D/E + 审查 P2-2）：写库**之后**再数一遍。
+  //    ⚠ 覆盖**全部目标表**（19 + `o_project`），不再只 3 张：只覆盖 3 张时，"某张表整表被误判孤儿"
+  //      在自检里**看不见**（审查者实测：去掉外键列后自检 `o_script: 8/8/0` 完全自洽）。
   const expectedOf = (nullBefore: number, updated: number) => (options.apply ? nullBefore - updated : nullBefore);
   const countNull = async (table: string): Promise<number> =>
     Number(((await knex(table).whereNull("userId").count({ n: "*" }).first()) as any)?.n ?? 0);
   const memRowsAfter: Row[] = await knex("memories").select("id", "userId", "isolationKey");
+  const memKeyMismatch = memRowsAfter.filter((r) => num(r.userId) !== null && !isIsolationKeyCompliant(r.isolationKey, Number(r.userId))).length;
   report.selfCheck = [
-    { table: "o_script", userIdNull: await countNull("o_script"), expectedNull: expectedOf(scriptT?.nullBefore ?? 0, scriptT?.updated ?? 0), keyHeadMismatch: 0 },
     {
       table: "o_project",
       userIdNull: await countNull("o_project"),
       expectedNull: expectedOf(withoutUser.length, projectDidAssign ? withoutUser.length : 0),
       keyHeadMismatch: 0,
-    },
-    {
-      table: "memories",
-      userIdNull: await countNull("memories"),
-      expectedNull: expectedOf(memT?.nullBefore ?? 0, memT?.updated ?? 0),
-      keyHeadMismatch: memRowsAfter.filter((r) => num(r.userId) !== null && !isIsolationKeyCompliant(r.isolationKey, Number(r.userId))).length,
+      updated: projectDidAssign ? withoutUser.length : 0,
+      orphans: withoutUser.length,
+      suspiciousAllOrphan: false,
     },
   ];
+  for (const t of report.tables) {
+    report.selfCheck.push({
+      table: t.table,
+      userIdNull: await countNull(t.table),
+      expectedNull: expectedOf(t.nullBefore, t.updated),
+      keyHeadMismatch: t.table === "memories" ? memKeyMismatch : 0,
+      updated: t.updated,
+      orphans: t.orphans.length,
+      // "可疑：整表都是孤儿"信号（审查 P2-2 第 2 条）：
+      //   有外键列 ⇒ 本该能推导；本表有 NULL 行却一行都没填、且它们**全部**被判孤儿，而项目索引**非空**
+      //   （说明不是"库整体没归属"）⇒ 极可能是"外键列没选出来/推导坏了"。
+      //   ⚠ 刻意做成**警告**而不是抛错：真库上完全可能出现"某张表 100% 归属为孤儿项目"的合法情形，
+      //     在 `004.up`（启动路径）抛错会让**应用起不来**。硬拦截交给 `assertDeriveColumns()`。
+      suspiciousAllOrphan:
+        (targetSpecOf(t.table)?.derive.columns.length ?? 0) > 0 && t.nullBefore > 0 && t.updated === 0 && t.orphans.length === t.nullBefore && index.project.size > 0,
+    });
+  }
+  report.warnings = report.selfCheck
+    .filter((s) => s.suspiciousAllOrphan)
+    .map((s) => `${s.table}: 本表 ${s.orphans} 行**全部**被判孤儿（项目索引非空）—— 高度可疑：外键列没选出来 / 归属链坏了；请查 select 列与 derive 规格`);
   return report;
 }
 
 /**
- * 自检断言（fail-loud）：`userId IS NULL` 的实际值与"应剩"不符（= 有行该填没填），
+ * 自检断言（fail-loud）：**每一张**目标表的 `userId IS NULL` 实际值与"应剩"不符（= 有行该填没填），
  * 或**已写库**时"键首段 == userId"仍有违规 → 抛。
  *
  * ⚠ dry-run（`applied=false`）**只报不抛**：那时违规计数是"待修复量"（真实库上就是 92 条老键），
  *   不是缺陷；否则真库上连 dry-run 都跑不了（会得出"工具坏了"的假结论）。
+ * ⚠ "整表孤儿"只进 `report.warnings`（不在这里抛）：真库上可能存在合法的全孤儿表，
+ *   而本函数也会在 `004.up`（启动路径）被调用 —— 那会让应用起不来。硬拦截在 `assertDeriveColumns()`。
  */
 export function assertBackfillConsistent(report: BackfillReport): void {
   const problems: string[] = [];
@@ -414,12 +482,17 @@ export function formatBackfillReport(report: BackfillReport): string {
   lines.push("表：table / 总行 / 回填前 NULL / 本次处理 / 孤儿 / 多义");
   for (const t of report.tables) {
     lines.push(`  ${t.table}: ${t.total} / ${t.nullBefore} / ${t.updated} / ${t.orphans.length} / ${t.ambiguous.length}`);
-    for (const o of t.orphans.slice(0, 5)) lines.push(`      孤儿 ${JSON.stringify(o)}`);
+    // 控制台只点前 5 条（完整名单走 `--report=` 的 JSON，见 CLI 注释：预裁定 1 要求"留 NULL + 报告"，
+    // 名单被截断会让操作者只能自己写 SQL 才能枚举）。
+    for (const o of t.orphans.slice(0, 5)) lines.push(`      孤儿 ${JSON.stringify(o)}（完整名单见 --report= 的 JSON）`);
     for (const a of t.ambiguous.slice(0, 5)) lines.push(`      多义 ${JSON.stringify(a)}（需人工裁定）`);
   }
   lines.push(`memories 键：共 ${report.memoriesKeys.total}，改写 ${report.memoriesKeys.rewritten}，已合规跳过 ${report.memoriesKeys.skipped}`);
-  // 自检表（审查输入 E）：运维一眼能看出"还有多少行谁都看不见"
-  lines.push("自检：table / userId IS NULL（实际 / 应剩）/ 键首段违规");
-  for (const s of report.selfCheck) lines.push(`  ${s.table}: ${s.userIdNull} / ${s.expectedNull} / ${s.keyHeadMismatch}`);
+  for (const w of report.warnings) lines.push(`⚠ 可疑：${w}`);
+  // 自检表（审查输入 E + P2-2）：覆盖**全部**目标表
+  lines.push("自检：table / userId IS NULL（实际 / 应剩）/ 键首段违规 / 本次处理 / 孤儿");
+  for (const s of report.selfCheck) {
+    lines.push(`  ${s.table}: ${s.userIdNull} / ${s.expectedNull} / ${s.keyHeadMismatch} / ${s.updated} / ${s.orphans}`);
+  }
   return lines.join("\n");
 }
