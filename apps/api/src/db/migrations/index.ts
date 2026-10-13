@@ -16,6 +16,7 @@ import type { Knex } from "knex";
 import schema from "@/db/migrations/001_schema";
 import platformSeed from "@/db/migrations/002_platform_seed";
 import vendorAssetSync from "@/db/migrations/003_vendor_asset_sync";
+import backfillUserId from "@/db/migrations/004_backfill_userid";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -36,6 +37,11 @@ export const MIGRATIONS: Migration[] = [
   // 只保留"把 vendor.json 模板版本与磁盘适配器版本比出来"的报告能力（Phase 0 的 \r\n 假红灯
   // 由此被**构造性消除** —— 没有任何路径会把模板回写进仓库文件）。
   vendorAssetSync,
+  // Task 6 产出 004_backfill_userid（20 张租户表的 `userId` 按归属链回填 + `memories`
+  // 旧键改写；**幂等**：只处理 NULL/不合规的行；孤儿留 NULL；`down` 是 no-op）。
+  // ⚠ 它是**解锁项**：不跑它，`productionAgent` 的连接期归属校验（`resolveOwnedScript`）
+  //    会把真实库上的所有连接拒掉，而 `memories` 的旧键对任何租户都读不到（且不报错）。
+  backfillUserId,
 ];
 
 /**
