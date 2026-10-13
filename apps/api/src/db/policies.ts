@@ -87,14 +87,18 @@ export function policyOfIn(table: string, tableMap: Readonly<Record<string, Tabl
   if (DROPPED_TABLES.has(table)) {
     throw new PolicyNotFoundError(`表 ${table} 已在 001_schema 退役（spec §5.4）：任何访问都必须失败，不要给它加策略`);
   }
-  const policy = tableMap[table];
-  if (!policy) {
+  // ⚠ 必须用 hasOwnProperty 判定，**不能用裸下标** `tableMap[table]`：`Object.prototype` 的
+  //   继承键（constructor / toString / valueOf / __proto__ / hasOwnProperty / isPrototypeOf …）
+  //   会让裸下标命中继承成员并**绕过 fail-closed** —— 返回值既不是 "tenant" 也不是
+  //   "platform"/"global"，下游守卫因此**读不注入租户条件、写直接放行**（读+写全放行）。
+  //   独立审查实跑证实：policyOf("constructor") 曾返回 <function Object> 而不抛错。
+  if (!Object.prototype.hasOwnProperty.call(tableMap, table)) {
     throw new PolicyNotFoundError(
       `表 ${table} 未在 policies.ts 声明策略（fail-closed）。若这次访问是合法的，` +
         `请在 TABLE_POLICIES 里登记并说明理由；若不该访问，请删掉这条调用`,
     );
   }
-  return policy;
+  return tableMap[table];
 }
 
 /** 生产路径用这个（读 TABLE_POLICIES）；守卫允许传一张覆盖表，好让 `global` 这类"本阶段没有表用到"的语义也能被单测。 */
@@ -102,8 +106,13 @@ export function policyOf(table: string): TablePolicy {
   return policyOfIn(table, TABLE_POLICIES);
 }
 
+/**
+ * ⚠ 这是**判定式，不是守卫入口**：未知表/退役表返回 `false`（**不抛**），与 `policyOf` 的失败方向
+ *   **相反**。守卫一律用 `policyOf`/`policyOfIn`；只有"想探测某表是不是租户表"时才用它。
+ *   同样用 `hasOwnProperty`，避免 `Object.prototype` 的继承键被当成表名。
+ */
 export function isTenantTable(table: string): boolean {
-  return TABLE_POLICIES[table] === "tenant";
+  return Object.prototype.hasOwnProperty.call(TABLE_POLICIES, table) && TABLE_POLICIES[table] === "tenant";
 }
 
 /**

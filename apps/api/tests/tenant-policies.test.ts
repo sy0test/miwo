@@ -67,6 +67,12 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
   it("未声明的表与退役表都必须抛错，不许静默放行", () => {
     expect(() => policyOf("o_unknown_table")).toThrow(PolicyNotFoundError);
     expect(() => policyOf("sqlite_master")).toThrow(PolicyNotFoundError);
+    // ⚠ 原型链键必须也抛错：裸下标 `tableMap[table]` 会让 Object.prototype 的继承键
+    //    绕过 fail-closed（独立审查实跑证实：policyOf("constructor") 曾返回 <function Object>，
+    //    toString/valueOf/__proto__ 全部不抛）；把 hasOwnProperty 判定删掉，这条即变红。
+    for (const protoKey of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf"]) {
+      expect(() => policyOf(protoKey)).toThrow(PolicyNotFoundError);
+    }
     for (const t of DROPPED_TABLES) expect(() => policyOf(t)).toThrow(/退役/);
     expect(isTenantTable("o_assets")).toBe(true);
     expect(isTenantTable("o_setting")).toBe(false);
