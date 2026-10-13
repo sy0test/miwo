@@ -55,6 +55,36 @@ export function clientConfig(c: MiwoConfig = config): string {
   return driverOf(c) === "mysql" ? MYSQL_CLIENT : SQLITE_CLIENT;
 }
 
+/**
+ * MySQL **连接级**会话设置（Task 7 / spec §5.3 的 `GROUP_CONCAT` 口径）。
+ *
+ * `GROUP_CONCAT` 的默认 `group_concat_max_len` 只有 **1024 字节**：`routes/novel/event/getEvent.ts`
+ * 用 `GROUP_CONCAT(n.chapterIndex)` 把一章的章节号聚成一列，章节一多就会被**静默截断**
+ * （返回的章节列表少几项、不报错——比报错更难查）。它是**会话变量**，所以必须对池里**每条**连接各设一次。
+ *
+ * ⚠ 值取 1 MiB：真实项目一章最多几十个章节号（每个几字节），1 MiB 是"远远够用且不会撑爆内存"的量级。
+ * ⚠ 与 `DBCONFIG` 同性质：**项目策略**而不是运维旋钮 ⇒ 写死，不新增 `MIWO_*` 变量。
+ */
+export const MYSQL_SESSION_SETUP: readonly string[] = Object.freeze(["SET SESSION group_concat_max_len = 1048576"]);
+
+/** 逐条执行会话设置（失败即抛出，由 `mysqlAfterCreate` 交给连接池的 `done(err)`）。 */
+export async function applyMysqlSessionSettings(conn: unknown): Promise<void> {
+  const c = conn as { query: (sql: string) => Promise<unknown> };
+  for (const sql of MYSQL_SESSION_SETUP) await c.query(sql);
+}
+
+/**
+ * knex `pool.afterCreate` 钩子（mysql2）：新连接建好后先把会话设置设上。
+ *
+ * `done(null, conn)` / `done(err)` 两条路径都必须回调 —— 不回调连接池会**永久挂起**
+ * （表现成"服务起来了但任何查询都超时"）。所以 `.catch` 里**不能**吞掉错误。
+ */
+export function mysqlAfterCreate(conn: unknown, done: (err: Error | null, conn?: unknown) => void): void {
+  applyMysqlSessionSettings(conn)
+    .then(() => done(null, conn))
+    .catch((err: unknown) => done(err instanceof Error ? err : new Error(String(err))));
+}
+
 export function connectionConfig(c: MiwoConfig = config): Record<string, unknown> {
   if (c.db.driver === "mysql") {
     return {
@@ -75,7 +105,7 @@ export function createKnex(c: MiwoConfig = config): Knex {
     return knexFactory({
       client: MYSQL_CLIENT,
       connection: connectionConfig(c),
-      pool: { min: c.db.poolMin, max: c.db.poolMax },
+      pool: { min: c.db.poolMin, max: c.db.poolMax, afterCreate: mysqlAfterCreate },
     });
   }
   return knexFactory({

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { MiwoConfig } from "@/config";
-import { clientConfig, connectionConfig, createKnex, describeTarget, dialectOfConfig } from "@/db/connect";
+import { clientConfig, connectionConfig, createKnex, describeTarget, dialectOfConfig, MYSQL_SESSION_SETUP, applyMysqlSessionSettings, mysqlAfterCreate } from "@/db/connect";
 import { sqldialect, types } from "@/db/dialect";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-db-driver-"));
@@ -252,5 +252,64 @@ describe("u.db 已接上租户守卫（Task 3）", () => {
     // 两个出口必须是**不同**对象：默认导出是守卫，systemDb 是裸 knex
     expect(mod.systemDb).not.toBe(mod.default);
     expect(() => mod.systemDb("o_assets")).not.toThrow();
+  });
+});
+
+/**
+ * Task 7：MySQL 连接级会话设置（spec §5.3 的 `GROUP_CONCAT` 口径）。
+ *
+ * 为什么非做不可：`GROUP_CONCAT` 的默认 `group_concat_max_len` 是 **1024 字节** ⇒ `getEvent` 把
+ * 一章的 `chapterIndex` 聚合成一列时，章节一多就**静默截断**（列表少几项、不报错）。
+ * 它是**会话变量** ⇒ 必须对池里**每条**连接设一次 ⇒ 挂在 knex 的 `pool.afterCreate`。
+ *
+ * ⚠ 本机 3307 独占、不启动 MySQL ⇒ **行为未实测**（只测函数语义与接线）；真机验证归 CI 的 mysql job。
+ */
+describe("MySQL 连接级会话设置（Task 7）", () => {
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it("MYSQL_SESSION_SETUP 设置 group_concat_max_len，且明显大于默认的 1024", () => {
+    expect(MYSQL_SESSION_SETUP.length).toBeGreaterThan(0);
+    const joined = MYSQL_SESSION_SETUP.join("; ");
+    expect(joined).toMatch(/SET\s+SESSION\s+group_concat_max_len\s*=/i);
+    const value = Number(/group_concat_max_len\s*=\s*(\d+)/i.exec(joined)?.[1]);
+    expect(Number.isFinite(value), `取不到数值：${joined}`).toBe(true);
+    expect(value).toBeGreaterThan(1024);
+  });
+
+  it("applyMysqlSessionSettings 逐条执行（顺序与常量一致）", async () => {
+    const ran: string[] = [];
+    await applyMysqlSessionSettings({ query: async (sql: string) => { ran.push(sql); } });
+    expect(ran).toEqual([...MYSQL_SESSION_SETUP]);
+  });
+
+  it("mysqlAfterCreate：成功路径回传连接；失败路径回传 error（不许吞）", async () => {
+    let ok: { err: unknown; conn: unknown } | null = null;
+    const conn = { query: async () => undefined };
+    mysqlAfterCreate(conn, (err, c) => { ok = { err, conn: c }; });
+    await settle();
+    expect(ok, "成功路径必须回调（否则池永远拿不到连接）").not.toBeNull();
+    expect(ok!.err).toBeNull();
+    expect(ok!.conn).toBe(conn);
+
+    let failed: { err: unknown } | null = null;
+    const bad = { query: async () => { throw new Error("boom-session-setup"); } };
+    mysqlAfterCreate(bad, (err) => { failed = { err }; });
+    await settle();
+    expect(failed, "失败路径必须回调").not.toBeNull();
+    expect(String((failed!.err as Error).message)).toMatch(/boom-session-setup/);
+  });
+
+  it("接线：createKnex 的 mysql 分支把 afterCreate 接进池；sqlite 分支不带它", () => {
+    const mysql = createKnex(cfgMysql());
+    const sqlite = createKnex(cfgSqlite());
+    try {
+      // ⚠ 先断言"确实是 mysql 分支"（否则下面可能整块静默跳过 —— Task 7 前踩过的假绿形状）
+      expect(mysql.client.config.client).toBe("mysql2");
+      expect(typeof (mysql.client.config.pool as any)?.afterCreate).toBe("function");
+      expect((sqlite.client.config as any)?.pool?.afterCreate).toBeUndefined();
+    } finally {
+      void mysql.destroy();
+      void sqlite.destroy();
+    }
   });
 });
