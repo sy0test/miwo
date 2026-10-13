@@ -257,7 +257,9 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
               } catch (err) {
                 // ⚠ 非法 insert 必须是**拒绝的 Promise**而不是同步抛：契约是
                 //    `await expect(db("t").insert({userId: 别人})).rejects.toThrow(...)`。
-                //    失败方向不变（只 reject、永不 resolve）。
+                //    这里能直接用 `Promise.reject`（真 Promise）是因为 `insert` 是**普通构建期方法**、
+                //    不在 thenable 协议路径上；`run()`/catch-all 那两条才必须走 `rejectWith` 的
+                //    "有 onRejected 就调它"（原因见 `rejectWith` 注释）。失败方向一致：只拒绝、不执行 SQL。
                 return Promise.reject(err);
               }
             } else {

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T17:09:09.481Z",
+  "generatedAt": "2026-10-13T17:13:43.070Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -276,10 +276,10 @@
     "apps/api/src/db/tenant-guard.ts": {
       "count": 1,
       "lines": [
-        396
+        398
       ],
       "confirmed": true,
-      "note": "[396/407 guarded.raw(...) 的透传] 处置（Task 2 Step 3）：这一处 `raw` 是**守卫自己**的包装点，不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」一条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。"
+      "note": "[398/409 guarded.raw(...) 的透传] 处置（Task 2 Step 3）：这一处 `raw` 是**守卫自己**的包装点，不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」一条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。"
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
       "count": 1,
