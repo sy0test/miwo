@@ -3,7 +3,8 @@
  *
  * 为什么需要这一层：迁移代码要在 **sqlite（本机与回归网）** 与 **mysql（目标）** 两个方言下
  * 逐字跑同一份 up/down。两边的差异集中在四处：
- *   1. 26 张表的主键：sqlite 的 `t.increments()` 已同时表达"自增 + 主键"，
+ *   1. 27 张表的主键：sqlite 的 `t.increments()` 已同时表达"自增 + 主键"，
+ *     ⚠ **【T3 更正】原写"26 张"，实测是 27**（`001_schema.ts` 的 `createTable` 共 27 处）。
  *      而 mysql 必须是 `bigint unsigned auto_increment`（spec §5.3 要求 BIGINT UNSIGNED）；
  *      `t.bigIncrements()` 恰好两边都对 —— 实测 sqlite 生成
  *      `integer not null primary key autoincrement`，mysql 生成
@@ -42,7 +43,8 @@ export function sqldialect(knexOrClient: unknown): Dialect {
 }
 
 export interface MysqlTypes {
-  /** 26 张表的主键。sqlite 与 mysql 都生成"自增 + 主键"，但类型是 integer vs bigint unsigned。 */
+  /** 27 张表的主键。sqlite 与 mysql 都生成"自增 + 主键"，但类型是 integer vs bigint unsigned。
+   *  ⚠ **【T3 更正】原写"26 张"，实测是 27**（`001_schema.ts` 的 `createTable` 共 27 处）。 */
   pk(t: Knex.CreateTableBuilder, name?: string): void;
   /**
    * 会被索引或作主键的文本列 → MySQL `varchar(len)`。

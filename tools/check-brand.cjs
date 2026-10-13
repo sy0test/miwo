@@ -74,9 +74,16 @@ const EXEMPTIONS = [
   {
     scope: "README.md",
     match: "ToonFlow",
-    min: 1,
+    min: 2,
     reason:
-      "「本仓库由上游项目 ToonFlow 复制改造而来」——指被复制改造的来源项目，是合法上游项目名，不是本项目品牌。原文曾被写成小写 `Toonflow` 以绕开旧的大小写敏感规则，本轮已还原成正常大小写并在此显式豁免。",
+      "「本仓库由上游项目 ToonFlow 复制改造而来」——指被复制改造的来源项目，是合法上游项目名，不是本项目品牌。原文曾被写成小写 `Toonflow` 以绕开旧的大小写敏感规则，本轮已还原成正常大小写并在此显式豁免。⚠ min 由 1 提到 **2**（必做修复轮·裁定 B）：README 的「Phase 0 验收的执行边界」新增了一段说明 `verify:phase1a:ci` 与本机口径的差异，其中引用了用户机真实库路径 `%APPDATA%\\ToonFlow\\data\\db2.sqlite`（机器上的绝对路径，改不了）。",
+  },
+  {
+    scope: "README.md",
+    match: { re: "toonflow-(?:web|upstream)" },
+    min: 2,
+    reason:
+      "「Phase 0 验收的执行边界」一节必须写出两个旧仓库的**真实目录名**（`code/toonflow-upstream` / `code/toonflow-web`）才能说清 `verify:legacy-freeze --check` 为什么在 CI 上必然失败（无 remote 的 runner 上没有这两个仓）。这是旧仓库的真实目录名、不是本项目品牌。",
   },
   {
     scope: "README.md",
@@ -105,6 +112,13 @@ const EXEMPTIONS = [
     min: 8,
     reason:
       "旧仓库 sha256 基线的记录工具；8 条基线的键就是旧仓库里 8 个文件的**绝对路径**，路径里必然含真实目录名。",
+  },
+  {
+    scope: "apps/api/scripts/verify-phase1a.cjs",
+    match: { re: "toonflow-(?:web|upstream)" },
+    min: 2,
+    reason:
+      "【裁定 B】本验收脚本的 `--ci` 分流必须写出两个旧仓库的**真实目录名**（`code/toonflow-{upstream,web}`）才能说清 `verify:legacy-freeze --check` 为什么在 CI 上必然失败（无 remote 的 runner 上没有这两个仓，而「缺仓库**不算通过**」是 `record-legacy-freeze.cjs` 自己的口径）。与 `apps/api/scripts/verify-phase0.cjs` 那条豁免同因：被校验的路径只能是真实目录名。",
   },
   {
     scope: "apps/api/scripts/export-sqlite.cjs",

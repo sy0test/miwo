@@ -70,7 +70,8 @@ pnpm.cmd dev
 - **验收**：`pnpm.cmd run verify:phase1a`；当前 baseline 见 §5（**60/60**，sqlite 与 MySQL 双口径）。
 - **本阶段已知项**（不是 bug）：重启不再自动把 `state='生成中'` 改判失败（Phase 1d 的队列租约接管）；
   `userId` 列已建出但**未回填**（Phase 1b）；`o_skillList`/`o_skillAttribution` 已不再创建。
-- **deferred 登记表**：文末「Phase 1a deferred 登记表」（16 条，每条点名归属 Phase 与依据）。
+- **deferred 登记表**：文末「Phase 1a deferred 登记表」（**22 条**，每条点名归属 Phase 与依据；
+  Task 12 定稿 16 条，必做修复轮按 **Ruling 45 / 58③+64 / 106 / 145 / 146 / 156** 补登记 6 条）。
 
 ### 0. 现在的启动序列（图）
 
@@ -433,7 +434,11 @@ Task 12 给 `tests/db-driver.test.ts` 加了 2 条 `u.db` 白名单用例，套�
 - **启动路径（Phase 1a / Task 4 起）**：应用启动时先 **连接 → 跑迁移**，**迁移完成才监听端口**
   （`src/db/connect.ts` 的 `connect()` ← `src/utils/db.ts` 导出的 `dbReady` ← `src/app.ts` 在 `server.listen` 之前
   `await dbReady`）。旧实现的"未被 await 的 IIFE 里跑 `initDB` + `fixDB`"已删除；`initDB.ts` / `fixDB.ts`
-  两个文件**仍在仓库里但已不在启动链上**（只为 `verify-phase0.cjs` 的构件断言存在，删除归 Phase 1c），
+  两个文件**仍在仓库里但已不在启动链上**（**只为 `tools/check-copy.cjs:94` 的构件断言存在**，删除归 Phase 1c），
+  ⚠ **【L1 更正】原写"只为 `verify-phase0.cjs` 的构件断言存在"—— 过期了**：`verify-phase0.cjs:179`
+  已把那条换成 `apps/api/src/db/migrations/index.ts`（Phase 1a / Task 11）。现在钉住这两个文件的
+  只有 `check-copy.cjs` 的"必须存在"清单。同样的更正适用于 `deferred #7` 与
+  `src/lib/{initDB,fixDB}.ts`、`src/utils/db.ts` 三处文件头注释。
   这条不变式由门禁 **`node tools/check-dead-ddl.cjs`**（`pnpm.cmd run verify:dead-ddl`）守住：它从 `src/app.ts`
   出发走 import 图，链上出现 `initDB`/`fixDB` 的**代码级**引用就报红（4 个用户触发的运维路由逐条豁免、附理由）。
 
@@ -706,14 +711,34 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
    它的 **A 组**（旧仓库 8 条 sha256 冻结）依赖 `tools/.phase0-old-baseline.json`，而该文件被 `.gitignore` 忽略
    （里面记的是本机旧仓库的**绝对路径**，属机器特定凭证）⇒ 无此文件的机器（含 CI，全新克隆）A 组必然失败（EXIT 1）。
    这是设计而非缺陷：验收脚本对基线**只读、绝不重记**。所以请在**本机**（有旧仓库与基线文件的机器）运行它；
-   CI 只跑 `.github/workflows/ci.yml` 里的那些门禁（`check-copy` / `check-brand` / `check-eol` / `check-natives` / `verify:deploy` / typecheck / test / build）。
+   CI 只跑 `.github/workflows/ci.yml` 里的那些门禁。
+
+   > ⚠⚠ **【裁定 B·必做】`verify:phase1a` 有同样的边界，因此分成两个口径。**
+   > CI 上跑的是 **`pnpm run verify:phase1a:ci`**（= 同一个脚本 + `--ci`），**不是**本机口径。
+   > 该脚本里有两条**本机专属**检查，在全新树（`git archive HEAD`）上**必然失败**：
+   >   ① 旧仓库 sha256 冻结（同上，读被 gitignore 的 `tools/.phase0-old-baseline.json`）；
+   >   ② `verify:legacy-freeze --check` 需要**仓库外**两个旧仓（`code/toonflow-upstream` / `code/toonflow-web`），
+   >      无 remote 的 runner 上不可能有 —— `record-legacy-freeze.cjs` 自己就写明"**缺仓库不算通过**"。
+   > 实跑证据：全新树里跑本机口径 = **EXIT 1**（这正是"CI 强制跑一条本机专属命令"的必然后果）。
+   > `--ci` 把这两条**显式记为「CI 不适用」**（`[信息]` 前缀、**不计入** `通过 N / M`），
+   > 并逐条打印"少了什么、为什么、本机该跑哪条命令"——**不是静默跳过，也没有削弱任何断言**：
+   > 它们在本机口径下照旧是真判据。
+   >
+   > | 口径 | 命令 | 期望 |
+   > |---|---|---|
+   > | **本机**（有旧仓与基线） | `pnpm.cmd run verify:phase1a` | 全部判据都跑（见 §5 基线表） |
+   > | **CI**（全新树） | `pnpm.cmd run verify:phase1a:ci` | **EXIT 0**；两条本机专属项记为「CI 不适用」 |
+   >
+   > `tools/check-ci-yaml.cjs` 同时钉住两件事：api job **必须**有 `verify:phase1a:ci`、
+   > **不得**出现本机口径的 `verify:phase1a`（否则全新树必红）。
+
 2. **「旧系统仍能在 10588 启动」是人工/独立确认项，不由本脚本断言。**
    Phase 0 计划的 Step 4 要求起旧仓库 10588（需 `NODE_ENV=prod`，否则 dev 模式会向旧仓库写 `src/router.ts`）来确认旧系统仍可用；
    `verify-phase0.cjs` **刻意不执行也不断言**它 —— 执行它会向旧仓库写 `version.txt`、留下进程与监听端口，
    与 Phase 0 的硬约束（绝不修改旧仓库、不留残留进程）直接冲突。
    ⇒ 这一条由人按 Step 4 手工确认，脚本不代劳。
 
-## Phase 1a deferred 登记表（Task 12 定稿；16 条）
+## Phase 1a deferred 登记表（Task 12 定稿；必做修复轮补登记至 22 条）
 
 > **性质**：Phase 1a 结束时**仍未具备**的能力与**有意不做**的事，逐条登记"归属 Phase"与"依据"。
 > 每条的"依据"都指向 Phase 0/1a 的具体条目（spec 章节 / Ruling / 实测报告），不是泛泛而谈。
@@ -727,24 +752,38 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
 | 4 | `knex_migrations` / `knex_migrations_lock` 的策略声明 | Phase 1b | 本阶段实测这两张表会被 knex 创建（Task 7 Step 4）；`policies.ts` 是 fail-closed 的，**必须显式声明**否则将来碰它们就报错 |
 | 5 | `o_project.id` 去掉 `Date.now()` | Phase 1b | spec §5.3（同批改 `addProject.ts:29`） |
 | 6 | 35 处 `insert` 的 `insertId` 语义复核 | Phase 1b | spec §5.3；本阶段已在 Task 3 Step 9 与 Task 7 Step 6 把差异钉成断言 |
-| 7 | 删除 `lib/initDB.ts` / `lib/fixDB.ts`（+ 把 `check-copy` 的 `.ts` 下限再降） | Phase 1c | 本阶段已摘除启动路径 + 删掉危险分支；删文件会撞 `verify-phase0` 的构件清单与 `check-copy` 下限 |
+| 7 | 删除 `lib/initDB.ts` / `lib/fixDB.ts`（+ 把 `check-copy` 的 `.ts` 下限再降） | Phase 1c | 本阶段已摘除启动路径 + 删掉危险分支；删文件会撞 **`tools/check-copy.cjs:94`** 的"必须存在"清单与 `check-copy` 下限。⚠ **【L1 更正】原写"撞 `verify-phase0` 的构件清单"—— 过期了**：`verify-phase0.cjs:179` 已换成 `db/migrations/index.ts`，它不再断言这两个文件 |
 | 8 | `o_user` 重建（argon2id / role / tokenVersion / 删 `admin/admin123`） | Phase 1c | spec §7.1；本阶段按现状建表（`bigint unsigned` 无自增） |
 | 9 | `o_setting` 的 `tokenKey` 彻底移出 DB + 7 个用户级键迁 `o_userSetting` | Phase 1c | spec §6.2；本阶段的 `002_platform_seed` **不 seed** `tokenKey` 与用户级键（且有断言禁止 `tokenKey` 入新库） |
 | 10 | 重启后"生成中"不再自动改判失败 | **Phase 1d** | spec §5.2 ② 要求删除那 6 条 UPDATE；替代机制是队列租约超时（§9.2）。**中间窗口的语义变化已在 Task 4 Step 6 盖章** |
-| 11 | `o_agentWorkData.data` 是 `varchar(255)` | 观察项（Phase 1b 评估） | 现状 sqlite 也是 `varchar(255)`，无回归；但中文 JSON 摘要超 255 字符会截断/报错 |
+| 11 | ~~`o_agentWorkData.data` 是 `varchar(255)`~~ **【M1 更正·该项已作废】** | — | **原文是假的**：实测 `001_schema.ts:296` 对该列用的是 `t.text(T, "data")`（mysql `longtext`），`migration-ddl-mysql.test.ts` 有一条断言把它的长度钉成 `MAX_LENGTH`（见 `001_schema.ts:293-295` 的注释：现状库声明 varchar(255) 但实际最长 **103,624 字符**，收窄会静默夹断分镜 JSON）。本文件 §5 的「超长文本」段（`:508-514`）自己已写明"**已经不在 `001_schema` 里成立了**"——两段自相矛盾，以 `001_schema.ts` 为准。**该观察项已由 Task 7 修复轮 2 关闭**，1b 不必再评估 |
 | 12 | `MIWO_TEST_MYSQL` **不能**写进 `apps/api/.env.example`（**连注释行都不行**） | 有意（**Task 12 实测更正**） | 计划原写"以注释形式出现即可，`check-deploy-config` 允许注释声明"——**实跑证伪**：`check-deploy-config.cjs` 规则 2 把注释形式的 `# NAME=` 也算作"声明"，而它不在 `config.ts` 里 ⇒ `verify:deploy` 变红。它是 **vitest 的门控**，用法见 §5；实跑原文见 `task-12-report.md` |
 | 13 | `data/vendor/*.ts` 的 13 个适配器与 `vendor.json` 模板的对账结果 | 观察项 | Task 10 Step 5 的输出；本阶段只报告不写盘（`003_vendor_asset_sync` 的 `up` 只登记不写文件） |
 | 14 | `apps/api/LICENSE`、`data/vendor/*.ts` 的 `author` 字段（写着**旧品牌名**）、前端 i18n 品牌残留 | Phase 1c / Phase 3 | Phase 0 ledger 的既有 deferred 裁定（本阶段不动，`check-brand` 有**逐条带理由**的豁免机制） |
 | 15 | `NOTICES.txt` 仍列 electron 系许可证 | Phase 1c | Phase 0 ledger（用 `pnpm license` 重生成） |
 | 16 | `deploy/` 的容器路径整体未验证 + 无 `.dockerignore` | Phase 1d 准入前必修 | Phase 0 ledger **N1**；`seed/*.ndjson` 在容器里也要能读到 —— **代码侧**由 `002_platform_seed` 的三条候选路径处理，**产物侧**由 Task 12 Step 4（裁定 60）的构建拷贝处理（源目录缺失即 `exit 1`，不静默） |
+| 17 | **4 个运维路由的租户处置**（`deleteAllData.ts` / `clearData.ts` / `importData.ts` / `getSwitchAiDevTool.ts`，共 7 处在 import 图上） | Phase 1b | **【L3 补登记·Ruling 45】** 本阶段摘的是"**每次启动无条件执行**"的调用；这 4 处是**用户请求时的 handler**，已逐条豁免 + 理由（带"必须真实命中否则报红"的活性断言）。`check-dead-ddl.cjs` 的豁免一旦不再命中就会逼人清理清单。**1b 必须把这 4 个 handler 纳入隔离处置的明确范围** |
+| 18 | **全新库 `login` 仍 400**；`app.ts:167` 的 **444 分支已不可达** | Phase 1c | **【L3 补登记·Ruling 58③ + Ruling 64】** ① `login`/socket 三处仍读库里的 `o_setting.tokenKey`，而 `002` **不 seed** 它 ⇒ **全新库上登录仍 400**。**不得宣称"全新库完整可用"**。② `config.ts` 的模块级 `loadConfig()` 对 `MIWO_JWT_SECRET` 是 fail-fast（≥32B）⇒ `config.jwtSecret` **恒非空** ⇒ `app.ts:167` 的 `if (!tokenKey) return 444` **不可达**，全仓无测试覆盖它（已就地标注 unreachable + 原因，不删）。本阶段已补"库值优先 / 配置兜底"的优先级回归网（`tests/auth-token-key.test.ts`） |
+| 19 | **无 id 的 4 张关联表用全列 `OFFSET` 分页（O(n²)）** | Phase 1b / 1e（搬迁工作） | **【L3 补登记·Ruling 106】** `importTable` 对无 id 表按全列 `OFFSET` 分页；老库这 4 张最大 926 行看不出来。**真实库若远超此量级，建议先单独压测再做正式搬迁**（否则搬迁耗时随行数**平方**增长，可能从分钟级变成小时级） |
+| 20 | **`db:export --allow-repo-out` 的"用完删产物"仍靠人** | Phase 1c | **【L3 补登记·Ruling 145】** 护栏只能放行/拒绝；产物（`o_setting.ndjson`）**含真实 `tokenKey`**。本阶段的纪律是"用完删 + `Test-Path` 复核 False"（人肉）。建议 1c 让 `db:export` 支持"用完自清"或**默认输出到 `%TEMP%`** |
+| 21 | **`.tmp-migrate/` 每次跑门禁都会重现生成的 runner，且无自清机制** | Phase 1c | **【L3 补登记·Ruling 146】** `verify:phase1a` 会生成 `compare-runner.ts` / `import-runner.ts`（实测 **0 行含 `tokenKey`**）。这是**门禁自身的产物**、不是实现者遗留 ⇒ "验收后 `Test-Path` 为 False"**只在清理后成立**，报告须写明，免得下一个人误判为漏清。建议 1c 补自清或把临时 runner 落到 `%TEMP%` |
+| 22 | **裁定落地核对（Ruling 156 的机制）本身仍需人维护清单** | 持续 / Phase 1b 起 | **【L3 补登记·Ruling 156】** `verify:phase1a` 新增「裁定落地核对」一节：账本里每条标为"**必做**"的裁定各附一条**可执行的机械断言**（见该节）。⚠ **边界**：新裁定要**人手**加一条断言进去 —— 本节只能防"已登记的必做裁定被忘掉"，防不了"根本没登记"。**1b 起每加一条必做裁定，必须同时在本节加一条断言**（否则它又会变成"账本自我安慰"） |
 
 ### 本阶段完成后**仍未**具备的能力（P2 汇总，如实登记）
 
-1. **`userId` 没有回填** —— 18 张租户表的 `userId` 都是 NULL（除 `o_project` 原有的 7 行）；隔离策略与回填在 Phase 1b。
+1. **`userId` 没有回填** —— **20 张租户表**的 `userId` 都是 NULL（除 `o_project` 原有的 7 行）；隔离策略与回填在 Phase 1b。
+   ⚠ **【M2 更正】原写"18 张"，实际是 20 张**：**19 张**是本阶段新增 `userId` 的（spec §6.2），
+   外加 **`o_project`（已有该列）** ⇒ 19 + 1 = **20**。
+   **1b 若照 18 回填会漏 2 张表**。机械口径：`001_schema.ts` 里 `t.u64(T, "userId")` 共 **20 处调用**，
+   逐处对应一张表（`o_project` 那处注释已标"已有列"）。
 2. **重启后"生成中"不再自动改判失败** —— 在 Phase 1d 的队列租约落地前，界面上可能有永久"生成中"的残留行；
    过渡期用 `pnpm.cmd run db:repair-stuck`（默认 dry-run）。
 3. **MySQL 的 CI 证据来自 YAML 结构断言 + 本机等价命令**，真 GitHub runner 从未执行过（仓库无 remote）。
 4. **`deploy/` 的容器路径仍未验证**（本机无 Docker）。
-5. **`o_agentWorkData.data` 仍是 `varchar(255)`**（中文长 JSON 有截断风险，Phase 1b 评估）。
+5. ~~**`o_agentWorkData.data` 仍是 `varchar(255)`**（中文长 JSON 有截断风险，Phase 1b 评估）。~~
+   **【M1 更正】这一条是假的，已删除。** 实测 `001_schema.ts:296` 是 `t.text(T, "data")`（mysql `longtext`），
+   `migration-ddl-mysql.test.ts` 断言它就是 `MAX_LENGTH` —— 老库那列声明 varchar(255) 却装着最长
+   **103,624 字符**，正是"只在真 MySQL 爆炸"的那一列，Task 7 修复轮 2 已把它放宽到 `longtext`。
+   （同文件 deferred #11 与 §5「超长文本」段已一并更正，三处口径统一。）
 6. **老 sqlite 库不能"原地迁移"** —— 必须先导出再导入一个空目标库（见「⚠ 不支持"在老库上原地跑迁移"」一节）。
 

@@ -11,9 +11,13 @@
  * 与现状库的差异（全部是**有意**的，spec 有据；逐表差集见 Task 3 报告与
  * `apps/api/scripts/gen-schema-migration.cjs` 的机械输出）：
  *   - 不建 o_skillList / o_skillAttribution（§5.4 删除；本文件对老库 dropTableIfExists）
- *   - 26 张表的主键改为 BIGINT UNSIGNED AUTO_INCREMENT（§5.3）
+ *   - 27 张表的主键改为 BIGINT UNSIGNED AUTO_INCREMENT（§5.3）
+ *     ⚠ **【T3 更正】原写"26 张"，实测是 27**（本文件 `createTable` 调用 **27 处**；
+ *       `verify-phase1a.cjs` 的 `EXPECT_TABLES` 与 `migration-ddl-mysql.test.ts` 都是 27）。
  *   - memories.id 由 TEXT 改 VARCHAR(191)（§5.3，规避 MySQL ERROR 1170）
- *   - 18 张租户表新增 userId（§6.2）；**回填归 Phase 1b**
+ *   - **20 张租户表**有 userId（§6.2）：**19 张本阶段新增** + `o_project`（**已有该列**）；**回填归 Phase 1b**
+ *     ⚠ **【M2 更正】原写"18 张"，实测是 20**（机械口径：本文件 `t.u64(T, "userId")` 共 **20 处**）。
+ *       1b 照 18 回填会**漏 2 张表**。
  *   - o_agentWorkData 补唯一键 (projectId, episodesId, key)（§5.3）
  *   - o_project.directorManual / o_modelPrompt.{fileName,path} / o_agentDeploy.type 是现状库里
  *     由 fixDB 补出来的列，**必须进基线**（否则全新 MySQL 库少列 → 启动期 unknown column）
