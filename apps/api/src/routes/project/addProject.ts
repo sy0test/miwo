@@ -25,15 +25,18 @@ export default router.post(
   async (req, res) => {
     const { projectType, name, intro, type, artStyle, videoRatio, imageModel, videoModel, imageQuality, mode, targetCountry } = req.body;
 
+    // ⚠ 改动点（Phase 1b / Task 4）：
+    //   · 删掉 `id: Date.now()` —— 001_schema 里 o_project.id 是自增主键，
+    //     显式传时间戳会与自增语义打架（spec §5.3；Phase 1a deferred #5）
+    //   · 删掉 `userId: 1` —— 租户守卫会在 insert 时自动填 `ctx.userId`；显式写 1 会被守卫
+    //     判成"写别人的行"而抛错（`tenant-guard.ts` 的注入规则 3）
     await u.db("o_project").insert({
-      id: Date.now(),
       projectType,
       name,
       intro,
       type,
       artStyle,
       videoRatio,
-      userId: 1,
       imageModel,
       videoModel,
       createTime: Date.now(),
