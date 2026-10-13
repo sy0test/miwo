@@ -135,6 +135,35 @@ describe("★P1：o_script.userId 回填是 agent 可用性的开关（真 route
     expect(green.result.handlers).toContain("updateContext");
   }, 300000);
 
+  it("★ 裁定 ①：probe 在非 sqlite 驱动下**直接拒绝**（不给'MySQL 上误跑迁移'留机会），且不新建任何库文件", () => {
+    const dataDir = path.join(TMP, "mysql-refusal");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...envOf(dataDir),
+      MIWO_DB_DRIVER: "mysql",
+      // driver=mysql 时 config.ts 的模块级 fail-fast 要求这几个（给上，但**不许有任何连接尝试**）
+      MIWO_DB_HOST: "127.0.0.1",
+      MIWO_DB_PORT: "3307",
+      MIWO_DB_USER: "miwo",
+      MIWO_DB_PASSWORD: "miwo",
+      MIWO_DB_NAME: "miwo_test",
+    };
+    const r = spawnSync(
+      process.execPath,
+      ["--env-file-if-exists=.env", "--import=tsx", path.join("scripts", "probe-agent-connect.ts"), "--project=1", "--script=1", "--user=1"],
+      { cwd: API_ROOT, env, encoding: "utf8", timeout: 180000, windowsHide: true },
+    );
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    console.log("[task6-e2e] probe 在 mysql 驱动下：exit=" + r.status + " → " + ((out.match(/PROBE_RESULT=.*/) ?? ["(无)"])[0] as string));
+    expect(r.status, `必须拒绝运行（exit ${r.status}）：\n${out}`).toBe(2);
+    expect(out).toMatch(/拒绝执行/);
+    expect(out).toMatch(/DRIVER_NOT_SQLITE/);
+    // 判别力：**没有**任何连接尝试（否则会看到 ECONNREFUSED/3307 相关报错——本机没起 3307）
+    expect(out).not.toMatch(/ECONNREFUSED|connect ECONN/i);
+    // 判别力：拒绝发生在建库之前 ⇒ 目录里不该出现 db2.sqlite
+    expect(fs.existsSync(path.join(dataDir, "db2.sqlite"))).toBe(false);
+  }, 200000);
+
   it("★ P2-1 加固：probe 对**仓库内 dev 库**直接拒绝（且该文件逐字节未变）", () => {
     const repoDb = path.join(API_ROOT, "data", "db2.sqlite");
     const before = sha256(repoDb);

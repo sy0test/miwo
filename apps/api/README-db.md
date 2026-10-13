@@ -87,9 +87,12 @@ MIWO_DATA_DIR=<数据目录> node --import=tsx scripts/probe-agent-connect.ts --
 只把 transport 换成假 socket，最后打印一行 `PROBE_RESULT=<JSON>`：
 - `disconnected=true` + `scriptCheckRejected=true` ⇒ 目标集不在当前用户名下（或 `o_script.userId` 未回填）；
 - `disconnected=false` + `handlers=["updateContext","chat",…]` ⇒ 连接链路正常，问题在别处。
-- `reason=DB_NOT_FOUND` / `DB_NOT_MIGRATED` / `NO_TOKEN_KEY` ⇒ 目标库本身不对。
+- `reason=DRIVER_NOT_SQLITE` / `DB_NOT_FOUND` / `DB_NOT_MIGRATED` / `NO_TOKEN_KEY` ⇒ 目标库（或驱动）本身不对。
 
 **⚠ 它不是"只读"工具（审查 P2-1 后更正，别再这么写）**，实际行为是：
+0. **只支持 sqlite**：`MIWO_DB_DRIVER !== "sqlite"` ⇒ **直接拒绝运行**（`PROBE_RESULT` 里
+   `reason=DRIVER_NOT_SQLITE`，exit 2）—— 因为下面第 4 条在 MySQL 目标上是**真跑迁移**，
+   所以"文档警告 + 代码拒绝"双保险（有断言：拒绝时连库文件都不会被建出来）；
 1. **会拒绝打到仓库内 dev 库**：先过 `guard.requireRepoDevDbAllowed()`（目标 = `apps/api/data/db2.sqlite`
    且没显式放行 ⇒ 拒绝执行），而且这一步在**任何**会碰库的代码之前 —— 所以对 dev 库它是**零副作用**的
    拒绝（有断言：拒绝前后该文件 sha256 逐字节相同）；
@@ -97,10 +100,9 @@ MIWO_DATA_DIR=<数据目录> node --import=tsx scripts/probe-agent-connect.ts --
 3. `tokenKey` 用**裸 knex 直读**，不 `u.db`、不 `await dbReady`（旧版会在这一步触发启动迁移）；
 4. ⚠ **残留（如实写）**：为了复用**真实** route，它随后会 `import @/socket/routes/productionAgent`
    → 连带加载 `@/utils/db`，其模块级启动 IIFE 会 `connect()` + `migrate.latest()`（**幂等**）。
-   也就是说：**对已存在且已迁移的目标库，它仍会走一遍应用启动路径**。
-   ⇒ **别拿它当"零副作用"工具用在生产库上**（`MIWO_DB_DRIVER=mysql` 时误用会真的跑迁移）。
-   要"零副作用"就得放弃真 route 保真度（改成守卫层复刻判定），那会削弱 P1 取证的强度 —— 故保留、
-   但把代价写在这里。
+   也就是说：**对已存在且已迁移的 sqlite 目标库，它仍会走一遍应用启动路径**。
+   要"零副作用"就得放弃真 route 保真度（改成守卫层复刻判定），那会削弱 P1 取证的强度 ——
+   **Lead 已裁定接受这个取舍**（保真优先 + 代价写明），并用第 0 条的代码拒绝堵住生产误用。
 
 ## 4. 开发纪律：`runWithTenant` 里**必须**在里面 await
 
