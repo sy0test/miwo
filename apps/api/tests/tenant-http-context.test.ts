@@ -71,7 +71,7 @@ describe("HTTP 租户上下文中间件（spec §6.4）", () => {
     expect(seen?.role).toBe("user");
     expect(seen?.source).toBe("http");
     expect(typeof seen?.requestId).toBe("string");
-    expect((req as any).user).toMatchObject({ id: 7 });   // spec §6.4：req.user 保留且必须有消费方
+    expect((req as any).user).toMatchObject({ id: 7 });   // spec §6.4：保留 req.user（**当前全仓 0 个消费者**；消费方归 Phase 1c）
   });
 
   it("admin 桥接：id=1 → role=admin（走 roleOfUserId，不是硬编码）", async () => {
