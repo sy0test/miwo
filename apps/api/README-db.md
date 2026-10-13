@@ -45,20 +45,29 @@ node --import=tsx scripts/backfill-userid.ts --apply --assign-to=1
   自动迁移只做"能推出来的部分"。
 
 ### 2.3 报告怎么读（自检表）
-每次跑完打印三张关键表的自检（审查输入 D/E）。下面是**格式示例**（不是任何真实库的实测值，
+每次跑完打印**每一张目标表**（19 + `o_project`）的自检。下面是**格式示例**（不是任何真实库的实测值，
 真实数字以你自己那次输出为准；e2e 用例的真实输出见 Task 6 报告）：
 ```
 表：table / 总行 / 回填前 NULL / 本次处理 / 孤儿 / 多义
   o_script: 8 / 8 / 8 / 0 / 0
-自检：table / userId IS NULL（实际 / 应剩）/ 键首段违规
-  o_script: 0 / 0 / 0
-  o_project: 1 / 1 / 0
-  memories: 0 / 0 / 0
+自检：table / userId IS NULL（实际 / 应剩）/ 键首段违规 / 本次处理 / 孤儿
+  o_project: 1 / 1 / 0 / 0 / 1
+  o_script: 0 / 0 / 0 / 8 / 0
+  memories: 0 / 0 / 0 / 92 / 0
 ```
 - **`实际 / 应剩` 必须相等**：不等 = "有行该填没填"（工具会**抛错并 exit 1**）。
 - **`键首段违规` 必须为 0**：`memories` 里"键的首段 ≠ 该行 `userId`"的条数。不为 0 说明键没改写对，
   那些行**读不到**（dry-run 时它只是"待修复量"，不抛）。
+- ⚠ **口径（审查 P2-2 后收紧，别再夸大）**：这张自检表**不是**"少填一个必抛"的万能安全网 ——
+  它的算术 `实际 == 回填前 NULL - 本次处理` 与分类器**同源**，所以"整表被误判成孤儿"这类
+  分类错误在它眼里是**自洽**的。硬拦截靠两条：
+  ① **`assertDeriveColumns()`**：`select` 漏了 `derive` 需要的外键列 ⇒ **当场抛**（D3 的根因，
+     `node --import=tsx scripts/backfill-userid.ts` 也会直接 exit 1）；
+  ② **`⚠ 可疑：…本表 N 行全部被判孤儿`** 警告（19 张外键表逐表判）—— 它是**警告**不是抛错：
+     真库上可能存在合法的"整表归属都是孤儿项目"，而 `004.up` 在**启动路径**上，抛错会让应用起不来。
 - 一句话判据：**"记忆面板空白"永远先看 `memories` 的这两列，再看 socket。**
+- `--report=<文件>` 写的是**完整 JSON**（`BackfillReport` 全量，孤儿/多义名单**不截断**）；
+  控制台那份只点前 5 条（可读性取舍）——**要枚举孤儿请读 JSON**（预裁定 1 要求"留 NULL + 报告"）。
 
 ### 2.4 `down` 为什么是 no-op
 `004.down()` **不回滚数据**，三条理由：
@@ -70,7 +79,7 @@ node --import=tsx scripts/backfill-userid.ts --apply --assign-to=1
 
 ## 3. 诊断：agent 到底连得上吗
 
-`productionAgent` 连不上的**唯一**已知原因是 `o_script.userId` 未回填。诊断命令（**只读**）：
+`productionAgent` 连不上的**唯一**已知原因是 `o_script.userId` 未回填。诊断命令：
 ```powershell
 MIWO_DATA_DIR=<数据目录> node --import=tsx scripts/probe-agent-connect.ts --project=<id> --script=<id> --user=<id>
 ```
@@ -78,6 +87,20 @@ MIWO_DATA_DIR=<数据目录> node --import=tsx scripts/probe-agent-connect.ts --
 只把 transport 换成假 socket，最后打印一行 `PROBE_RESULT=<JSON>`：
 - `disconnected=true` + `scriptCheckRejected=true` ⇒ 目标集不在当前用户名下（或 `o_script.userId` 未回填）；
 - `disconnected=false` + `handlers=["updateContext","chat",…]` ⇒ 连接链路正常，问题在别处。
+- `reason=DB_NOT_FOUND` / `DB_NOT_MIGRATED` / `NO_TOKEN_KEY` ⇒ 目标库本身不对。
+
+**⚠ 它不是"只读"工具（审查 P2-1 后更正，别再这么写）**，实际行为是：
+1. **会拒绝打到仓库内 dev 库**：先过 `guard.requireRepoDevDbAllowed()`（目标 = `apps/api/data/db2.sqlite`
+   且没显式放行 ⇒ 拒绝执行），而且这一步在**任何**会碰库的代码之前 —— 所以对 dev 库它是**零副作用**的
+   拒绝（有断言：拒绝前后该文件 sha256 逐字节相同）；
+2. sqlite 目标**不存在就直接拒**（`DB_NOT_FOUND`）—— 不新建空库；
+3. `tokenKey` 用**裸 knex 直读**，不 `u.db`、不 `await dbReady`（旧版会在这一步触发启动迁移）；
+4. ⚠ **残留（如实写）**：为了复用**真实** route，它随后会 `import @/socket/routes/productionAgent`
+   → 连带加载 `@/utils/db`，其模块级启动 IIFE 会 `connect()` + `migrate.latest()`（**幂等**）。
+   也就是说：**对已存在且已迁移的目标库，它仍会走一遍应用启动路径**。
+   ⇒ **别拿它当"零副作用"工具用在生产库上**（`MIWO_DB_DRIVER=mysql` 时误用会真的跑迁移）。
+   要"零副作用"就得放弃真 route 保真度（改成守卫层复刻判定），那会削弱 P1 取证的强度 —— 故保留、
+   但把代价写在这里。
 
 ## 4. 开发纪律：`runWithTenant` 里**必须**在里面 await
 
@@ -112,7 +135,26 @@ MIWO_DATA_DIR=<数据目录> node --import=tsx scripts/probe-agent-connect.ts --
 > 而 `db/migrations/004` 在**启动链**上被加载 —— 从迁移链 import 它会构成加载期循环
 > （实测 `TypeError: createKnex is not a function`）。
 
-## 6. 未验证项
+## 6. 门禁：迁移链的 import 图（Ruling 233）
+
+```powershell
+cd apps/api
+node --import=tsx scripts/check-migration-import-graph.ts     # exit 0 = 干净
+```
+它断言**迁移链的运行期闭包**里不出现 `src/utils.ts` / `src/utils/db.ts` / `src/db/connect.ts`
+（即"迁移模块不许把启动链拉进来"），并且没有启动日志。所以测试 `tests/migration-import-graph.test.ts`
+会 spawn 它。
+
+- **为什么必须在独立进程里跑**：实测 vitest 的模块运行器**不填** `require.cache`
+  （在测试进程里 `await import("@/db/migrations/index")` 后 `HAS_MIG=0`，只有 12 个无关 Node CJS 依赖）
+  ⇒ 在 vitest 里断言 `require.cache` 是**恒真**的假绿。本脚本自己先断言"闭包确实被观测到了"，
+  观测不到就 `exit 3`，绝不放过。
+- **判据是运行期闭包，不是源码正则**：多行 import、动态 import、别名都逃不掉。
+- ⚠ **做任何 import-graph / 源码扫描前必须先剥注释**：`isolation-key.ts` 的注释里就写着
+  `import u from "@/utils"` 这句解释文字（审查者第一版脚本因此把 `@/utils` 判成可达 = 假阳性）。
+  `tests/backfill-userid.test.ts` 里的 `stripComments()` 就是这条规范的落地。
+
+## 7. 未验证项
 
 - **MySQL 方言未实测**：004 与 CLI **零 raw SQL**（纯 knex query builder），sqlite 上完整回归；
   但"批量 `whereIn(...).update()`"在 MySQL 上的行为、以及 `memories.isolationKey` 前缀匹配的
