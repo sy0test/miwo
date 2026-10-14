@@ -373,7 +373,7 @@ pnpm.cmd run verify:manual-test -- -Port 10589
 
 | 步 | 做什么 | 现在能不能成 |
 |---|---|---|
-| 1 | **登录**（用现状账号；Phase 1c 后走注册/登录） | ✅ 能（本机实测 `POST /api/login/login` → 200） |
+| 1 | **登录 / 注册**（Phase 1c Task 11 起走 `/api/auth/register` + `/api/auth/login`；旧路径已退役） | ✅ 能（本机实测 `POST /api/auth/login` → 200） |
 | 2 | **新建一个项目** | ✅ 能（项目列表返回 dev 库里的真实项目） |
 | 3 | 走一条生成流程（Phase 1d 前为同步、1d 后为入队） | 需要模型/厂商凭据，本 Harness 不替你造数据 |
 | 4 | 看到媒体/额度（媒体 Phase 1e 前走本地、Phase 2 后看额度扣减） | 同 3 |
@@ -403,7 +403,10 @@ pnpm.cmd run verify:manual-test -- -Port 10589
 - `userId` 列已建出但**未回填**（回填归 Phase 1b）。
 - 全新库的 JWT 密钥来自配置 `MIWO_JWT_SECRET`（`o_setting.tokenKey` 不进新库）。
 - **鉴权链路已改写**（Phase 1c Task 2+3）：`/api/auth/{register,login,refresh,logout,me,changePassword}` 上线，
-  旧的 `POST /api/login/login` **保留可用**（前端切换归 Task 11）；令牌是 access(15min)+refresh(7d, HttpOnly Cookie)，
+  旧路径 `POST /api/login/login` **已在 Task 11 整体退役**（路由文件删除 + 白名单条目删除）：
+  匿名打它 ⇒ **401**（`/api` 的鉴权在路由之前跑），带有效令牌打它 ⇒ **404**；
+  **旧形状令牌（`{id,name}`）也已退役**（它不读 DB ⇒ 停用账号仍有效、`{id:1}` 恒为 admin）。
+  令牌是 access(15min)+refresh(7d, HttpOnly Cookie)，
   口令是 argon2id，连续 5 次失败锁 15 分钟。验签密钥的优先级是 `o_setting.jwtSecret`（新）→
   `o_setting.tokenKey`（旧，仅兼容）→ `config.jwtSecret`（兜底），**每请求现读**（见 `apps/api/src/auth/secret.ts`）。
 

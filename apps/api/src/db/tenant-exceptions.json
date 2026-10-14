@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-14T14:53:04.031Z",
+  "generatedAt": "2026-10-14T17:16:41.394Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 281,
+    "tsFilesScanned": 280,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)（接收者限定：u.db/db/systemDb/trx/knex/conn/connection）",
     "systemDbUsers": "拿到裸 systemDb 的文件（命名/别名/命名空间/相对路径/动态 import/require 任一形态）",

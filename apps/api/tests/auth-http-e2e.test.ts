@@ -9,8 +9,11 @@
  *   在内存里挂几个 router 是测不到"app.ts 的挂载顺序 / 白名单 / 中间件接线"的。
  *
  * 用例顺序（后面的用例依赖前面种下的账号）：
- *   ① 邀请码注册（错码必须 403）→ ② `/api/login/login` 拿令牌 → ③ 令牌访问**真受保护路由**
- *   → ④ 错口令 401 → ⑤ 无令牌 401 → ⑥ 连错 5 次锁定（正确口令也拒）→ ⑦ refresh Cookie 续期
+ *   ① 邀请码注册（错码必须 403）→ ② 注册第二个账号 → ③ `/api/auth/login` 拿令牌 → ④ 令牌访问**真受保护路由**
+ *   → ⑤ 错口令 401 → ⑥ 连错 5 次锁定（正确口令也拒）→ ⑦ refresh Cookie 续期
+ *
+ * ⚠【Phase 1c Task 11】本文件原来用**旧登录路径** `/api/login/login` 拿令牌（那时它是"过渡薄壳"）。
+ *   该路径已整体退役（路由文件删除 + 白名单条目删除）⇒ 现在全程走 `/api/auth/login`。
  *
  * ⚠ 数据目录是 `%TEMP%` 下的一次性目录（`MIWO_DATA_DIR`），**不碰** `apps/api/data/db2.sqlite`
  *   （Ruling 170：dev 库永远只读；`db-target-guard` 也会在启动期拦住指向它的进程）。
@@ -203,17 +206,18 @@ describe("登录链路端到端（真进程 + 真库 + 真 HTTP）", () => {
     expect(second.status, `第二个账号注册必须 200：${second.raw.slice(0, 300)}`).toBe(200);
   }, 60000);
 
-  it("③ ★ `/api/login/login` 拿到令牌，且该令牌能访问**真受保护路由** `/api/project/getProject`", async () => {
-    const res = await request("POST", "/api/login/login", { body: { username: USER, password: PW } });
-    expect(res.status, `旧登录路径必须 200：${res.raw.slice(0, 300)}`).toBe(200);
+  it("③ ★ `/api/auth/login` 拿到令牌，且该令牌能访问**真受保护路由** `/api/project/getProject`", async () => {
+    const res = await request("POST", "/api/auth/login", { body: { username: USER, password: PW } });
+    expect(res.status, `登录路径必须 200：${res.raw.slice(0, 300)}`).toBe(200);
     const token = String(res.body?.data?.token ?? "");
     expect(token.startsWith("Bearer "), `响应里的 token 必须带 Bearer 前缀：${token.slice(0, 40)}`).toBe(true);
     expect(res.body?.data?.name).toBe(USER);
     expect(res.body?.data?.id).toBeGreaterThan(0);
 
-    // ⚠ 旧路径**有意不下发** refresh Cookie（旧前端不做续期；Cookie 的 path 是 /api/auth，
-    //    发给这条路径只会变成浏览器里的死数据）—— 续期那半条链由 `/api/auth/login` 负责（见用例 ⑥）。
-    expect(res.setCookie, `旧路径不该下发 refresh Cookie：${JSON.stringify(res.setCookie)}`).toEqual([]);
+    // 本路径**下发** refresh Cookie（续期那半条链就是它；Cookie 是 HttpOnly，不进响应体）。
+    // ⚠ Phase 1c Task 11 前这条断言是反的（当时打的是**旧**路径 `/api/login/login`，它有意不发 Cookie）。
+    expect(res.setCookie.join(";"), "登录必须下发 refresh Cookie").toContain("miwo_rt=");
+    expect(res.setCookie.join(";")).toContain("HttpOnly");
 
     // 真受保护路由（Phase 1b 的租户隔离入口）：令牌有效才可能 200
     const projects = await request("POST", "/api/project/getProject", { token, body: {} });
@@ -227,8 +231,26 @@ describe("登录链路端到端（真进程 + 真库 + 真 HTTP）", () => {
     expect(JSON.stringify(me.body)).not.toContain("passwordHash");
   }, 60000);
 
-  it("④ 错口令 ⇒ 401（不泄露账号是否存在），响应体不带 token", async () => {
-    const res = await request("POST", "/api/login/login", { body: { username: USER, password: "definitely-wrong" } });
+  /**
+   * Phase 1c Task 11：**旧登录路径整体退役**的**真应用**证据。
+   *
+   * ⚠ 两个状态码是**刻意分开**的（任务书 §5 只写了"404"）：
+   *   · 匿名 ⇒ **401**：`/api/*` 的 `authenticate` 在路由**之前**跑 ⇒ 未认证时"路径不存在"看不见；
+   *   · 带有效令牌 ⇒ **404**：这才证明**路由真的没了**（不是"只是加了鉴权"）。
+   */
+  it("③b ★ 旧登录路径 `/api/login/login` 已退役（真应用）：匿名 ⇒ 401，带有效令牌 ⇒ 404", async () => {
+    const login = await request("POST", "/api/auth/login", { body: { username: USER, password: PW } });
+    const token = String(login.body?.data?.token ?? "");
+    expect(token.startsWith("Bearer ")).toBe(true);
+
+    const anon = await request("POST", "/api/login/login", { body: { username: USER, password: PW } });
+    expect(anon.status, `匿名打已退役路径 ⇒ 401（鉴权先于路由），实际 ${anon.status}：${anon.raw.slice(0, 200)}`).toBe(401);
+
+    const authed = await request("POST", "/api/login/login", { token, body: { username: USER, password: PW } });
+    expect(authed.status, `带令牌打已退役路径 ⇒ 404（路由不存在），实际 ${authed.status}：${authed.raw.slice(0, 200)}`).toBe(404);
+  }, 60000);
+
+  it("④ 错口令 ⇒ 401（不泄露账号是否存在），响应体不带 token", async () => {    const res = await request("POST", "/api/auth/login", { body: { username: USER, password: "definitely-wrong" } });
     expect(res.status, `错口令必须 401：${res.raw.slice(0, 300)}`).toBe(401);
     expect(res.raw).not.toContain(USER);
     expect(res.body?.data ?? null).toBeNull();
@@ -236,11 +258,11 @@ describe("登录链路端到端（真进程 + 真库 + 真 HTTP）", () => {
 
   it("⑤ ★ 连错 5 次 ⇒ 第 6 次**即使口令正确**也被锁定（lockedUntil 在未来）", async () => {
     for (let i = 1; i <= 5; i += 1) {
-      const r = await request("POST", "/api/login/login", { body: { username: LOCK_USER, password: `wrong-${i}` } });
+      const r = await request("POST", "/api/auth/login", { body: { username: LOCK_USER, password: `wrong-${i}` } });
       expect(r.status, `第 ${i} 次错口令必须 401：${r.raw.slice(0, 200)}`).toBe(401);
     }
     const before = Date.now();
-    const locked = await request("POST", "/api/login/login", { body: { username: LOCK_USER, password: PW } });
+    const locked = await request("POST", "/api/auth/login", { body: { username: LOCK_USER, password: PW } });
     expect(locked.status, `锁定期内正确口令也必须 401：${locked.raw.slice(0, 300)}`).toBe(401);
     expect(String(locked.body?.message)).toContain("锁定");
 

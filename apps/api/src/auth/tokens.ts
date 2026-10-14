@@ -10,12 +10,11 @@
  * ⚠ 已知限制（显式登记，别当成安全保证）：
  *   1. 只做 `tv` 版本吊销 + 轮转，**不做 refresh 重用检测**（那需要 jti 黑名单表）。
  *      spec §7.2 未要求重用检测；Phase 2 若要，加 `o_sessionJti` 表即可。
- *   2. **兼容旧 token 形状**（`{id, name}`，无 `typ`/`tv`）：Phase 1b 的
- *      `scripts/verify-phase1b.cjs`、`tests/ops-endpoints-auth.test.ts`、`tests/socket-tenant.test.ts`、
- *      `tests/auth-token-key.test.ts` 都按旧形状签发；本 Task 的验收要求 `verify:phase1b` 17/17 保持绿
- *      ⇒ 中间件必须**同时**接受两种形状（见 `middleware/auth.ts` 的 legacy 分支）。
- *      旧形状**不比改造前更弱**（改造前所有 token 都是旧形状），但它没有 `tv`、无法被登出即时吊销 ——
- *      归 Phase 1c Task 11（前端切到新形状）之后清理。
+ *   2. ~~兼容旧 token 形状~~ —— **Phase 1c Task 11 已整体退役**：`verifyLegacyToken` 与两侧
+ *      （HTTP `middleware/auth.ts` / socket `socket/tenant.ts`）的 legacy 分支都已删除。
+ *      原因（安全，不是洁癖）：旧形状**不读 DB** ⇒ 005 把旧账号迁成 `status="disabled"` 的封禁
+ *      对它不生效，且 `roleOfUserId(1)==="admin"` 让任何旧 `{id:1}` 令牌恒为管理员。
+ *      旧令牌寿命 180 天 ⇒ 只删签发端不够，必须让验签端也不再认它。
  */
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";

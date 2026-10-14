@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   /**
    * 空清单护栏（Task 10 Step 0a）：
    * 没有这道闸，`entries` 为空时算出的 hash = md5("[]") 与现有头不同 →
-   * **覆盖写并打印"已生成（0 条路由）"** → 静默清空 router.ts 里全部 177 条挂载，
+   * **覆盖写并打印"已生成（0 条路由）"** → 静默清空 router.ts 里全部 176 条挂载，
    * 而退出码仍是 0（CI/构建全绿）。触发条件（src/routes 改名、glob 失效、目录被清空）概率低但后果严重。
    */
   if (entries.length === 0) throw new Error(`未在 ${routesDir} 下匹配到任何 .ts，拒绝覆盖 ${routerFile}`);

@@ -118,7 +118,10 @@ describe("HTTP 租户上下文中间件（spec §6.4）", () => {
 
   it("白名单（登录 / configHealth?summary=1）放行且**不建立 ctx**；库里没有 tokenKey → 回退 config.jwtSecret（Phase 1a Task 5 的现状语义）", async () => {
     let loginCtx: any = "NOT_CALLED";
-    await tenantContextMiddleware(fakeReq({ path: "/api/login/login" }), fakeRes(), () => { loginCtx = currentTenant() ?? null; });
+    // ⚠ Phase 1c Task 11：用**新**登录路径 `/api/auth/login`：旧路径 `/api/login/login` 已退役
+    //   （路由与白名单条目都删了）⇒ 拿它当"白名单放行"的样本会变成"401 且不 next"（loginCtx 仍是
+    //   "NOT_CALLED"），断言会以看不出原因的方式红掉。
+    await tenantContextMiddleware(fakeReq({ path: "/api/auth/login" }), fakeRes(), () => { loginCtx = currentTenant() ?? null; });
     expect(loginCtx).toBeNull();
     let healthCtx: any = "NOT_CALLED";
     await tenantContextMiddleware(fakeReq({ path: "/api/other/configHealth", query: { summary: "1" } }), fakeRes(), () => { healthCtx = currentTenant() ?? null; });

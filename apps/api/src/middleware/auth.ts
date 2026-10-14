@@ -10,34 +10,40 @@
  * 建 ctx、并在 ctx 里带上**从 DB 读出来的真实 role**（spec §7.3：授权判定只信 DB，不信 token 的 role）。
  *
  * ── 白名单（必须显式列出，不靠"路径前缀"猜）──
- *   POST /api/login/login        —— 旧路径，**保留**（Phase 1c §5 的验收就是打它；前端切换归 Task 11）
  *   POST /api/auth/login         —— 新路径
  *   POST /api/auth/register
  *   POST /api/auth/refresh       —— refresh 本身没有 access（只有 Cookie），必须在验签之前
  *   GET  /api/other/configHealth?summary=1
  * 白名单命中 ⇒ **既不验签也不建 ctx**（天然匿名，不许塞假 ctx），且**不读密钥**（性能）。
  *
- * ── 两种 token 形状（都要接受，理由见 `tokens.ts` 文件头限制 2）──
+ * ⚠【Phase 1c Task 11】**旧登录路径 `/api/login/login` 已整体退役**（路由文件删除、白名单条目同步删除）：
+ *   它曾是一个"调同一个 service 的薄壳"，让旧前端在切换期还能登录 —— 代价是**两条匿名入口**与
+ *   一份必须长期维护的兼容面。现在只留 `/api/auth/*` 三条款。
+ *
+ * ── 一种 token 形状（Phase 1c Task 11 起）──
  *   · 新形状（`typ` + `uid` + `tv`）：验签 → 每请求从 DB 读 `status`/`tokenVersion`/`role`
- *     → 比对 `tv`（登出/改密后立即失效）→ ctx.role 取 **DB 的 role**；
- *   · 旧形状（`{id, name}`，无 `typ`）：验签 → ctx 由 `roleOfUserId` 桥接（Phase 1b 的语义原样，
- *     否则 `verify-phase1b` / `ops-endpoints-auth` / `socket-tenant` / `auth-token-key` 会整片红）。
+ *     → 比对 `tv`（登出/改密后立即失效）→ ctx.role 取 **DB 的 role**。
+ *   · **旧形状（`{id, name}`，无 `typ`）已整体退役 ⇒ 一律 401**（见下）。
+ *
+ * ⚠ 为什么必须删掉旧形状分支（**安全**，不是洁癖）：legacy 分支**不读 DB** ⇒
+ *   ① 005 把旧账号迁成 `status="disabled"` 的封禁对它**完全不生效**（停用的人照样进得来）；
+ *   ② 它用 `roleOfUserId(userId)` 桥接角色，而 `roleOfUserId(1) === "admin"` ⇒
+ *      **用当前密钥签的 `{id:1}` 旧令牌至今仍然是管理员**。
+ *   旧令牌的寿命是 180 天，所以"删掉签发端"并不够 —— 必须让**验签端**也不再认它。
  *
  * ── 失败一律 401 + `{code:401,data:null,message}` ──
  * 不返回 444、不带 err 对象、不区分"用户不存在/口令错/被停用"（避免账号枚举）。
  */
 import { randomUUID } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
-import { AuthError, verifyLegacyToken, verifyToken } from "@/auth/tokens";
+import { AuthError, verifyToken } from "@/auth/tokens";
 import { resolveJwtSecret } from "@/auth/secret";
 import { AuthHttpError } from "@/auth/errors";
 import { loadUserCtx } from "@/auth/service";
-import { roleOfUserId } from "@/db/policies";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
 
 /** 匿名可访问的路径（**精确匹配**，不用前缀）。 */
 export const AUTH_WHITELIST: readonly string[] = [
-  "/api/login/login",
   "/api/auth/login",
   "/api/auth/register",
   "/api/auth/refresh",
@@ -115,15 +121,13 @@ export async function authenticate(
     ctx = { userId: user.id, role: user.role, requestId: randomUUID(), source: "http" };
     reqUser = { id: user.id, name: user.username, role: user.role };
   } catch (err) {
-    // 过期/类型不符是**确定**的失败（不去猜旧形状）；只有"载荷不是新形状"才回退 legacy
+    // ⚠【Phase 1c Task 11】这里**不再**回退旧形状：`verifyToken` 失败就是失败。
+    //   过期与其它失败分开只为给前端**一条**可操作的提示（"去续期/重登"），不泄露更多信息。
     if (err instanceof AuthError && err.code === "expired") return unauthorized(res, "登录已过期，请重新登录");
-    const legacy = verifyLegacyToken(token, secret);
-    if (!legacy) return unauthorized(res, "无效的token");
-    ctx = { userId: legacy.userId, role: roleOfUserId(legacy.userId), requestId: randomUUID(), source: "http" };
-    reqUser = { ...legacy.payload, id: legacy.userId };
+    return unauthorized(res, "无效的token");
   }
 
-  (req as any).user = reqUser; // spec §6.4：保留 `req.user`（形状与新/旧 token 一致）
+  (req as any).user = reqUser; // spec §6.4：保留 `req.user`（形状由上面的 db 行投影而来，不直接透传令牌载荷）
   (req as any).tenant = ctx;
   // ⚠ Phase 1c Task 6：`req.ctx` 是**错误处理器读 requestId** 的位置（`src/app.ts` 的 errorHandler）。
   //   同一个对象挂两个名字是**故意**的：`req.tenant` 是 Phase 1b 起的既有消费面（socket/测试都在读），

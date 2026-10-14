@@ -5,9 +5,11 @@
  *   · service（`@/auth/service`）是业务规则的家（注册三模式、锁定、改密、轮转）；
  *   · 但"令牌到底能不能过中间件、`tokenVersion++` 之后旧 access 是不是**立刻** 401"
  *     只有把**真路由 + 真中间件**挂在 HTTP 上才成立（造假 req/res 会把被测机制假设掉）。
- *   所以这里挂的是 `src/routes/auth/**` 与 `src/routes/login/login.ts` 的**真模块**，
+ *   所以这里挂的是 `src/routes/auth/**` 的**真模块**，
  *   中间件链与 `src/app.ts` 同形状（`authenticate` → 路由 → 错误处理器）。
  *   打**真应用进程**（`tsx src/app.ts`）的端到端证据在 `tests/auth-http-e2e.test.ts`。
+ *   ⚠【Phase 1c Task 11】`src/routes/login/login.ts` **已整体删除**（旧登录路径退役），
+ *     本文件不再挂它；"它真的没了"由白名单断言 + 那条 401/404 两端的用例钉住。
  *
  * ⚠ 每个用例用**独立的客户端 IP**（`X-Forwarded-For` + `app.set("trust proxy", true)`）：
  *   `registerLimiter` 是"10 次/小时/IP"，一个文件里十几个注册请求会**自己把自己限流掉**
@@ -38,7 +40,6 @@ import refreshRoute from "@/routes/auth/refresh";
 import logoutRoute from "@/routes/auth/logout";
 import meRoute from "@/routes/auth/me";
 import changePasswordRoute from "@/routes/auth/changePassword";
-import legacyLoginRoute from "@/routes/login/login";
 
 const TAG = `svc${crypto.randomBytes(4).toString("hex")}`;
 const PW = "pw-initial-123456";
@@ -66,7 +67,11 @@ async function serve() {
   app.use("/api/auth/logout", logoutRoute);
   app.use("/api/auth/me", meRoute);
   app.use("/api/auth/changePassword", changePasswordRoute);
-  app.use("/api/login/login", legacyLoginRoute);
+  // ⚠【Phase 1c Task 11】旧登录路由 `/api/login/login` **整体退役**（文件已删、白名单条目已删）：
+  //   本文件不再挂它。它的"已退役"由两条**否定**判据钉住：
+  //     ① 白名单断言（下面那一条）不再含 `/api/login/login`；
+  //     ② 用例「旧登录路径已退役」断言**未挂载**时该路径落到"未提供token ⇒ 401"，
+  //        且在**真应用**里它是 **404**（`tests/auth-http-e2e.test.ts` 与 Task 11 的探针原文）。
   // "受保护接口"替身：**只有**带 ctx 才答 200，并把 ctx.userId 回显出来
   //（防"路由根本没挂上/中间件被绕过"的假绿）
   app.get("/api/project/ping", (req, res) => {
@@ -193,12 +198,11 @@ describe("认证路径的表策略（spec §6.2：登录发生在建 ctx 之前�
     for (const t of AUTH_TABLES) expect(policyOf(t), `${t} 必须是 platform`).toBe("platform");
   });
 
-  it("白名单恰好是 4 个匿名路径（不靠前缀猜）", () => {
+  it("白名单恰好是 3 个匿名路径（不靠前缀猜；Phase 1c Task 11 删掉了 /api/login/login）", () => {
     expect([...AUTH_WHITELIST].sort()).toEqual([
       "/api/auth/login",
       "/api/auth/refresh",
       "/api/auth/register",
-      "/api/login/login",
     ]);
   });
 });
@@ -377,22 +381,29 @@ describe("登录 / 令牌 / 吊销（spec §7.2）", () => {
     }
   });
 
-  it("旧登录路径 /api/login/login 仍能用（Phase 1c §5 的验收入口），返回 Bearer token", async () => {
+  /**
+   * Phase 1c Task 11：**旧登录路径整体退役**（Task 3 时它是"调同一个 service 的薄壳"）。
+   *
+   * ⚠ 这里钉住的**两个不同的状态码**是刻意分开的，别当成重复：
+   *   · **匿名**打它 ⇒ **401**：`/api/*` 的 `authenticate` 在路由**之前**跑（这是整条链的装配顺序），
+   *     所以"路径不存在"在未认证时看不见 —— 任务书 §5 判别力写的"退役后 404"只在**已认证**时成立。
+   *   · **带有效令牌**打它 ⇒ **404**：证明路由真的没了（而不是"被鉴权挡住了"）。
+   *   只看 401 的话，"路由还在、只是加了鉴权"也会绿 ⇒ 两端口都必须有。
+   */
+  it("★ 旧登录路径 /api/login/login **已退役**：匿名 ⇒ 401（鉴权在路由之前），带有效令牌 ⇒ 404（路由真的没了）", async () => {
     const ip = nextIp();
     const srv = await serve();
     try {
       await setMode("open");
-      const username = `${TAG}_legacy`;
+      const username = `${TAG}_legacy_gone`;
       await registerViaHttp(srv.port, username, ip);
-      const res = await request(srv.port, "POST", "/api/login/login", { username, password: PW }, { ip });
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(String(res.body?.data?.token).startsWith("Bearer ")).toBe(true);
-      expect(res.body?.data?.name).toBe(username);
-      expect(res.body?.data?.id).toBeGreaterThan(0);
-      const bad = await request(srv.port, "POST", "/api/login/login", { username, password: "nope" }, { ip });
-      expect(bad.status).toBe(401);
-      const token = String(res.body?.data?.token);
-      expect((await request(srv.port, "GET", "/api/project/ping", undefined, { token, ip })).status).toBe(200);
+
+      const anon = await request(srv.port, "POST", "/api/login/login", { username, password: PW }, { ip });
+      expect(anon.status, `匿名打已退役的路径：鉴权先于路由 ⇒ 必须是 401，实际 ${anon.status}：${anon.raw.slice(0, 200)}`).toBe(401);
+
+      const token = await loginViaHttp(srv.port, username, ip);
+      const authed = await request(srv.port, "POST", "/api/login/login", { username, password: PW }, { token, ip });
+      expect(authed.status, `带有效令牌打已退役的路径 ⇒ 必须是 404（路由不存在），实际 ${authed.status}：${authed.raw.slice(0, 200)}`).toBe(404);
     } finally {
       await srv.close();
     }
