@@ -16,6 +16,14 @@ const external = [
   //   已分别由 Task 8（改为只留 isEletron 判定）与 Task 9（env.ts 换成 config 垫片）移除。
   //   最后一处（src/app.ts 的 checkPermissions）属 Phase 1c，移除后方可删除本条目。
   "electron",
+  // ⚠ 不是死配置，别删：`src/auth/password.ts` 用 `@node-rs/argon2` 做口令哈希（Phase 1c Task 2）。
+  //   该包在 `index.js` 里 `require('<平台包>')`，平台包里是**预编译 `.node`**；esbuild 没有 `.node`
+  //   loader ⇒ 不外部化就报 `No loader is configured for ".node" files: …argon2.win32-x64-msvc.node`，
+  //   `pnpm run build` 直接 EXIT 1。而且这份 external **历史上从来没有过 argon2** ⇒
+  //   自 Task 2 引入依赖起生产构建就是坏的（10 个任务的验收一次 build 都没跑过）。
+  //   现在由 `tools/check-build.cjs`（`pnpm run verify:build`）机械守住。
+  //   外部化后运行时从 node_modules 解析（容器里必须装 `@node-rs/argon2` 及其平台包）。
+  "@node-rs/argon2",
   "undici",
   "@huggingface/transformers",
   "onnxruntime-node",
