@@ -16,6 +16,8 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { DialogPlugin } from "tdesign-vue-next";
+import axios from "@/utils/axios";
+import { clearSession } from "@/utils/session";
 
 const router = useRouter();
 const loading = ref(false);
@@ -37,23 +39,34 @@ function openLogoutDialog() {
   });
 }
 
+/**
+ * 登出（Phase 1c Task 11）。
+ *
+ * ⚠ 顺序与理由：
+ *   ① `POST /api/auth/logout` —— **服务端**才是真正的吊销：`tokenVersion++` 让该账号**所有**已签发的
+ *      access/refresh 立刻失效（spec §7.2），并清掉 refresh Cookie；
+ *   ② 无论它成功与否都要 `clearSession()` —— 否则"网络断了"会让用户**以为**自己退出了，
+ *      而内存里那条 access 还在继续被发出去；
+ *   ③ 回登录页。
+ * ⚠ 旧实现只删 `localStorage` 里的两个键，**从不通知服务端** ⇒ 令牌在 7 天/180 天里一直有效。
+ */
 async function handleLogout() {
   loading.value = true;
+  let ok = true;
   try {
-    // 清除本地存储的token
-    localStorage.removeItem("token");
-    // 清除其他可能的用户数据
-    localStorage.removeItem("user");
-
-    window.$message.success($t("settings.logout.msg.logoutSuccess"));
-
-    // 跳转到登录页面
-    router.push("/login");
+    await axios.post("/auth/logout");
   } catch (error) {
-    window.$message.error($t("settings.logout.msg.logoutFailed"));
+    ok = false;
   } finally {
+    clearSession();
     loading.value = false;
   }
+  if (ok) {
+    window.$message.success($t("settings.logout.msg.logoutSuccess"));
+  } else {
+    window.$message.error($t("settings.logout.msg.logoutFailed"));
+  }
+  router.push("/login");
 }
 </script>
 

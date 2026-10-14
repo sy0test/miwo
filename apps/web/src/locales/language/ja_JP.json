@@ -1412,7 +1412,27 @@
     "passwordRequired": "パスワードを入力してください",
     "enterUsernameAndPassword": "ユーザー名またはパスワードを入力してください",
     "loginSuccess": "ログインに成功しました",
-    "settingsSaved": "設定を保存しました"
+    "settingsSaved": "設定を保存しました",
+    "noAccountRegister": "アカウントがない場合は登録",
+    "register": "登録",
+    "registerSuccess": "登録が完了しました",
+    "usernamePlaceholder": "ユーザー名を入力してください",
+    "passwordConfirm": "パスワードの確認",
+    "passwordRule": "パスワードは 8 文字以上にしてください",
+    "passwordMismatch": "2 回入力したパスワードが一致しません",
+    "inviteCode": "招待コード",
+    "inviteCodePlaceholder": "招待コードを入力してください（招待制の場合のみ必須）",
+    "inviteHint": "登録には招待コードが必要です。お持ちでない場合は管理者にお問い合わせください。",
+    "registerNotAllowed": "登録できません：招待コードが無効か、登録が停止されています",
+    "usernameTaken": "そのユーザー名は既に使われています",
+    "badCredentials": "ユーザー名またはパスワードが違います",
+    "mustChangePasswordTitle": "初回ログイン時はパスワード変更が必須です",
+    "mustChangePasswordHint": "アカウント保護のため、まず初期パスワードを変更してください。変更後は新しいパスワードで再ログインします。",
+    "oldPassword": "現在のパスワード",
+    "newPassword": "新しいパスワード",
+    "changePassword": "パスワードを変更",
+    "changePasswordSuccess": "パスワードを変更しました。新しいパスワードで再ログインしてください。",
+    "oldPasswordWrong": "現在のパスワードが正しくありません"
   },
   "common": {
     "cancel": "キャンセル",
@@ -1425,7 +1445,17 @@
     "submitting": "提出する",
     "editSuccess": "変更が成功しました",
     "editFailed": "変更に失敗しました",
-    "submit": "提出する"
+    "submit": "提出する",
+    "apiError": {
+      "badRequest": "リクエストが不正です",
+      "unauthorized": "ログイン状態が無効です。再度ログインしてください",
+      "forbidden": "この操作を行う権限がありません",
+      "notFound": "要求されたリソースが存在しません",
+      "conflict": "競合しました。再読み込みしてやり直してください",
+      "tooManyRequests": "操作が多すぎます。しばらくしてからやり直してください",
+      "server": "サーバー内部エラーです。しばらくしてからやり直してください",
+      "unknown": "リクエストに失敗しました。しばらくしてからやり直してください"
+    }
   },
   "components.storyboardImageCheck.camera": "カメラ",
   "components.storyboardImageCheck.dialogTitle": "絵コンテ画像を選択",

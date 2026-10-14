@@ -1418,7 +1418,27 @@
     "passwordRequired": "請輸入密碼",
     "enterUsernameAndPassword": "請輸入使用者名稱或密碼",
     "loginSuccess": "登入成功",
-    "settingsSaved": "設定已儲存"
+    "settingsSaved": "設定已儲存",
+    "noAccountRegister": "沒有帳號？註冊",
+    "register": "註冊",
+    "registerSuccess": "註冊成功",
+    "usernamePlaceholder": "請輸入使用者名稱",
+    "passwordConfirm": "確認密碼",
+    "passwordRule": "密碼至少 8 位",
+    "passwordMismatch": "兩次輸入的密碼不一致",
+    "inviteCode": "邀請碼",
+    "inviteCodePlaceholder": "請輸入邀請碼（註冊模式為邀請碼時必填）",
+    "inviteHint": "註冊需要邀請碼；沒有邀請碼請聯繫管理員。",
+    "registerNotAllowed": "註冊未通過：邀請碼不可用，或註冊已關閉",
+    "usernameTaken": "使用者名稱已存在",
+    "badCredentials": "帳號或密碼錯誤",
+    "mustChangePasswordTitle": "首次登入必須修改密碼",
+    "mustChangePasswordHint": "為了帳號安全，請先修改初始密碼；修改後需要用新密碼重新登入。",
+    "oldPassword": "原密碼",
+    "newPassword": "新密碼",
+    "changePassword": "修改密碼",
+    "changePasswordSuccess": "密碼已修改，請用新密碼重新登入",
+    "oldPasswordWrong": "原密碼不正確"
   },
   "promptManage": {
     "prompt": "提示詞"
@@ -1460,7 +1480,17 @@
     "submitting": "提交中",
     "editSuccess": "修改成功",
     "editFailed": "修改失敗",
-    "submit": "提交"
+    "submit": "提交",
+    "apiError": {
+      "badRequest": "請求參數不合法",
+      "unauthorized": "登入狀態無效，請重新登入",
+      "forbidden": "沒有權限執行該操作",
+      "notFound": "請求的資源不存在",
+      "conflict": "操作衝突，請重新整理後重試",
+      "tooManyRequests": "操作過於頻繁，請稍後再試",
+      "server": "伺服器內部錯誤，請稍後再試",
+      "unknown": "請求失敗，請稍後再試"
+    }
   },
   "storyboard": {
     "assets": {

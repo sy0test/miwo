@@ -1700,7 +1700,27 @@
     "passwordRequired": "请输入密码",
     "enterUsernameAndPassword": "请输入用户名或密码",
     "loginSuccess": "登录成功",
-    "settingsSaved": "设置已保存"
+    "settingsSaved": "设置已保存",
+    "noAccountRegister": "没有账号？注册",
+    "register": "注册",
+    "registerSuccess": "注册成功",
+    "usernamePlaceholder": "请输入用户名",
+    "passwordConfirm": "确认密码",
+    "passwordRule": "口令至少 8 位",
+    "passwordMismatch": "两次输入的密码不一致",
+    "inviteCode": "邀请码",
+    "inviteCodePlaceholder": "请输入邀请码（注册模式为邀请码时必填）",
+    "inviteHint": "注册需要邀请码；没有邀请码请联系管理员。",
+    "registerNotAllowed": "注册未通过：邀请码不可用，或注册已关闭",
+    "usernameTaken": "用户名已存在",
+    "badCredentials": "账号或口令错误",
+    "mustChangePasswordTitle": "首次登录必须修改密码",
+    "mustChangePasswordHint": "为了账号安全，请先修改初始密码；修改后需要用新密码重新登录。",
+    "oldPassword": "原密码",
+    "newPassword": "新密码",
+    "changePassword": "修改密码",
+    "changePasswordSuccess": "密码已修改，请用新密码重新登录",
+    "oldPasswordWrong": "原密码不正确"
   },
   "common": {
     "cancel": "取消",
@@ -1714,7 +1734,17 @@
     "submitting": "提交中",
     "editSuccess": "修改成功",
     "editFailed": "修改失败",
-    "submit": "提交"
+    "submit": "提交",
+    "apiError": {
+      "badRequest": "请求参数不合法",
+      "unauthorized": "登录状态无效，请重新登录",
+      "forbidden": "没有权限执行该操作",
+      "notFound": "请求的资源不存在",
+      "conflict": "操作冲突，请刷新后重试",
+      "tooManyRequests": "操作过于频繁，请稍后再试",
+      "server": "服务器内部错误，请稍后再试",
+      "unknown": "请求失败，请稍后再试"
+    }
   },
   "workbench.project.msg.enterProjectQuality": "请选择图片质量",
   "promptManage": {

@@ -1403,7 +1403,27 @@
     "passwordRequired": "Vui lòng nhập mật khẩu",
     "enterUsernameAndPassword": "Vui lòng nhập tên người dùng hoặc mật khẩu",
     "loginSuccess": "Đăng nhập thành công",
-    "settingsSaved": "Đã lưu cài đặt"
+    "settingsSaved": "Đã lưu cài đặt",
+    "noAccountRegister": "Chưa có tài khoản? Đăng ký",
+    "register": "Đăng ký",
+    "registerSuccess": "Tạo tài khoản thành công",
+    "usernamePlaceholder": "Nhập tên người dùng",
+    "passwordConfirm": "Xác nhận mật khẩu",
+    "passwordRule": "Mật khẩu phải có ít nhất 8 ký tự",
+    "passwordMismatch": "Hai lần nhập mật khẩu không khớp",
+    "inviteCode": "Mã mời",
+    "inviteCodePlaceholder": "Nhập mã mời (bắt buộc khi chế độ đăng ký là mã mời)",
+    "inviteHint": "Đăng ký cần mã mời. Nếu chưa có, vui lòng liên hệ quản trị viên.",
+    "registerNotAllowed": "Đăng ký bị từ chối: mã mời không dùng được, hoặc đã đóng đăng ký",
+    "usernameTaken": "Tên người dùng này đã tồn tại",
+    "badCredentials": "Sai tên người dùng hoặc mật khẩu",
+    "mustChangePasswordTitle": "Bắt buộc đổi mật khẩu ở lần đăng nhập đầu",
+    "mustChangePasswordHint": "Vì an toàn tài khoản, hãy đổi mật khẩu ban đầu trước; sau đó đăng nhập lại bằng mật khẩu mới.",
+    "oldPassword": "Mật khẩu hiện tại",
+    "newPassword": "Mật khẩu mới",
+    "changePassword": "Đổi mật khẩu",
+    "changePasswordSuccess": "Đã đổi mật khẩu. Vui lòng đăng nhập lại bằng mật khẩu mới.",
+    "oldPasswordWrong": "Mật khẩu hiện tại không đúng"
   },
   "common": {
     "cancel": "Hủy",
@@ -1417,7 +1437,17 @@
     "submitting": "Đang gửi",
     "editSuccess": "Sửa đổi thành công",
     "editFailed": "Sửa đổi không thành công",
-    "submit": "nộp"
+    "submit": "nộp",
+    "apiError": {
+      "badRequest": "Yêu cầu không hợp lệ",
+      "unauthorized": "Phiên đăng nhập không hợp lệ, vui lòng đăng nhập lại",
+      "forbidden": "Bạn không có quyền thực hiện thao tác này",
+      "notFound": "Không tìm thấy tài nguyên yêu cầu",
+      "conflict": "Xung đột thao tác, vui lòng tải lại rồi thử lại",
+      "tooManyRequests": "Thao tác quá nhanh, vui lòng thử lại sau",
+      "server": "Lỗi máy chủ, vui lòng thử lại sau",
+      "unknown": "Yêu cầu thất bại, vui lòng thử lại sau"
+    }
   },
   "components.storyboardImageCheck.camera": "Máy quay",
   "components.storyboardImageCheck.dialogTitle": "Chọn hình storyboard",
