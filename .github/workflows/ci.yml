@@ -138,6 +138,10 @@ jobs:
         env:
           MIWO_TEST_SLOW: "1"
         run: pnpm --filter @miwo/api test
+      # Phase 1b / Task 9：**Phase 1b 的唯一验收命令**（真 HTTP + 一次性 dataDir，绝不碰仓库 data/）。
+      # MySQL 口径在本 job 里**未实测**（它显式打印 SKIP 原因，不静默跳过）；真跑在 mysql job。
+      - name: Phase 1b 端到端（租户隔离）
+        run: pnpm verify:phase1b
       - name: 后端打包（产物 data/serve/app.js 已被 .gitignore 忽略）
         run: pnpm --filter @miwo/api run build
       # Phase 1a / Task 11：Phase 1a 的唯一验收命令，**放在最后**。

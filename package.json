@@ -25,6 +25,7 @@
     "verify:phase0": "node apps/api/scripts/verify-phase0.cjs",
     "verify:phase1a": "node apps/api/scripts/verify-phase1a.cjs",
     "verify:phase1a:ci": "node apps/api/scripts/verify-phase1a.cjs --ci",
+    "verify:phase1b": "node apps/api/scripts/verify-phase1b.cjs",
     "verify:test-shape": "node tools/check-test-early-return.cjs",
     "verify:legacy-freeze": "node tools/record-legacy-freeze.cjs --check",
     "verify:exceptions": "node tools/check-tenant-exceptions.cjs",

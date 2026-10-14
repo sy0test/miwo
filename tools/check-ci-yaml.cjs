@@ -145,6 +145,8 @@ if (apiJob) {
     "api job 顺序错误：仓库检查必须紧跟 install、并排在 路由生成/typecheck/单测/打包 之前（快速失败；与 apps/web/dist 是否存在无关）",
   );
   check(apiRuns.includes("node --import=tsx scripts/generate-router.ts"), "api job 缺少路由生成（幂等）步骤");
+  // Phase 1b / Task 9：Phase 1b 的**唯一验收命令**必须在 api job 里真跑（交付物没进 CI = 零防漂移）。
+  check(apiRuns.includes("pnpm verify:phase1b"), "api job 必须跑 `pnpm verify:phase1b`（Phase 1b 的唯一验收命令）");
   check(
     apiRuns.includes("pnpm --filter @miwo/api run typecheck"),
     "api job 缺少 `pnpm --filter @miwo/api run typecheck`",

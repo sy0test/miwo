@@ -24,6 +24,10 @@ import { describe, expect, it } from "vitest";
 import { config, type MiwoConfig } from "@/config";
 import { createKnex, describeTarget } from "@/db/connect";
 import { migrationStatus, rollbackMigrations, runMigrations } from "@/db/migrations";
+// Task 9：MySQL 侧的隔离守卫与回填幂等（与 sqlite 套件同构；`MIWO_TEST_MYSQL=1` 门控见文件头）
+import { makeTenantAware } from "@/db/tenant-guard";
+import { backfillUserIds } from "@/db/legacy/backfill-userid";
+import type { TenantCtx } from "@/db/tenant-context";
 import {
   checkIdRanges,
   checkIdTypes,
@@ -382,6 +386,71 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       expect(Number(((await db("o_vendorConfig").count({ n: "*" }).first()) as { n: number | string }).n)).toBe(0);
     } finally {
       await rollbackMigrations(db, true).catch(() => {});
+      await db.destroy();
+    }
+  }, 180000);
+
+  /**
+   * Task 9：**隔离守卫在 MySQL 上生效**（与 `tests/tenant-isolation.test.ts` 同构的那条链）。
+   * ⚠ 本机 3307 未启动 ⇒ 默认 `describe.skip`；CI 的 mysql job 会真跑（`MIWO_TEST_MYSQL=1`）。
+   */
+  it("隔离守卫在 MySQL 上生效：A 读不到 B 的行、跨租户 update 0 行、insert 自动填 userId", async () => {
+    const db = createKnex();
+    const ID_A = 9000001;
+    const ID_B = 9000002;
+    const ID_NEW = 9000003;
+    try {
+      await runMigrations(db);
+      await db("o_project")
+        .insert([
+          { id: ID_A, userId: 7, name: "mysql-iso-A" },
+          { id: ID_B, userId: 8, name: "mysql-iso-B" },
+        ])
+        .onConflict("id")
+        .merge();
+      const ctx: TenantCtx = { userId: 7, role: "user", requestId: "mysql-iso", source: "http" };
+      const guarded: any = makeTenantAware(db, { getCtx: () => ctx });
+      expect(await guarded("o_project").where("id", ID_B).first(), "跨租户读必须查不到").toBeUndefined();
+      expect(await guarded("o_project").where("id", ID_B).update({ name: "hacked" }), "跨租户 update 必须 0 行").toBe(0);
+      expect((await db("o_project").where("id", ID_B).first()).name, "B 的行不得被改").toBe("mysql-iso-B");
+      await guarded("o_project").insert({ id: ID_NEW, name: "mysql-iso-A2" });
+      expect(Number((await db("o_project").where("id", ID_NEW).first()).userId), "insert 必须自动填 ctx.userId").toBe(7);
+      expect(await guarded("o_project").where("id", ID_A).first(), "自己的行必须读得到（防假绿）").toBeTruthy();
+    } finally {
+      await db("o_project").whereIn("id", [ID_A, ID_B, ID_NEW]).del().catch(() => {});
+      await db.destroy();
+    }
+  }, 180000);
+
+  /**
+   * Task 9：**回填在 MySQL 上幂等**（第二次逐表 `updated` 全 0）。
+   * ⚠ 同上：默认 skip，CI 真跑。
+   */
+  it("回填在 MySQL 上幂等：apply 两次，第二次逐表 updated 全 0", async () => {
+    const db = createKnex();
+    const P_OK = 9000011;
+    const P_ORPHAN = 9000012;
+    const T = 9000013;
+    try {
+      await runMigrations(db);
+      await db("o_project")
+        .insert([
+          { id: P_OK, userId: 7, name: "mysql-bf" },
+          { id: P_ORPHAN, userId: null, name: "mysql-bf-orphan" },
+        ])
+        .onConflict("id")
+        .merge();
+      await db("o_tasks").insert({ id: T, projectId: P_OK, userId: null }).onConflict("id").merge();
+
+      const first = await backfillUserIds(db, { apply: true });
+      expect(first.tables.find((t) => t.table === "o_tasks")?.updated, "第一次必须真的填了 o_tasks").toBeGreaterThan(0);
+      const second = await backfillUserIds(db, { apply: true });
+      const dirty = second.tables.filter((t) => t.updated !== 0);
+      expect(dirty, `第二次必须逐表 0：${JSON.stringify(dirty)}`).toEqual([]);
+      expect(Number((await db("o_tasks").where("id", T).first()).userId), "归属链必须收敛到 o_project.userId").toBe(7);
+    } finally {
+      await db("o_tasks").where("id", T).del().catch(() => {});
+      await db("o_project").whereIn("id", [P_OK, P_ORPHAN]).del().catch(() => {});
       await db.destroy();
     }
   }, 180000);
