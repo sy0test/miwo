@@ -4,6 +4,7 @@ import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { withVendorSlot, apiHolderId } from "@/jobs/gate";
 
 const router = express.Router();
 
@@ -99,20 +100,23 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
   const relatedObjects = { id, projectId, type: cfg.label };
 
   try {
+    // Phase 1d Task 9：厂商调用前过 `vendor:image` 闸门（spec §9.3）。响应形态不变。
     const aiImage = u.Ai.Image(model);
-    await aiImage.run(
-      {
-        prompt: userPrompt,
-        referenceList: base64 ? [{ type: "image", base64 }] : [],
-        size: resolution,
-        aspectRatio: "16:9",
-      },
-      {
-        taskClass: cfg.taskClass,
-        describe,
-        projectId,
-        relatedObjects: JSON.stringify(relatedObjects),
-      },
+    await withVendorSlot("vendor:image", apiHolderId(), () =>
+      aiImage.run(
+        {
+          prompt: userPrompt,
+          referenceList: base64 ? [{ type: "image", base64 }] : [],
+          size: resolution,
+          aspectRatio: "16:9",
+        },
+        {
+          taskClass: cfg.taskClass,
+          describe,
+          projectId,
+          relatedObjects: JSON.stringify(relatedObjects),
+        },
+      ),
     );
     aiImage.save(imagePath);
     // 5. 更新记录 & 返回结果

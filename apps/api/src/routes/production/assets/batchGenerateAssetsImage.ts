@@ -14,7 +14,7 @@ export default router.post(
     assetIds: z.array(z.number()),
     projectId: z.number(),
     scriptId: z.number(),
-    concurrentCount: z.number().min(1).optional(),
+    concurrentCount: z.number().int().min(1).max(8).optional(),
   }),
   async (req, res) => {
     const { assetIds, projectId, scriptId, concurrentCount = 5 } = req.body;

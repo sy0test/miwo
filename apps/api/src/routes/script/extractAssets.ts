@@ -4,6 +4,7 @@ import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { useSkill } from "@/utils/agent/skillsTools";
+import { withVendorSlot, apiHolderId } from "@/jobs/gate";
 import { tool, jsonSchema } from "ai";
 import { o_script } from "@/types/database";
 
@@ -213,7 +214,9 @@ export default router.post(
           const existingHint = existingAssetsList
             ? `\n\n【已有资产列表】：${existingAssetsList}\n对于已有资产，如果在剧本中出现，只需在 existingAssetRefs 中给出资产名称和对应的 scriptIds 数组即可，无需重复生成 desc/type。对于新发现的资产（不在已有列表中），请在 newAssets 中给出完整信息。`
             : "";
-          const output = await u.Ai.Text("universalAi").invoke({
+          // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。响应形态不变。
+          const output = await withVendorSlot("vendor:text", apiHolderId(), () =>
+            u.Ai.Text("universalAi").invoke({
             messages: [
               {
                 role: "system",
@@ -228,7 +231,8 @@ export default router.post(
               },
             ],
             tools: { resultTool },
-          });
+          }),
+          );
           await persistGroupResult({
             batchScriptIds: validScriptIds,
             newAssets: collectedNew,

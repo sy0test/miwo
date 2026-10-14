@@ -1,12 +1,12 @@
 import express from "express";
 import u from "@/utils";
 import { z } from "zod";
-import sharp from "sharp";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { Output, tool } from "ai";
 import { assetItemSchema } from "@/agents/productionAgent/tools";
 import { readShotsEngine } from "@/utils/shots/readShots";
+import { enqueueJob } from "@/jobs";
+import { currentUserId } from "@/jobs/context";
 const router = express.Router();
 export type AssetData = z.infer<typeof assetItemSchema>;
 
@@ -16,7 +16,7 @@ export default router.post(
     storyboardIds: z.array(z.number()),
     projectId: z.number(),
     scriptId: z.number(),
-    concurrentCount: z.number().min(1).optional(),
+    concurrentCount: z.number().int().min(1).max(8).optional(),
     compulsory: z.boolean().optional(),
   }),
   async (req, res) => {
@@ -85,8 +85,20 @@ export default router.post(
       }
     });
     const realStoryData = await u.db("o_storyboard").where("scriptId", scriptId).where("projectId", projectId).whereIn("id", storyIds);
-    res.status(200).send(
-      success(
+
+    // Phase 1d：入队（生成段搬到 handler），不再进程内 Promise.all 后台跑。
+    // ⚠ 响应形状不变（`data` 仍是那个分镜数组）；jobIds 走新顶层字段。
+    const userId = currentUserId(req);
+    if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
+    const { jobId } = await enqueueJob({
+      type: "image.storyboard.batch",
+      userId,
+      // ⚠ payload 键是 **storyboardIds（复数数组）**，与 task-7 契约表一致（B 组 reconcile 已对齐）
+      payload: { projectId, scriptId, storyboardIds: storyIds, compulsory },
+    });
+
+    res.status(200).send({
+      ...success(
         realStoryData.map((i) => ({
           id: i.id,
           prompt: i.prompt,
@@ -97,81 +109,7 @@ export default router.post(
           shouldGenerateImage: i.shouldGenerateImage,
         })),
       ),
-    );
-
-    const generateTask = async (item: (typeof storyboardData)[number]) => {
-      const repeloadObj = {
-        prompt: item.prompt!,
-        size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
-        aspectRatio: projectSettingData?.videoRatio as `${number}:${number}`,
-      };
-      try {
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
-          {
-            referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []),
-            ...repeloadObj,
-          },
-          {
-            taskClass: "生成分镜图片",
-            describe: "分镜图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
-            projectId: projectId,
-          },
-        );
-        const savePath = `/${projectId}/assets/${scriptId}/${u.uuid()}.jpg`;
-        await imageCls.save(savePath);
-        await u.db("o_storyboard").where("id", item.id).update({
-          filePath: savePath,
-          state: "已完成",
-        });
-      } catch (e) {
-        u.db("o_storyboard")
-          .where("id", item.id)
-          .update({
-            filePath: "",
-            reason: u.error(e).message,
-            state: "生成失败",
-          });
-      }
-    };
-    // 按 concurrentCount 控制并发数，分批执行；跳过 shouldGenerateImage === 0 的分镜
-    let generateList = [];
-    if (compulsory) {
-      generateList = storyboardData;
-    } else {
-      generateList = storyboardData.filter((item) => item.shouldGenerateImage !== 0);
-    }
-    for (let i = 0; i < generateList.length; i += concurrentCount) {
-      const batch = generateList.slice(i, i + concurrentCount);
-      await Promise.all(batch.map(generateTask));
-    }
+      jobIds: [jobId],
+    });
   },
 );
-async function getAssetsImageBase64(imageIds: number[]) {
-  if (!imageIds.length) return [];
-
-  const imagePaths = await u.db("o_image").whereIn("o_image.id", imageIds).select("o_image.id", "o_image.filePath");
-
-  // 建立 id 到 filePath 的映射
-  const id2Path = new Map<number, string>();
-  for (const row of imagePaths) {
-    id2Path.set(row.id, row.filePath);
-  }
-
-  // 保证输出顺序与 imageIds 一致
-  const imageUrls = await Promise.all(
-    imageIds.map(async (id) => {
-      const filePath = id2Path.get(id);
-      if (filePath) {
-        try {
-          return await u.oss.getImageBase64(filePath);
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }),
-  );
-  // 保留顺序，并且过滤掉无效项
-  return (imageUrls.filter(Boolean) as string[]).map((url) => ({ type: "image" as const, base64: url }));
-}

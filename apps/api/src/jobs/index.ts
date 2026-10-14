@@ -15,6 +15,7 @@ import type { Knex } from "knex";
 import u from "@/utils";
 import { jobRegistry, type JobRegistry } from "@/jobs/registry";
 import { createJobStore, type JobStore } from "@/jobs/store";
+import { __setGateFactory, createGate } from "@/jobs/gate";
 import type { EnqueueInput, EnqueueResult } from "@/jobs/types";
 
 /** 默认注册表（= `JOB_DEFINITIONS`）对应的单例。 */
@@ -36,3 +37,14 @@ export function getJobStore(registry: JobRegistry = jobRegistry): JobStore {
 export async function enqueueJob(input: EnqueueInput): Promise<EnqueueResult> {
   return getJobStore().enqueue(input);
 }
+
+/**
+ * Phase 1d Task 9：把 `o_gate` 闸门的**单例建库入口**接到启动链**唯一**的受守卫 `u.db` 上。
+ *
+ * 为什么放在本模块（而不是 `gate.ts` 自己 import）：`gate.ts` 会被路由/handler 直接 import，
+ * 它自己去拉 `u.db` 会让"谁在启动路径上用哪个 db"出现第二个答案（`docs`/门禁口径都要单一入口）；
+ * 而且 `require("@/utils/db")` 的 `@/` 别名在**编译产物**里不会被改写（生产会 MODULE_NOT_FOUND）。
+ * 所以与 `getJobStore()` 逐字同理：**在本文件**注入 `u.db`。
+ * ⚠ 只是注册工厂（不连库、不建实例）：真正的闸门实例在第一次 `withVendorSlot()` 时才建。
+ */
+__setGateFactory(() => createGate({ db: u.db as unknown as Knex }));

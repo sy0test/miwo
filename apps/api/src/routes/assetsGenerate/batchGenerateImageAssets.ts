@@ -1,10 +1,10 @@
 import express from "express";
-import pLimit from "p-limit";
 import u from "@/utils";
 import { z } from "zod";
-import { v4 as uuidv4 } from "uuid";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { enqueueJob } from "@/jobs";
+import { currentUserId } from "@/jobs/context";
 
 const router = express.Router();
 
@@ -61,7 +61,7 @@ const requestSchema = {
   projectId: z.number(),
   model: z.string(),
   resolution: z.string(),
-  concurrentCount: z.number().int().min(1).optional(),
+  concurrentCount: z.number().int().min(1).max(8).optional(),
   items: z.array(
     z.object({
       id: z.number(),
@@ -92,72 +92,28 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
     totalNovelId.push(imageId);
   }
 
-  // 3. 后台异步并发生成，不阻塞响应
-  const limit = pLimit(concurrentCount ?? 1);
+  // 3. Phase 1d：入队（不再进程内 pLimit 后台跑 —— `concurrentCount` 可被请求方传 1000，
+  //    并发改由队列的全局/按用户上限与 Task 9 的 vendor 池统一控制）。
+  //    ⚠ 响应形状不变（`{ total }`）；jobIds 走新顶层字段。
+  const userId = currentUserId(req);
+  if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
+  const { jobId } = await enqueueJob({
+    type: "image.assets.batch",
+    userId,
+    payload: {
+      projectId,
+      model,
+      resolution,
+      // ⚠ 只存引用 id；base64 由 handler 现取（payload 上限 64 KB）
+      items: items.map((item: { id: number; type: string; name: string; prompt: string }, index: number) => ({
+        assetsId: item.id,
+        imageId: totalNovelId[index],
+        type: item.type,
+        name: item.name,
+        prompt: item.prompt,
+      })),
+    },
+  });
 
-  const tasks = items.map((item: { id: number; type: string; name: string; prompt: string; base64: string | null | undefined }, index: number) =>
-    limit(async () => {
-      const imageId = totalNovelId[index];
-      const data = await u.db("o_image").where("id", imageId).select("state").first();
-      if (data?.state === "生成失败") {
-        return;
-      }
-      const cfg = assetTypeConfig[item.type as AssetType];
-      if (!cfg) return;
-
-      await u.db("o_assets").where("id", item.id).update({ imageId });
-
-      const imagePath = `/${projectId}/${cfg.dir}/${uuidv4()}.jpg`;
-      // 角色/道具白底资产兜底：即使提示词里没写，也强制带上不透明纯白画布声明（场景不动）
-      const assetPrompt = u.feicai.withOpaqueWhiteCanvas(item.prompt, item.type);
-      const userPrompt = buildPrompt(cfg, project.artStyle ?? "", item.name, assetPrompt);
-      const describe = `生成${cfg.label}图，名称：${item.name}，提示词：${item.prompt}`;
-      const relatedObjects = { id: item.id, projectId, type: cfg.label };
-      try {
-        const aiImage = u.Ai.Image(model);
-        await aiImage.run(
-          {
-            prompt: userPrompt,
-            referenceList: item.base64 ? [{ base64: item.base64, type: "image" }] : [],
-            size: resolution,
-            aspectRatio: "16:9",
-          },
-          {
-            taskClass: cfg.taskClass,
-            describe,
-            projectId,
-            relatedObjects: JSON.stringify(relatedObjects),
-          },
-        );
-        aiImage.save(imagePath);
-
-        const imageData = await u.db("o_image").where("id", imageId).select("*").first();
-        if (!imageData) return res.status(500).send("资产已被删除");
-        if (!imageData) return;
-        if (imageData.state === "生成失败") return;
-        await u
-          .db("o_image")
-          .where("id", imageId)
-          .update({
-            state: "已完成",
-            filePath: imagePath,
-            type: item.type,
-            model: model.split(/:(.+)/)[1],
-            resolution,
-          });
-
-        await u.db("o_assets").where("id", item.id).update({ imageId });
-      } catch (e: any) {
-        await u
-          .db("o_image")
-          .where("id", imageId)
-          .update({ state: "生成失败", errorReason: u.error(e).message });
-      }
-    }),
-  );
-
-  // 后台执行，不等待结果
-  Promise.all(tasks).catch(() => {});
-
-  return res.status(200).send(success({ total: items.length }));
+  return res.status(200).send({ ...success({ total: items.length }), jobIds: [jobId] });
 });

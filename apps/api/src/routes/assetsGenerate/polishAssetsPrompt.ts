@@ -3,6 +3,7 @@ import u from "@/utils";
 import * as zod from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { withVendorSlot, apiHolderId } from "@/jobs/gate";
 import type { AssetKind } from "@/utils/feicai";
 const router = express.Router();
 
@@ -69,7 +70,9 @@ export default router.post(
     });
     if (!systemPrompt) return res.status(500).send(error("服化道技能未就绪"));
     try {
-      const { _output } = (await u.Ai.Text("universalAi").invoke({
+      // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。响应形态不变。
+      const { _output } = (await withVendorSlot("vendor:text", apiHolderId(), () =>
+        u.Ai.Text("universalAi").invoke({
         system: systemPrompt,
         messages: [
           {
@@ -80,7 +83,8 @@ export default router.post(
       - ${config.nameLabel}描述:${describe},`,
           },
         ],
-      })) as any;
+      }),
+      )) as any;
 
       if (!_output) return res.status(500).send("失败");
       // 角色/道具白底资产：提示词落库前补上不透明纯白画布声明（scene 原样）

@@ -1,11 +1,11 @@
 import express from "express";
 import u from "@/utils";
-import { mediaKindOf } from "@/utils/oss";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { ReferenceList } from "@/utils/ai";
+import { enqueueJob } from "@/jobs";
+import { currentUserId } from "@/jobs/context";
 import { trackTableForScript } from "@/utils/shots/readShots";
 const router = express.Router();
 
@@ -104,48 +104,32 @@ export default router.post(
       }),
     );
 
-    res.status(200).send(success(tasks.map((t) => ({ videoId: t.videoId, trackId: t.trackId }))));
-    for (const { videoId, videoPath, prompt, duration, images } of tasks) {
-      // 所有任务全部并发后台执行，完全不阻塞任何进程
-      const base64 = await Promise.all(
-        images.map(async (item) => {
-          if (!item) return null;
-          // 类型按扩展名判：clip 资产的 o_image.type 存的是 "clip"，
-          // 只看它就一律当 image，mp4 会被当图片参考静默丢掉
-          return { base64: await u.oss.getImageBase64(item.path), type: mediaKindOf(item.path) };
-        }),
-      );
-      const relatedObjects = { projectId, videoId, scriptId, type: "视频" };
-      const aiVideo = u.Ai.Video(model);
-      aiVideo
-        .run(
-          {
-            prompt,
-            referenceList: base64.filter(Boolean) as ReferenceList[],
-            mode: modeData.length > 0 ? modeData : mode,
-            duration,
-            aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
-            resolution,
-            audio,
-          },
-          {
-            projectId,
-            taskClass: "视频生成",
-            describe: "根据提示词生成视频",
-            relatedObjects: JSON.stringify(relatedObjects),
-          },
-        )
-        .then(async () => await aiVideo.save(videoPath))
-        .then(async () => await u.db("o_video").where("id", videoId).update({ state: "生成成功" }))
-        .catch(async (error: any) => {
-          await u
-            .db("o_video")
-            .where("id", videoId)
-            .update({
-              state: "生成失败",
-              errorReason: u.error(error).message,
-            });
-        });
-    }
+    // Phase 1d：入队（一个 `video.batchGenerate` 任务带全部 items），不再进程内 fire-and-forget。
+    // ⚠ 响应形状不变（前端 `track.vue:336` 把 data 当**数组**用）；jobIds 走新顶层字段。
+    const userId = currentUserId(req);
+    if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
+    const { jobId } = await enqueueJob({
+      type: "video.batchGenerate",
+      userId,
+      payload: {
+        projectId,
+        scriptId,
+        model,
+        mode: modeData.length > 0 ? modeData : mode,
+        resolution,
+        audio,
+        aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
+        items: tasks.map((t) => ({
+          videoId: t.videoId,
+          videoPath: t.videoPath,
+          trackId: t.trackId,
+          prompt: t.prompt,
+          duration: t.duration,
+          // ⚠ refs 只带路径（base64 由 handler 现取）
+          refs: t.images.filter(Boolean).map((it) => ({ path: (it as { path: string }).path, sources: (it as { sources: string }).sources })),
+        })),
+      },
+    });
+    res.status(200).send({ ...success(tasks.map((t) => ({ videoId: t.videoId, trackId: t.trackId }))), jobIds: [jobId] });
   },
 );

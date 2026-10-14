@@ -28,7 +28,7 @@ export default router.post(
     ),
     mode: z.string(),
     model: z.string(),
-    concurrentCount: z.number().optional(), //并发数
+    concurrentCount: z.number().int().min(1).max(8).optional(), //并发数（spec §9.3：上限 8，超限在 validateFields 阶段 400）
   }),
   async (req, res) => {
     const { trackData, projectId, mode, model, concurrentCount = 5 } = req.body;

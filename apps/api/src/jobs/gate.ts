@@ -26,6 +26,7 @@
  *     （`withVendorSlot` 只把 acquire/release 包进去）。
  */
 import type { Knex } from "knex";
+import { v4 as uuidv4 } from "uuid";
 import { runAsAuth } from "@/db/noContext";
 import { JOB_POLICY } from "@/jobs/policy";
 import { isDuplicateKeyError } from "@/jobs/store";
@@ -150,11 +151,26 @@ export function createGate(deps: GateDeps): Gate {
 
 /** 进程内单例（延迟建，避免模块加载即连库 —— 纯单测用 `createGate`，不走这里）。 */
 let singleton: Gate | null = null;
+/** 单例的建库入口：由**启动链上的模块**注入（`jobs/index.ts` 传 `u.db`）。
+ *  ⚠ 这里刻意**不** `import u from "@/utils"` / 不写 `require("@/utils/db")`：
+ *    · 顶层 import 会把 `gate.ts` 拖进启动链（路由 → gate → utils/db），加载顺序变脆；
+ *    · `require("@/utils/db")` 的 `@/` 别名在**编译产物**里不会被改写（本仓库唯一的别名 require），
+ *      生产上会 `MODULE_NOT_FOUND` —— 实测口径见 groupC-report.md「偏离登记」。
+ *  所以用注入：`jobs/index.ts` 与 `store.ts` 一样只在启动路径上 import `u.db`。 */
+let gateFactory: (() => Gate) | null = null;
+
+/** 由启动链注入"怎么建生产闸门"（只应调用一次）。 */
+export function __setGateFactory(factory: () => Gate): void {
+  gateFactory = factory;
+  singleton = null;
+}
+
 export function getGate(): Gate {
   if (!singleton) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require("@/utils/db") as { db: Knex };
-    singleton = createGate({ db: mod.db });
+    if (!gateFactory) {
+      throw new Error("[gate] 闸门未初始化：启动路径应调用 __setGateFactory()（见 src/jobs/index.ts），测试请直接传 deps.gate");
+    }
+    singleton = gateFactory();
   }
   return singleton;
 }
@@ -162,6 +178,17 @@ export function getGate(): Gate {
 /** 仅供测试/运维重置单例（生产不用）。 */
 export function __setGateForTest(g: Gate | null): void {
   singleton = g;
+}
+
+/**
+ * **请求内入口的 holder 命名**（约定，spec §9.3）：`api:${pid}:${uuid8}`。
+ *
+ * 为什么要按请求独立：请求内同步等模型的入口（`extractStylePrompt` / `getAiRegex` / `polishAssetsPrompt` …）
+ * 没有 workerId，而且同一进程里多个并发请求必须**各占各的槽位**（否则一个请求的 release 会把别人的槽位删掉）。
+ * 进程退出可用 `releaseAll('api:<pid>')` 兜底；Phase 1 先靠 `leaseMs` 过期回收。
+ */
+export function apiHolderId(): string {
+  return `api:${process.pid}:${uuidv4().slice(0, 8)}`;
 }
 
 /** `withVendorSlot` 用的闸门：默认单例；测试可用 `__setGateForTest()` 换成注入版。 */

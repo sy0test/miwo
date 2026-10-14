@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { withVendorSlot, apiHolderId } from "@/jobs/gate";
 import { tool, jsonSchema } from "ai";
 const router = express.Router();
 
@@ -56,7 +57,9 @@ export default router.post(
         } else {
           audioBindPrompt = promptData?.data ?? undefined;
         }
-        const { text } = await u.Ai.Text("universalAi").invoke({
+        // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3；TTS/文本归 `vendor:text` 池）。响应形态不变。
+        const { text } = await withVendorSlot("vendor:text", apiHolderId(), () =>
+          u.Ai.Text("universalAi").invoke({
           messages: [
             {
               role: "system",
@@ -76,7 +79,8 @@ export default router.post(
             },
           ],
           tools: { resultTool },
-        });
+        }),
+        );
       } catch (e) {
         await u.db("o_assets").where("id", asset.id).update("audioBindState", "生成失败");
         console.error(`[bindAudio] 资产 ${asset.id} 处理失败:`, e);

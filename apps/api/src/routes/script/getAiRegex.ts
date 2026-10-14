@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { withVendorSlot, apiHolderId } from "@/jobs/gate";
 const router = express.Router();
 
 export default router.post(
@@ -20,7 +21,9 @@ export default router.post(
 3. 只返回正则表达式字符串本身，不要有任何其他解释文字或markdown格式。
 4. 如果文本中没有明显的章节分隔模式，返回空字符串。`;
 
-    const resText = await u.Ai.Text("universalAi").invoke({
+    // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。响应形态不变（仍同步返回那条正则字符串）。
+    const resText = await withVendorSlot("vendor:text", apiHolderId(), () =>
+      u.Ai.Text("universalAi").invoke({
       system: systemPrompt,
       messages: [
         {
@@ -28,7 +31,8 @@ export default router.post(
           content: content.slice(0, 2000),
         },
       ],
-    });
+    }),
+    );
     const result = (resText.text || "").trim();
     res.status(200).send(success(result));
   },

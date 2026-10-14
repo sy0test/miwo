@@ -6,6 +6,7 @@ import { validateFields } from "@/middleware/middleware";
 import fs from "fs/promises";
 import path from "path";
 import { trackTableForId, updateTrackById, storyboardItemsForSegment } from "@/utils/shots/readShots";
+import { withVendorSlot, apiHolderId } from "@/jobs/gate";
 const router = express.Router();
 
 export default router.post(
@@ -187,7 +188,9 @@ export default router.post(
           `;
 
     try {
-      const { text } = await u.Ai.Text("universalAi").invoke({
+      // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。响应形态不变（仍同步返回 text）。
+      const { text } = await withVendorSlot("vendor:text", apiHolderId(), () =>
+        u.Ai.Text("universalAi").invoke({
         system: videoPromptGeneration,
         messages: [
           {
@@ -199,7 +202,8 @@ export default router.post(
             content: content,
           },
         ],
-      });
+      }),
+      );
       await updateTrackById(u.db, trackId, {
         state: "已完成",
         prompt: text,
