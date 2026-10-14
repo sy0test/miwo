@@ -19,6 +19,8 @@ import { apiLimiter } from "@/middleware/rateLimit";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
+import { mediaAuthGuard } from "@/utils/mediaSign";
+import isPathInside from "is-path-inside";
 import { config } from "@/config";
 
 const app = express();
@@ -119,6 +121,136 @@ export function errorHandler(err: any, req: Request, res: Response, _next: NextF
 }
 
 
+/**
+ * 静态资源的挂载（Phase 1c Task 7；spec §6.5 的第 1/3/5/6 条）。
+ *
+ * ── 三档访问口径（这是本 Task 最容易做错的地方：**不是所有静态资源都该锁**）──
+ * | 挂载点     | 内容                                   | 口径                                                     |
+ * |-----------|----------------------------------------|----------------------------------------------------------|
+ * | `/oss`    | 用户媒体（分镜图/参考图/成片/音频）     | **签名或 Bearer**（`mediaAuthGuard`）                     |
+ * | `/assets` | 用户产物（片尾素材等）                  | **签名或 Bearer**（同一守卫）                             |
+ * | `/skills` | 产品自带的技能图标（随包发布，非用户数据）| **公开**（只放行图片扩展名；spec §6.5 明确"可保持公开"）  |
+ * | 其余      | SPA 壳（`data/web` 产物：登录页、静态 JS）| **匿名可访问**（锁掉它 = 用户连登录页都打不开）           |
+ *
+ * ⚠ 为什么 `/oss` **不能**只要求 Bearer：`<img src>` / `<video src>` 是**浏览器自己**发的请求，
+ *   它**不带** `Authorization` 头；只要 Bearer 就等于"页面上的图全裂"。
+ *   所以浏览器侧走 query 里的短时签名（`exp`+`sig`，见 `utils/mediaSign.ts`），
+ *   服务端/脚本侧仍可直接带 Bearer（`authenticate` 先跑，守卫看到 `req.ctx` 就放行）。
+ *
+ * ⚠ **Range**（Tier 0 #8）：`acceptRanges: true` 是视频拖动的必要条件（206 + `Content-Range`）。
+ *   旧实现四处都是 `acceptRanges: false` ⇒ 拖动进度条只能整段重下（或干脆不动）。
+ * ⚠ **缓存**（spec §6.5 第 6 条）：`/oss`、`/assets` 是**短时签名** URL ⇒ `max-age` 必须 **< 签名 TTL(24h)**，
+ *   本实现取 `1h`；**不设 `immutable`**（`immutable` 的语义是"这个 URL 的内容永不改变"，
+ *   而我们的 URL 每个请求期都不同、且到期会 403，宣称 immutable 会让浏览器把过期的签名 URL 长期扣住）。
+ *   `/skills` 是随包发布、按文件名版本化的图标 ⇒ 可以按周缓存（`7d`）。
+ */
+export function mountStaticAssets(target: express.Express, log: (msg: string) => void = console.log): void {
+  // ── /oss：用户媒体。守卫 → 缩略图分支 → 静态 ──
+  const ossDir = u.getPath("oss");
+  if (!fs.existsSync(ossDir)) fs.mkdirSync(ossDir, { recursive: true });
+  log(`文件目录: ${ossDir}`);
+  const smallImageDir = path.join(ossDir, "smallImage");
+
+  /**
+   * `?size=<WxH|百分比>` 的缩略图分支。**整体在守卫之后**（否则一个没有签名的请求就能：
+   * ① 用 `?size=` 让服务端在任意 `..` 路径上生成缩略图；② 直接 `res.sendFile` 拿到盘上任何文件）。
+   *
+   * ⚠ 两个 `path.join` 的结果都必须过 `isPathInside`（Tier 0 "补 isPathInside"）：
+   *   `path.join(ossDir, req.path)` —— `req.path` 里可能带 `..`（Express 只对 `express.static`
+   *   做根目录约束，**不会**替 `path.join` 做）；`req.path` 还可能是**绝对路径**形态，
+   *   `path.join` 会把根目录整个丢掉（`path.join("D:\\data\\oss", "\\x")` = `"D:\\data\\oss\\x"` 还好，
+   *   但 `path.join("D:\\a", "D:\\b")` = `"D:\\a\\D:\\b"`，行为随盘符变化）⇒ 统一用 `isPathInside` 判。
+   * ⚠ 这里**不泄漏路径**：越界一律 `403` + 空 body（不告诉我们检查了哪个路径、不 echo 请求路径）。
+   */
+  const thumbnailBranch = (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.query.size) return next();
+    const size = String(req.query.size);
+    const originalPath = path.join(ossDir, req.path);
+
+    let sizeSubDir: string;
+    let sizeOpts: ThumbnailSize | undefined;
+
+    // 判断是否为 WIDTHxHEIGHT 格式，如 "200x300"：等比压缩到指定宽高边界
+    const dimensMatch = size.match(/^(\d+)x(\d+)$/i);
+    // 判断是否为百分比格式，如 "30"、"30%"：等比压缩到原图的指定百分比
+    const percentMatch = size.match(/^(\d+(?:\.\d+)?)\s*%?$/);
+
+    if (dimensMatch) {
+      const w = parseInt(dimensMatch[1], 10);
+      const h = parseInt(dimensMatch[2], 10);
+      sizeSubDir = `${w}x${h}`;
+      sizeOpts = { type: "dimensions", width: w, height: h };
+    } else if (percentMatch) {
+      const pct = parseFloat(percentMatch[1]);
+      sizeSubDir = `${percentMatch[1]}p`;
+      sizeOpts = { type: "percentage", value: pct };
+    } else {
+      // 无效的 size 参数，降级返回原图（⚠ 经根路径校验后再降级）
+      if (!isPathInside(originalPath, ossDir)) return void res.status(403).end();
+      express.static(ossDir, { acceptRanges: true })(req, res, next);
+      return;
+    }
+
+    const ext = path.extname(req.path);
+    const base = path.basename(req.path, ext);
+    const dir = path.dirname(req.path);
+    const smallImagePath = path.join(smallImageDir, dir, `${base}_${sizeSubDir}${ext}`);
+
+    // ① 原图必须在 ossDir 之内；② 写缩略图的目标必须在 smallImageDir 之内
+    //    （否则 `?size=20` + `..` 能把这个服务当成"任意路径写入器"）。
+    if (!isPathInside(originalPath, ossDir)) return void res.status(403).end();
+    if (!isPathInside(smallImagePath, smallImageDir)) return void res.status(403).end();
+
+    ensureThumbnail(originalPath, smallImagePath, sizeOpts).then((thumbnailPath) => {
+      if (thumbnailPath) {
+        res.sendFile(thumbnailPath);
+      } else {
+        // 缩略图生成失败，降级返回原图
+        express.static(ossDir, { acceptRanges: true })(req, res, next);
+      }
+    });
+  };
+
+  target.use(
+    "/oss",
+    mediaAuthGuard,
+    thumbnailBranch,
+    express.static(ossDir, { acceptRanges: true, maxAge: "1h", immutable: false }),
+  );
+
+  // ── /assets：用户的片尾素材等产物。与 /oss 同一守卫、同一缓存口径 ──
+  const assetsDir = u.getPath("assets");
+  if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
+  log(`文件目录: ${assetsDir}`);
+  target.use("/assets", mediaAuthGuard, express.static(assetsDir, { acceptRanges: true, maxAge: "1h", immutable: false }));
+
+  // ── /skills：**保持公开**（产品自带的技能图标；前端图标全靠它）──
+  const skillsDir = u.getPath("skills");
+  if (!fs.existsSync(skillsDir)) fs.mkdirSync(skillsDir, { recursive: true });
+  log(`文件目录: ${skillsDir}`);
+  target.use(
+    "/skills",
+    (req, res, next) => {
+      // 只允许图片文件访问
+      /\.(jpe?g|png|gif|webp|svg|ico|bmp)$/i.test(req.path) ? next() : res.status(403).end();
+    },
+    express.static(skillsDir, { acceptRanges: true, maxAge: "7d" }),
+  );
+
+  // ── SPA 壳（data/web 产物）：**匿名可访问** ──
+  // ⚠ 它必须在**最后**：它是"任意路径都可能命中"的静态目录（挂在根上），放在 `/oss` 之类之前
+  //   就会把同名文件抢走（历史上 `data/web` 里就出现过与业务同名的资源）。
+  // ⚠ 它**不加** `maxAge`：`index.html` 是入口文件，长缓存会让用户拿到旧壳（旧 JS 哈希）而白屏。
+  //   `apps/web` 的构建产物带内容哈希，走的是 `webDir` 里的静态 JS，由 `Last-Modified`/`ETag` 协商即可。
+  const webDir = u.getPath("web");
+  if (fs.existsSync(webDir)) {
+    log(`静态网站目录: ${webDir}`);
+    target.use(express.static(webDir, { acceptRanges: true }));
+  } else {
+    console.warn("静态网站目录不存在:", webDir);
+  }
+}
+
 async function checkPermissions() {
   if (!isEletron()) return true;
   const userDataPath = u.getPath();
@@ -164,102 +296,38 @@ export default async function startServe(randomPort: Boolean = false) {
 
   expressWs(app);
 
+  /**
+   * 日志脱敏（Phase 1c Task 7，裁定 §2.6）。
+   *
+   * ⚠ 媒体签名（`?exp=&sig=`）是**凭据**：它能换成一次成功的静态资源读取。
+   *   Task 4 已经因为"URL 会被访问日志/反代日志/浏览器历史记下来"取消了 `?token=`，
+   *   媒体签名允许出现在 query 串里（`<img src>` 带不了头），但**必须**满足同一口径：
+   *   不进日志。所以把它从 `req.query` 里摘掉 —— morgan 的 `:url` 是**响应完成时**才求值的，
+   *   自然拿到脱敏后的 query（`tests/media-sign.test.ts` 用真 HTTP + 真 morgan 断言两端）。
+   *
+   * ⚠ 只摘 `exp`/`sig`，其余 query（`size=20` 等）原样保留：`size` 是缩略图分支要读的参数，
+   *   而且它对诊断有用（"这一张是不是走了缩略图路径"一眼可见）。
+   * ⚠ 不能改成"整条 URL 不记"：那样静态资源的 4xx/5xx 就没法从日志里查了。
+   */
+  app.use((req, _res, next) => {
+    if (req.query && (("sig" in req.query) || ("exp" in req.query))) {
+      const rest: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(req.query)) {
+        if (k === "sig" || k === "exp") continue;
+        rest[k] = v;
+      }
+      // Express 5 的 `req.query` 是一个 getter；`Object.defineProperty` 用同名自有属性覆盖它
+      // （显式设 getter 而不是直接赋值 —— 直接赋值在 getter-only 属性上会抛）。
+      Object.defineProperty(req, "query", { value: rest, writable: true, configurable: true, enumerable: true });
+    }
+    next();
+  });
   app.use(logger("dev"));
   // ⚠ 安全头（helmet）+ CORS 必须在**静态资源之前**（否则 `/oss` 的图片响应不带 CORP 头，
   //   而那条放宽正是为了让 dev 的跨源图片能显示）。见 applySecurityHeaders 的文件注释。
   applySecurityHeaders(app);
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
-
-  // oss 静态资源
-  const ossDir = u.getPath("oss");
-  if (!fs.existsSync(ossDir)) {
-    fs.mkdirSync(ossDir, { recursive: true });
-  }
-  console.log("文件目录:", ossDir);
-  app.use(
-    "/oss",
-    (req, res, next) => {
-      // 如果传参 type=small，则返回小图
-      if (req.query.size) {
-        const size = req.query.size as string;
-        const smallImageBaseDir = path.join(ossDir, "smallImage");
-        const originalPath = path.join(ossDir, req.path);
-
-        // 解析 size 参数
-        let sizeSubDir: string;
-        let sizeOpts: ThumbnailSize | undefined;
-
-        // 判断是否为 WIDTHxHEIGHT 格式，如 "200x300"：等比压缩到指定宽高边界
-        const dimensMatch = size.match(/^(\d+)x(\d+)$/i);
-        // 判断是否为百分比格式，如 "30"、"30%"：等比压缩到原图的指定百分比
-        const percentMatch = size.match(/^(\d+(?:\.\d+)?)\s*%?$/);
-
-        if (dimensMatch) {
-          const w = parseInt(dimensMatch[1], 10);
-          const h = parseInt(dimensMatch[2], 10);
-          sizeSubDir = `${w}x${h}`;
-          sizeOpts = { type: "dimensions", width: w, height: h };
-        } else if (percentMatch) {
-          const pct = parseFloat(percentMatch[1]);
-          sizeSubDir = `${percentMatch[1]}p`;
-          sizeOpts = { type: "percentage", value: pct };
-        } else {
-          // 无效的 size 参数，降级返回原图
-          express.static(ossDir, { acceptRanges: false })(req, res, next);
-          return;
-        }
-
-        const ext = path.extname(req.path);
-        const base = path.basename(req.path, ext);
-        const dir = path.dirname(req.path);
-        const smallImagePath = path.join(smallImageBaseDir, dir, `${base}_${sizeSubDir}${ext}`);
-
-        ensureThumbnail(originalPath, smallImagePath, sizeOpts).then((thumbnailPath) => {
-          if (thumbnailPath) {
-            res.sendFile(thumbnailPath);
-          } else {
-            // 缩略图生成失败，降级返回原图
-            express.static(ossDir, { acceptRanges: false })(req, res, next);
-          }
-        });
-        return;
-      }
-      next();
-    },
-    express.static(ossDir, { acceptRanges: false }),
-  );
-  // skills 静态资源
-  const skillsDir = u.getPath("skills");
-  if (!fs.existsSync(skillsDir)) {
-    fs.mkdirSync(skillsDir, { recursive: true });
-  }
-  console.log("文件目录:", skillsDir);
-  // 只允许图片文件访问
-  app.use(
-    "/skills",
-    (req, res, next) => {
-      /\.(jpe?g|png|gif|webp|svg|ico|bmp)$/i.test(req.path) ? next() : res.status(403).end();
-    },
-    express.static(skillsDir, { acceptRanges: false }),
-  );
-
-  // assets 静态资源
-  const assetsDir = u.getPath("assets");
-  if (!fs.existsSync(assetsDir)) {
-    fs.mkdirSync(assetsDir, { recursive: true });
-  }
-  console.log("文件目录:", assetsDir);
-  app.use("/assets", express.static(assetsDir, { acceptRanges: false }));
-
-  // data/web 静态网站
-  const webDir = u.getPath("web");
-  if (fs.existsSync(webDir)) {
-    console.log("静态网站目录:", webDir);
-    app.use(express.static(webDir, { acceptRanges: false }));
-  } else {
-    console.warn("静态网站目录不存在:", webDir);
-  }
 
   // 租户上下文的建立点（spec §6.4）。实现见 src/middleware/auth.ts（Phase 1c Task 3 起的唯一实现；
   // 旧名 `tenantContextMiddleware` 由 src/middleware/tenant.ts 再导出）：
@@ -272,7 +340,23 @@ export default async function startServe(randomPort: Boolean = false) {
   // ⚠ `apiLimiter`：**dev 走 3000/分钟**（放宽而不是关闭 —— 超阈值仍会 429，
   //   见 `middleware/rateLimit.ts` 与 `tests/http-hardening.test.ts` 的限流用例）。
   app.use(apiLimiter);
-  app.use(authenticate);
+  // ⚠⚠ Phase 1c Task 7：**鉴权只挂 `/api`**（原来是 `app.use(authenticate)`，即挂在整个进程的根上）。
+  //   "挂根上"在本 Task 之前是无害的 —— 因为静态资源注册在它**之前**，请求先被静态处理器接走了。
+  //   本 Task 把静态资源**移到鉴权之后**，于是"挂根上"立刻变成：SPA 壳（`/`）与 `/oss` 都会先撞
+  //   `authenticate` ⇒ 匿名访问 `/` 得 **401**、**登录页打不开**（这是本目标"可打开页面"口径的红线）。
+  //   挂到 `/api` 之后语义**逐字未变**：`router.ts` 里所有路由都是 `app.use("/api/...")`，
+  //   以前是在根上跑一次 `authenticate` 再进 `/api` 分支，现在是在 `/api` 分支上跑一次。
+  //   ⚠ 白名单判定**不受影响**：Express 在 `app.use("/api", fn)` 里把 `req.path` 切成**挂载点之后**
+  //     的部分（`/api/login/login` → `/login/login`），所以这里必须把前缀传给 `authenticate`
+  //     让它拼回全路径再比白名单（`isAuthWhitelisted` 的集合本身**没动**，见 middleware/auth.ts）。
+  app.use("/api", (req, res, next) => authenticate(req, res, next, "/api"));
+
+  // ── 以下都是**静态资源**，全部在鉴权之后（spec §6.5）──
+  // 三档访问口径必须分清楚（分界依据见各挂载点的注释与 `tools/media-sign.ts` 文件头）：
+  //   · `/oss`、`/assets` = **用户媒体/产物** ⇒ 要签名（浏览器）或 Bearer（服务端）；
+  //   · `/skills`        = 产品自带的技能图标 ⇒ **保持公开**（spec §6.5 明说可公开，只放行图片扩展名）；
+  //   · SPA 壳（web 产物）= **匿名可访问**（否则登录页都打不开）。
+  mountStaticAssets(app);
 
   const router = await import("@/router");
   await router.default(app);

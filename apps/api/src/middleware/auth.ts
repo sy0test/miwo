@@ -78,9 +78,26 @@ function extractToken(req: Request): string {
  * ⚠ 顺序是刻意的：白名单 → 取 token → 解析密钥 → 验签 → **读 DB 复核** → 建 ctx → `runWithTenant`。
  *   所有 DB 读都在 `runWithTenant` **之外**（此时还没有 ctx，平台表读是放行的）；
  *   `runWithTenant` 内部只做 `next()`（Ruling 234：不要在 ALS 里"返回 thenable 到外面 await"）。
+ *
+ * ── `mountPath` 参数（Phase 1c Task 7 新增，**默认空 ⇒ 行为与本参数不存在时逐字相同**）──
+ * Task 7 把静态资源 `/oss`、`/assets` 移到鉴权之后，于是 `src/app.ts` 不能再用
+ * `app.use(authenticate)`（挂在整个进程的根上）—— 那会让匿名访问 SPA 壳 `/` 得到 **401**，
+ * 用户**连登录页都打不开**。改成 `app.use("/api", …)` 之后，Express 会把 `req.path` 切成
+ * **挂载点之后**的部分（`/api/login/login` → `/login/login`），而 `AUTH_WHITELIST` 里的路径是
+ * **全路径**形态 ⇒ 不拼回前缀，登录/注册/refresh 会全部落到"未提供token ⇒ 401"。
+ * 所以这里显式接一个前缀并拼回去比白名单。
+ *
+ * ⚠ 为什么不改 `AUTH_WHITELIST` 的字面值：那份集合是**公共契约**（`tests/auth-service.test.ts`
+ *   逐项断言它的内容，1c 的验收脚本也按全路径打接口），改它等于让"白名单是什么"取决于挂载位置。
  */
-export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<unknown> {
-  if (isAuthWhitelisted(req.path, req.query as Record<string, unknown>)) return next();
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  mountPath: string = "",
+): Promise<unknown> {
+  const fullPath = mountPath && !req.path.startsWith(mountPath) ? mountPath + req.path : req.path;
+  if (isAuthWhitelisted(fullPath, req.query as Record<string, unknown>)) return next();
 
   const token = extractToken(req);
   if (!token) return unauthorized(res, "未提供token");

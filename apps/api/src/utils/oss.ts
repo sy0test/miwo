@@ -1,6 +1,7 @@
 import isPathInside from "is-path-inside";
 import getPath, { isEletron } from "@/utils/getPath";
 import { config } from "@/config";
+import { signMediaQuery } from "@/utils/mediaSign";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
@@ -60,9 +61,17 @@ class OSS {
   }
 
   /**
-   * 获取指定相对路径文件的访问 URL。
+   * 获取指定相对路径文件的访问 URL（**带短时签名**，spec §6.5）。
    * @param userRelPath 用户传入的相对文件路径（使用 / 作为分隔符）
-   * @returns 文件的 http 链接（本地服务地址）
+   * @param prefix 静态挂载点：`oss`（默认）或 `assets`
+   * @returns 文件的 http 链接（本地服务地址）+ `?exp=<ms>&sig=<hmac>`
+   *
+   * ⚠ Phase 1c Task 7 起 `?exp=&sig=` 是**必须**的：`/oss` 与 `/assets` 已经移到 `authenticate` 之后，
+   *   浏览器自己发的 `<img>/<video>` 请求不带 `Authorization`，只能靠 query 里的签名放行。
+   *   签名的被签内容 = 该挂载点下的**相对路径**（`?` 之前的那一段），与 `app.ts` 里
+   *   `mediaAuthGuard` 用 `req.path` 取到的形态一致（两侧都做归一，见 `mediaSign.ts`）。
+   * ⚠ 这个返回值**只允许出现在响应体里**：不要把它写进 DB（签名 TTL 到期后那些行就是死链）。
+   *   `apps/api/tests/media-sign.test.ts` 有一条静态断言把这条钉住。
    */
   async getFileUrl(userRelPath: string, prefix?: string): Promise<string> {
     if (!prefix) prefix = "oss";
@@ -77,7 +86,9 @@ class OSS {
     if (config.env === "dev") url = `${config.publicBaseUrl}/${prefix}/`;
     // Electron（打包版）页面是 file:///自定义协议，必须绝对地址；属 Phase 1c，端口不再读环境变量 `PORT`。
     if (isEletron()) url = `http://localhost:${config.port}/${prefix}/`;
-    return `${url}${safePath.split(path.sep).join("/")}`;
+    const rel = safePath.split(path.sep).join("/");
+    // 短时签名（spec §6.5）：/assets 下的片尾素材与 /oss 下的媒体都要走同一个守卫。
+    return `${url}${rel}?${signMediaQuery(rel)}`;
   }
 
   /**
@@ -259,7 +270,12 @@ class OSS {
     //     .resize(512, 512, { fit: "inside", withoutEnlargement: true })
     //     .toFile(dstAbsPath);
     //   console.info(`[${dstAbsPath}]小图写入成功`);
-    return (await this.getFileUrl(userRelPath)) + "?size=20";
+    // ⚠ `?size=20` 是给 `app.ts` 的 `/oss` 缩略图分支看的参数，**必须用 `&` 追加**：
+    //   `getFileUrl` 现在返回 `…?exp=…&sig=…`，再拼一个 `?size=20` 会得到 `…?sig=…?size=20` ——
+    //   签名值里混进 `?size=20` ⇒ 守卫 403、页面上**一张图都没有**（"接口全正常、图全裂"那个症状）。
+    //   `tests/media-sign.test.ts` 断言"`sig=` 与 `size=20` 同时存在，且 URL 里只有一个 `?`"。
+    const base = await this.getFileUrl(userRelPath);
+    return base.includes("?") ? `${base}&size=20` : `${base}?size=20`;
     // } catch (e) {
     //   // 生成失败返回原图
     //   console.warn("[OSS] 生成缩略图失败:", e);
