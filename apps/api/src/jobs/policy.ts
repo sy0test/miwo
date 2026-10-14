@@ -12,7 +12,34 @@
  * ⚠ 改这里的值会改变**并发正确性用例的边界**（`tests/job-store.test.ts` 用 `{...JOB_POLICY, ...}`
  *   覆盖单个字段，所以不受影响）；但 `heartbeatMs * 4 <= leaseMs` 这条不变式有断言守。
  */
-export const JOB_POLICY = {
+/**
+ * 策略的**类型**（显式声明，不用 `typeof JOB_POLICY`）：`as const` 会把每个字段锁成字面量类型
+ * （`globalMaxRunning: 8`），于是测试里 `{...JOB_POLICY, globalMaxRunning: 1000}` 这种
+ * "放大额度以便测到真正的领取竞态"的覆盖写法会**编译不过**（TS2322 —— 本组实测踩到）。
+ * 所以这里把字段声明成 `number`，`JOB_POLICY` 本身仍是唯一的取值来源。
+ */
+export interface JobPolicy {
+  readonly leaseMs: number;
+  readonly heartbeatMs: number;
+  readonly globalMaxRunning: number;
+  readonly perUserMaxRunning: number;
+  readonly claimBatch: number;
+  readonly idlePollMs: number;
+  readonly busyPollMs: number;
+  readonly maxPayloadBytes: number;
+  readonly retryBaseMs: number;
+  readonly retryMaxMs: number;
+  readonly shutdownGraceMs: number;
+  readonly stuckGraceMs: number;
+  readonly relayPollMs: number;
+  readonly relayBatch: number;
+  readonly gateWaitMs: number;
+  readonly gateLeaseMs: number;
+  readonly gatePollMs: number;
+  readonly selftestSleepMs: number;
+}
+
+export const JOB_POLICY: JobPolicy = {
   /** 租约：领取时写 `now + leaseMs`，心跳每次续租。 */
   leaseMs: 60_000,
   /** 心跳间隔：必须显著小于 `leaseMs`（1/4），否则一次长 GC 就会被误判成死亡。 */
@@ -45,9 +72,7 @@ export const JOB_POLICY = {
   gatePollMs: 200,
   /** `selftest.sleep` 的睡眠时长（运维冒烟 + chaos）。 */
   selftestSleepMs: 1_500,
-} as const;
-
-export type JobPolicy = typeof JOB_POLICY;
+};
 
 /**
  * 指数退避（`attempt` 是**已经失败**的那一次的次数，1 基）。
