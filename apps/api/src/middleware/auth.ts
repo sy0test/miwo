@@ -108,6 +108,10 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
   (req as any).user = reqUser; // spec §6.4：保留 `req.user`（形状与新/旧 token 一致）
   (req as any).tenant = ctx;
+  // ⚠ Phase 1c Task 6：`req.ctx` 是**错误处理器读 requestId** 的位置（`src/app.ts` 的 errorHandler）。
+  //   同一个对象挂两个名字是**故意**的：`req.tenant` 是 Phase 1b 起的既有消费面（socket/测试都在读），
+  //   改名会让"日志能串起一次请求"这件事依赖一次全仓改名；两个名字指向**同一个 ctx**，不会漂移。
+  (req as any).ctx = ctx;
   return runWithTenant(ctx, () => next());
 }
 

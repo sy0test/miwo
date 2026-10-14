@@ -8,6 +8,7 @@ import http from "node:http";
 import expressWs from "express-ws";
 import logger from "morgan";
 import cors from "cors";
+import helmet from "helmet";
 import path from "path";
 import fs from "fs";
 import u from "@/utils";
@@ -22,6 +23,101 @@ import { config } from "@/config";
 
 const app = express();
 const server = http.createServer(app);
+
+/**
+ * dev 的 Vite 源（**白名单的一部分，不是"放行一切"**）。
+ *
+ * ⚠ 为什么在 dev 需要它们：页面由 Vite（50188）提供，接口在本进程（10588）⇒ **跨源**。
+ *   prod 的页面由 Nginx 同源提供（spec §4.1），所以 prod 的白名单里**只有** `MIWO_PUBLIC_BASE_URL`。
+ */
+const DEV_ORIGINS: readonly string[] = ["http://127.0.0.1:50188", "http://localhost:50188"];
+
+/**
+ * CORS 白名单（Phase 1c Task 6；spec §10.2 Tier 0 #7 要求"白名单"）。
+ *
+ * ⚠ 旧实现是 `cors({ origin: "*" })` **两处**（HTTP 与 socket.io）⇒ 任意站点都能带上用户凭据
+ *   读取接口响应（`credentials` 与 `*` 不能共存，所以"要去掉 `*`"与"要发 refresh Cookie"
+ *   是**同一件事**的两面，不是两个可选改动）。
+ * ⚠ **不新增环境变量**（裁定 5）：白名单 = `MIWO_PUBLIC_BASE_URL` +（仅 dev）Vite 两个源。
+ *   prod 缺失 `MIWO_PUBLIC_BASE_URL` 时 `config.ts` 已经 fail-fast，不会走到这里。
+ */
+export function allowedOrigins(): string[] {
+  const list = [config.publicBaseUrl.replace(/\/$/, "")];
+  if (config.env === "dev") list.push(...DEV_ORIGINS);
+  return list;
+}
+
+/**
+ * `cors` 的 origin 回调。
+ *
+ * ⚠ `origin === undefined`（**同源请求**、curl、服务端调用）必须放行：那类请求本来就不带
+ *   `Origin` 头，浏览器同源策略也不参与 —— 挡掉它会把 `verify-phase0/1b` 那些无 Origin 的
+ *   端到端脚本一起挡死（它们是"无 Origin"而不是"非法 Origin"）。
+ */
+export function corsOrigin(): (origin: string | undefined, cb: (e: Error | null, ok?: boolean) => void) => void {
+  return (origin, cb) => {
+    if (!origin || allowedOrigins().includes(origin)) return cb(null, true);
+    // ⚠ **不抛错**（抛错会变成 500 + 一条误导性的服务端错误日志）：回调 `ok=false`
+    //   让 cors 中间件**不回** `Access-Control-Allow-Origin` ⇒ 浏览器侧失败，服务端 200/4xx 照常。
+    return cb(null, false);
+  };
+}
+
+/**
+ * 安全响应头 + CORS（Phase 1c Task 6）。**HTTP 与 socket.io 共用同一份白名单**。
+ *
+ * ── helmet 的三处**必须**放宽（照抄文档会打断现有产品）──
+ *   · `contentSecurityPolicy: false` —— CSP 属 Nginx 配置（`deploy/nginx.conf`，spec §4.1）：
+ *     API 进程在 dev 还会顺带提供 `data/web` 的 SPA，而 25 MB 单文件页面的内联脚本
+ *     **必然**违反默认 CSP（症状：页面白屏）。本阶段不做 CSP。
+ *   · `crossOriginEmbedderPolicy: false` —— dev 的页面来自 Vite（50188）、媒体来自本进程（10588）
+ *     ⇒ **跨源**；COEP 会把跨源资源全部拦掉。
+ *   · `crossOriginResourcePolicy: { policy: "cross-origin" }` —— helmet 默认是 `same-origin`，
+ *     会让所有 `/oss` 图片被浏览器拒收（症状：登录/接口全正常，页面上一张图都没有）。
+ *
+ * ⚠ 位置**必须在静态资源（`/oss`）之前**：helmet 是"给每个响应加头"的中间件，
+ *   注册在 `express.static` 之后的话，图片响应就**不带** CORP 头（那样这条放宽等于没生效）。
+ */
+export function applySecurityHeaders(target: express.Express): void {
+  target.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+    }),
+  );
+  target.use(cors({ origin: corsOrigin(), credentials: true }));
+}
+
+/**
+ * 错误处理器（Phase 1c Task 6；spec §10.2 Tier 1 #15）。
+ *
+ * ── 旧实现（`res.status(err.status||500).send(err)`）泄的是什么（实测，不是推测）──
+ *   · `send(err)` 这条路上，`Error` 的 `message`/`stack` 是**不可枚举**的 ⇒ 实测响应体只有
+ *     `{"code":"SQLITE_CONSTRAINT_UNIQUE"}`：**驱动错误码本身就是一条不该外泄的信息**
+ *     （它告诉攻击者"这一列有唯一约束"）；
+ *   · 同一次冲突若走到 Express 的**默认**错误处理（`next(err)`，或它之前的任何一环没兜住），
+ *     响应体是 HTML 且含**完整 message + 绝对路径堆栈**
+ *     （实测原文：`UNIQUE constraint failed: o_user.username` +
+ *      `D:\sy_workspace\code\miwo\node_modules\.pnpm\knex@3.3.0…` 共 9 帧）。
+ *   ⇒ 表名、列名、约束名、依赖绝对路径全在**响应体**里。
+ *
+ * ── 新实现 ──
+ *   · 服务端日志：`requestId`（来自 `req.ctx`）+ **完整**错误对象（诊断信息只留在日志里）；
+ *   · 响应体：**统一形状** `{code, data, message}`；`>=500` 一律回**固定文案**，绝不回
+ *     `err.message`（它可能含表名/列名/路径）；`<500` 回 `err.message` 但**不**回堆栈。
+ */
+export function errorHandler(err: any, req: Request, res: Response, _next: NextFunction): void {
+  const status = Number(err?.status) || Number(err?.httpStatus) || 500;
+  const requestId = String((req as any)?.ctx?.requestId ?? (req as any)?.tenant?.requestId ?? "");
+  console.error(`[error] requestId=${requestId} method=${req.method} path=${req.path}`, err);
+  res.status(status).send({
+    code: status,
+    data: null,
+    message: status >= 500 ? "服务器内部错误" : err?.message || "请求失败",
+  });
+}
+
 
 async function checkPermissions() {
   if (!isEletron()) return true;
@@ -51,16 +147,27 @@ export default async function startServe(randomPort: Boolean = false) {
   // 必须在任何出网调用之前装配，否则厂商适配器会以直连方式发出第一批请求
   await installProxy();
 
+  // ⚠ trust proxy（spec §10.3 / §4.3）：**必须在任何读 `req.ip` 的中间件之前**设置。
+  //   它决定 `req.ip` 是否采信 `X-Forwarded-For`：prod ≥1（Nginx 反代，spec §4.1），dev 默认 0
+  //   （直连，任何客户端都能伪造 XFF ⇒ 采信它等于让限流/锁定计数被一条头绕过）。
+  //   值来自 config.trustProxy（MIWO_TRUST_PROXY，config.ts 已做 fail-fast 校验）。
+  app.set("trust proxy", config.trustProxy);
+
   await checkPermissions();
 
   await u.writeVersion();
-  const io = new Server(server, { cors: { origin: "*" } });
+  // ⚠ socket.io 的 CORS 与 HTTP 共用**同一份白名单**（原来两处都是 `origin: "*"`，Task 6 同批改）。
+  //   socket 的**鉴权归属校验**（"这个 socket 属于哪个租户"）是 spec Tier 0 #9，归 Phase 1e；
+  //   本阶段如实登记：这里收掉的是**跨源读取面**，不是 socket 的授权模型。
+  const io = new Server(server, { cors: { origin: allowedOrigins(), credentials: true } });
   socketInit(io);
 
   expressWs(app);
 
   app.use(logger("dev"));
-  app.use(cors({ origin: "*" }));
+  // ⚠ 安全头（helmet）+ CORS 必须在**静态资源之前**（否则 `/oss` 的图片响应不带 CORP 头，
+  //   而那条放宽正是为了让 dev 的跨源图片能显示）。见 applySecurityHeaders 的文件注释。
+  applySecurityHeaders(app);
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
@@ -162,7 +269,8 @@ export default async function startServe(randomPort: Boolean = false) {
   // ⚠ 新形状 token（typ/tv）会**每请求**从 DB 复核 status/tokenVersion，role 也只信 DB（spec §7.3）。
   // ⚠ 这里曾是"唯一一处还没有 ctx 就要读库"的地方（bootstrap 读 `o_setting.tokenKey`）；
   //    现在那一步在 `@/auth/secret` 里，仍然走 platform 表的"无 ctx 放行读"，**不**需要 systemDb。
-  // ⚠ `apiLimiter` 只在 prod 生效（dev 与回归脚本要跑几十上百个请求，见 `middleware/rateLimit.ts`）。
+  // ⚠ `apiLimiter`：**dev 走 3000/分钟**（放宽而不是关闭 —— 超阈值仍会 429，
+  //   见 `middleware/rateLimit.ts` 与 `tests/http-hardening.test.ts` 的限流用例）。
   app.use(apiLimiter);
   app.use(authenticate);
 
@@ -179,13 +287,8 @@ export default async function startServe(randomPort: Boolean = false) {
   // ⚠ 顺序重要：两个处理器都在既有错误中间件**之前**（下面那个不调 `next(err)`，注册在它之后就永远轮不到）。
   app.use(tenantErrorHandler);
   app.use(authErrorHandler);
-  // 错误处理
-  app.use((err: any, _: Request, res: Response, __: NextFunction) => {
-    res.locals.message = err.message;
-    res.locals.error = err;
-    console.error(err);
-    res.status(err.status || 500).send(err);
-  });
+  // 错误处理（Phase 1c Task 6：统一 `{code,data,message}` + 500 类不回内部文案，见 errorHandler 的文件注释）
+  app.use(errorHandler);
 
   // 非 Electron（纯 Node：dev / 服务器模式）的端口与监听地址一律来自 config（MIWO_PORT / MIWO_HOST）。
   // ⚠ `PORT` 自 Task 9 起**不再被读取**：dev 的 10588 与服务器的 18080 都由 MIWO_PORT 决定。
@@ -194,8 +297,10 @@ export default async function startServe(randomPort: Boolean = false) {
   const bindHost = randomPort ? "127.0.0.1" : config.host;
 
   // ⚠ 迁移必须在**开始接请求之前**完成（spec §3.3「启动竞态」，Phase 1a / Task 4）。
-  //    这里而不是上面：`await import("@/router")`（第 178 行）会加载全部路由模块，但**只加载、不执行**
+  //    这里而不是上面：`await import("@/router")` 会加载全部路由模块，但**只加载、不执行**
   //    业务逻辑；真正"开始对外服务"的时刻是下面的 `server.listen`。所以把这道闸门放在它**紧前面**。
+  //    （⚠ 刻意不写出上面那次 `await import` 的**行号**：Phase 1c Task 6 在文件头加了几个具名导出，
+  //     行号已经漂过两次，写死行号只会制造下一条陈旧陈述。）
   //    `dbReady` 是 `utils/db.ts` 在模块求值时启动的（连接 → 跑迁移），这里只等它 ——
   //    若它失败，`dbReady.catch` 已 process.exit(1)，不会走到 listen。
   //    ⚠ 必须在监听调用的**回调之外** await：写在那个回调里等于端口已经先监听了，
