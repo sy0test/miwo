@@ -4,6 +4,7 @@ import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态�
 import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
 import { opsEnabled, opsDisabledMessage } from "@/utils/opsSwitch";
 import { listTables } from "@/lib/dbOps";
+import { opsErrorBody } from "@/lib/opsError";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
 
 const router = express.Router();
@@ -121,6 +122,6 @@ export default router.get("/", requireAdmin, async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=miwo-backup-${Date.now()}.json`);
     res.status(200).send(JSON.stringify(exportData, null, 2));
   } catch (err: any) {
-    res.status(500).send(error(err?.message || "导出失败"));
+    res.status(500).send(opsErrorBody("exportData", err, "导出失败"));
   }
 });

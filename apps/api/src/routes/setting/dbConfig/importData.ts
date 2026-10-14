@@ -6,6 +6,7 @@ import { columnNames, setForeignKeys } from "@/lib/dbOps";
 import { opsDisabledMessage, opsEnabled } from "@/utils/opsSwitch";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
 import { isExportableTable } from "@/lib/tableWhitelist";
+import { opsErrorBody } from "@/lib/opsError";
 
 const router = express.Router();
 
@@ -125,6 +126,6 @@ export default router.post("/", requireAdmin, async (req, res) => {
     res.status(200).send(success("数据库导入成功"));
   } catch (err: any) {
     await audit(ctx, AUDIT_ACTIONS.DB_IMPORT, "failed", { message: String(err?.message ?? err) });
-    res.status(500).send(error(err?.message || "导入失败"));
+    res.status(500).send(opsErrorBody("importData", err, "导入失败"));
   }
 });

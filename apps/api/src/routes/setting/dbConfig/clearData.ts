@@ -3,6 +3,7 @@ import { success, error } from "@/lib/responseFormat";
 import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
 import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
 import { dropAllTables, listTables, setForeignKeys } from "@/lib/dbOps";
+import { opsErrorBody } from "@/lib/opsError";
 import { runMigrations } from "@/db/migrations";
 import { opsDisabledMessage, opsEnabled } from "@/utils/opsSwitch";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
@@ -56,6 +57,6 @@ export default router.get("/", requireAdmin, async (req, res) => {
     res.status(200).send(success("数据库已清空并重新初始化"));
   } catch (err: any) {
     await audit(ctx, AUDIT_ACTIONS.DB_CLEAR, "failed", { message: String(err?.message ?? err) });
-    res.status(500).send(error(err?.message || "清除失败"));
+    res.status(500).send(opsErrorBody("clearData", err, "清除失败"));
   }
 });

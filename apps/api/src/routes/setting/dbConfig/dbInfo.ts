@@ -1,8 +1,9 @@
 import express from "express";
-import { success, error } from "@/lib/responseFormat";
+import { success } from "@/lib/responseFormat";
 import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
 import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
 import { listTables, tableRowCount } from "@/lib/dbOps";
+import { opsErrorBody } from "@/lib/opsError";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
 
 const router = express.Router();
@@ -36,6 +37,6 @@ export default router.get("/", requireAdmin, async (req, res) => {
     res.status(200).send(success(tableInfo));
   } catch (err: any) {
     await audit(ctx, AUDIT_ACTIONS.DB_INFO, "failed", { message: String(err?.message ?? err) });
-    res.status(500).send(error(err?.message || "获取数据库信息失败"));
+    res.status(500).send(opsErrorBody("dbInfo", err, "获取数据库信息失败"));
   }
 });

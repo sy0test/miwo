@@ -5,6 +5,7 @@ import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维�
 import { opsDisabledMessage, opsEnabled } from "@/utils/opsSwitch";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
 import { isExportableTable } from "@/lib/tableWhitelist";
+import { opsErrorBody } from "@/lib/opsError";
 
 const router = express.Router();
 
@@ -57,6 +58,6 @@ export default router.post("/", requireAdmin, async (req, res) => {
     await audit(ctx, AUDIT_ACTIONS.DB_CLEAR_TABLE, String(req.body?.tableName ?? "unknown"), {
       message: String(err?.message ?? err),
     });
-    res.status(500).send(error(err?.message || "清空表失败"));
+    res.status(500).send(opsErrorBody("clearTable", err, "清空表失败"));
   }
 });

@@ -31,6 +31,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { allowedOrigins, applySecurityHeaders, corsOrigin, errorHandler } from "@/app";
 import { API_LIMIT_DEV, createLimiter, loginLimiter } from "@/middleware/rateLimit";
 import { clientNameOf, columnNames, isSqlite, listTables, listTablesSql, tableRowCount } from "@/lib/dbOps";
+import { opsErrorBody } from "@/lib/opsError";
 import { isExportableTable } from "@/lib/tableWhitelist";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-http-hardening-"));
@@ -283,8 +284,7 @@ describe("hw 4. 错误响应脱敏（真实 UNIQUE 约束冲突）", () => {
     }
   });
 
-  it("4xx 的错误文案要透出（否则前端不知道哪里填错），但同样不带堆栈/路径", async () => {
-    const r = await serveAndFetch(
+  it("4xx 的错误文案要透出（否则前端不知道哪里填错），但同样不带堆栈/路径", async () => {    const r = await serveAndFetch(
       (app) => {
         hardeningStack(app);
         app.get("/bad", (_req, _res, next) => {
@@ -299,6 +299,24 @@ describe("hw 4. 错误响应脱敏（真实 UNIQUE 约束冲突）", () => {
     expect(r.status).toBe(400);
     expect(r.body).toContain("参数不合法");
     expect(r.body).not.toMatch(/\bat \w|[A-Za-z]:[\\/]/);
+  });
+
+  it("运维接口的 500 也脱敏：opsErrorBody 只回固定文案，原始错误（含表/列/路径）只进日志", () => {
+    // ⚠ 5 个运维接口是**自己 try/catch** 的 ⇒ 它们绕开了全局 errorHandler。这里是那条"后门"的判据：
+    //   改前是 `error(err?.message || "清除失败")` —— 实测会回
+    //   `insert into \`o_user\` … - UNIQUE constraint failed: o_user.username`（表名 + 列名 + 约束名）。
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
+    let body: { code: number; data: null; message: string };
+    try {
+      body = opsErrorBody("clearData", new Error("UNIQUE constraint failed: o_user.username"), "清除失败");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(body).toEqual({ code: 500, data: null, message: "清除失败" });
+    const json = JSON.stringify(body);
+    expect(json, "对外不得含表名/列名/约束类型").not.toMatch(/UNIQUE|o_user|username/i);
+    expect(logged.join("\n"), "对内必须保留完整错误").toMatch(/UNIQUE constraint failed/);
   });
 });
 
