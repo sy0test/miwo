@@ -283,14 +283,41 @@ const TARGETS: BackfillTarget[] = [
 /**
  * 回填目标表名（**19 张**；`o_project` 是归属链的源头，单独处理，故不在此列）。
  *
- * ⚠ 存在的意义是**三方相等断言**（审查输入 ⑥）：`policies.TENANT_TABLES` ↔ 这里的回填目标 ↔
- *   运行期 `report.selfCheck` 覆盖的表。本阶段已两次证明"**手工清单必漂**"（Ruling 12/175/240⑤：
- *   漏选外键列、`--aply` 静默降级），所以表清单必须有**机械**判据，不能靠人记得同步。
+ * ⚠ 存在的意义是**三方相等断言**（审查输入 ⑥）：
+ *   `policies.TENANT_TABLES` ↔ 这里的回填目标 ↔ 运行期 `report.selfCheck` 覆盖的表。
+ *   本阶段已两次证明"**手工清单必漂**"（Ruling 12/175/240⑤：漏选外键列、`--aply` 静默降级），
+ *   所以表清单必须有**机械**判据，不能靠人记得同步。
+ *
+ * ⚠【Phase 1c Task 1】三方相等现在写成：
+ *   `TENANT_TABLES == BACKFILL_TARGET_TABLES ∪ {o_project} ∪ BACKFILL_EXEMPT_TABLES`
+ *   —— 因为 1c 新增了 2 张**迁移后新建的租户空表**（`o_account` / `o_modelGrant`），
+ *   它们没有历史行可回填。豁免仍是**这里的单一来源**（不是门禁里的第二份清单）。
  */
 export const BACKFILL_TARGET_TABLES: readonly string[] = Object.freeze(TARGETS.map((t) => t.table));
 
-/** 自检覆盖的表 = 19 张回填目标 + 链源头 `o_project`（必须与 `policies.TENANT_TABLES` 逐项相等）。 */
+/** 自检覆盖的表 = 19 张回填目标 + 链源头 `o_project`（= `policies.TENANT_TABLES − BACKFILL_EXEMPT_TABLES`）。 */
 export const SELF_CHECK_TABLES: readonly string[] = Object.freeze(["o_project", ...BACKFILL_TARGET_TABLES]);
+
+/**
+ * **回填豁免表**（单一来源）：`policies.TENANT_TABLES` 里"既不在回填目标、也不在自检"的那一批。
+ *
+ * 判据：**迁移之后才新建的租户表** —— 它们是空表，没有历史行、也就没有"要补 userId 的行"。
+ * 把它们塞进 `TARGETS` 会造出一批永远为 0 的目标行（看起来在检查，其实什么都没检查），
+ * 还会让 `assertBackfillConsistent` 的算术多出 3 条空断言。
+ *
+ * ⚠ 为什么不写成"门禁里的一份豁免清单"：那会是**第三份手写清单**（1b 反复出事的形状）。
+ *   现在三方一致的不变量是：
+ *     `TENANT_TABLES == BACKFILL_TARGET_TABLES ∪ {o_project} ∪ BACKFILL_EXEMPT_TABLES`
+ *   三项都是**导出常量**，`tools/check-tenant-policies.cjs` 与单测都只读这里 ——
+ *   "多一张租户表但没归类"会当场红，且**只有这一处**能改。
+ *
+ * ⚠ 加表的人必须做的唯一动作：新表若是"迁移后新建的空表"就加进这里；
+ *   若是"老库就有、需要回填归属"的表，就必须同时给出 `TARGETS` 的 `derive` 规格（不能只加名字）。
+ */
+export const BACKFILL_EXEMPT_TABLES: readonly string[] = Object.freeze([
+  "o_account",    // 006_quota_grants：每用户一行余额，迁移后新建的空表
+  "o_modelGrant", // 006_quota_grants：模型授权，迁移后新建的空表
+]);
 
 /**
  * **根因级拦截**（审查 P2-2 第 1 条）：`derive.columns` 里每一列都必须真的出现在返回行里。

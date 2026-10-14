@@ -14,11 +14,22 @@
  *     但附录 A 把 `o_artStyle`/`o_vendorConfig` 都判成了 `platform`。**它的语义（写一律抛错）
  *     由 Task 2 的守卫实现**；本任务（Task 1）既没有实现守卫、也没有对应用例，表映射留空。
  *     要让某张表"连管理员都不能写"时，只需在这里改一行 + 一条测试。
- *  5. **"29" 的口径（本表 vs spec 附录 A：数字相同、成员不同，别混用）**：
- *     本表的 29 = **27 张在库表**（7 platform + 20 tenant）+ **2 张 knex 基础设施表**
- *     （`knex_migrations` / `knex_migrations_lock`，001_schema 不建、由迁移器自建）；
- *     spec 附录 A 的 29 = 27 张在库表 + **2 张退役表**（`o_skillList` / `o_skillAttribution`，
- *     即 `DROPPED_TABLES`，**不在本表里**，任何访问都抛错）。引用"29"时必须写明口径。
+ *  5. **"33 / 29" 的口径（本表 vs spec 附录 A：数字不同，别混用）**：
+ *     本表 = **33 张在库表**（11 platform + 22 tenant）+ **2 张 knex 基础设施表**
+ *     （`knex_migrations` / `knex_migrations_lock`，迁移器自建、001_schema 不建）；
+ *     spec 附录 A 的 29 = 1a 的 27 张在库表 + **2 张退役表**（`o_skillList` / `o_skillAttribution`，
+ *     即 `DROPPED_TABLES`，**不在本表里**，任何访问都抛错）。引用数字时必须写明口径。
+ *     ⚠ **【Phase 1c Task 1 更新】** 1a/1b 时期这里是 "27 张在库表（7 platform + 20 tenant）"。
+ *     Task 1 的 `005_accounts` / `006_quota_grants` 新建 6 张表（`o_user` 是**重建**，不增数量）：
+ *       platform ×4 —— `o_user` 一族的 `o_invite` / `o_loginAttempt` / `o_auditLog` / `o_userSetting`
+ *         （**登录发生在建租户 ctx 之前**：`o_user` 必须无 ctx 可读，所以承载登录的表跟着它留在
+ *          platform；`o_auditLog` 是**平台级**审计 —— 它按 `userId` 记录"谁做了什么"，
+ *          注入租户条件反而会让运维看不到跨租户的审计流）；
+ *       tenant  ×2 —— `o_account` / `o_modelGrant`（§8.2 / §8.5 的额度与授权骨架；
+ *         同族的 `o_usage` / `o_ledger` / `o_order` / `o_price` 归 Phase 2，本阶段**不建、不登记**）。
+ *     于是 27 + 6 = **33 张在库表**（11 platform + 22 tenant），租户表由 20 → **22**，
+ *     `tools/check-tenant-policies.cjs` 的计数断言同步（**改的是单一来源的判据，不是放宽门槛**：
+ *     表体与建表清单仍由该门禁逐项相等断言）。
  */
 export type TablePolicy = "tenant" | "platform" | "global";
 
@@ -47,7 +58,15 @@ export class PolicyNotFoundError extends Error {
  */
 export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.freeze({
   // ---------- platform：平台级全局表（附录 A：账号、画风库、模型绑定、提示词、供应商） ----------
-  o_user: "platform",          // 账号表；本阶段只有 id/name/password（重建归 Phase 1c）
+  // ⚠【Phase 1c Task 1】`o_user` 已由 005_accounts 重建为 §7.1 的 9 列
+  //   （username/email/passwordHash/role/status/tokenVersion/mustChangePassword/…）。
+  //   **策略不变**：登录发生在建租户 ctx **之前**，所以它必须无 ctx 可读。
+  o_user: "platform",          // 账号表（重建：spec §7.1 / 迁移 005_accounts）
+  // ---------- platform：账号族的承载表（Task 1 的 005_accounts 新建；同样"登录期无 ctx"）----------
+  o_invite: "platform",        // 邀请码（§15 O1 的默认注册方式 = 邀请码 + 管理员开通）
+  o_loginAttempt: "platform",  // 登录失败计数/锁定（登录期写入，无 ctx）
+  o_auditLog: "platform",      // 平台级审计流水（跨租户可见：按 userId 记录"谁做了什么"）
+  o_userSetting: "platform",   // 用户级 setting（§6.2 从 o_setting 迁出的 7 个键；登录期/启动期读）
   o_artStyle: "platform",      // 画风库（附录 A 判 platform；若要"连管理员都只读"→ 改 global）
   o_agentDeploy: "platform",   // 角色→模型绑定（全局）
   o_setting: "platform",       // 平台级 key（tokenKey/shotsEngine/…；用户级 key 迁 o_userSetting 归 Phase 1c）
@@ -78,6 +97,12 @@ export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.free
   o_segment: "tenant",         // projectId（v2 片段）
   o_shot: "tenant",            // projectId（v2 镜）
   memories: "tenant",          // isolationKey 前缀是 projectId；本阶段改格式为 ${userId}:${projectId}:…
+  // ---------- tenant：额度与模型授权（Task 1 的 006_quota_grants 新建；§8.2 / §8.5）----------
+  // ⚠ 这两张表是**迁移后新建的空表**：没有历史行、也就没有"要回填的 userId"，因此登记在
+  //   `backfill-userid.ts` 的 `BACKFILL_EXEMPT_TABLES` 里（单一来源），三方一致门禁的
+  //   不变量是 `TENANT == BACKFILL_TARGETS ∪ {o_project} ∪ EXEMPT`。
+  o_account: "tenant",         // 每用户一行余额/冻结额（整数微元）；乐观锁 version
+  o_modelGrant: "tenant",      // 用户可见/可用的模型范围（agentKey/vendorId/model 三选一）
 });
 
 /** spec §5.4 退役表：001_schema 已删；任何访问都抛错。 */
@@ -86,7 +111,7 @@ export const DROPPED_TABLES: ReadonlySet<string> = new Set(["o_skillList", "o_sk
 /** knex 迁移器自己建的基础设施表（001_schema 不建、但必须登记）。 */
 export const INFRA_TABLES: ReadonlySet<string> = new Set(["knex_migrations", "knex_migrations_lock"]);
 
-/** 20 张租户表（顺序稳定，便于测试与报告；**不是**"策略表全集"）。 */
+/** 22 张租户表（顺序稳定，便于测试与报告；**不是**"策略表全集"）。 */
 export const TENANT_TABLES: readonly string[] = Object.freeze(
   Object.keys(TABLE_POLICIES).filter((t) => TABLE_POLICIES[t] === "tenant"),
 );
@@ -124,11 +149,15 @@ export function isTenantTable(table: string): boolean {
 }
 
 /**
- * `role` 的**临时桥接**：本阶段 `o_user` 还没有 role 列（重建归 Phase 1c，spec §7.1），
- * 而 platform 表的写权限必须现在就有判别力，否则要么放行所有人写、要么把运维写操作全打死。
+ * `role` 的**临时桥接**：本函数只按 `userId === 1` 判定 admin，**不读 `o_user.role`**。
  *
- * 实测依据（本计划编写时的 dev 库只读探针）：`o_user` 只有一行 `id=1, name=admin`。
- * **Phase 1c 必须把本函数删掉**，改为 token 里的 role claim + `o_user.role` 校验。
+ * ⚠【Phase 1c Task 1 更正】原注释写"本阶段 `o_user` 还没有 role 列"——**该前提已不成立**：
+ *   `005_accounts` 已给 `o_user` 加上 `role`（`user | admin`）与 `status`（`active | disabled`）。
+ *   本函数**仍然保留**，因为改判据属于**鉴权链的重写**（Phase 1c 的后续任务：token 里带 role claim
+ *   并校验 `o_user.role` / `status` / `tokenVersion`），不属于"数据模型"任务；在这次数据模型改造里
+ *   顺手改判据会让 `verify-phase1b` 的 D 组（admin 403/200 对照）失去它现在钉住的那个语义。
+ *   ⚠ 旧库迁上来的 admin 行在 `005` 里是 `status='disabled'` ⇒ **即便改成读 `o_user.role`，
+ *   老账号也不该立刻拿到 admin**；两者必须一起设计（bootstrap 流程）。
  */
 export function roleOfUserId(userId: number): "user" | "admin" {
   return Number(userId) === 1 ? "admin" : "user";

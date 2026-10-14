@@ -17,6 +17,8 @@ import schema from "@/db/migrations/001_schema";
 import platformSeed from "@/db/migrations/002_platform_seed";
 import vendorAssetSync from "@/db/migrations/003_vendor_asset_sync";
 import backfillUserId from "@/db/migrations/004_backfill_userid";
+import accounts from "@/db/migrations/005_accounts";
+import quotaGrants from "@/db/migrations/006_quota_grants";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -42,6 +44,15 @@ export const MIGRATIONS: Migration[] = [
   // ⚠ 它是**解锁项**：不跑它，`productionAgent` 的连接期归属校验（`resolveOwnedScript`）
   //    会把真实库上的所有连接拒掉，而 `memories` 的旧键对任何租户都读不到（且不报错）。
   backfillUserId,
+  // Task 1（Phase 1c）产出 005_accounts（`o_user` 重建为 §7.1 的 9 列 + `o_invite` /
+  // `o_userSetting` / `o_loginAttempt` / `o_auditLog`；`o_setting` 拆键：7 个用户级键迁走、
+  // `tokenKey` 出库、补 registrationMode / allowDbAdminOps 两个平台键）。
+  // ⚠ 编号顺延（brief 的 002_accounts 已被 002_platform_seed 占用）：**追加到末尾**才与文件名升序一致
+  //   （`tests/migrations.test.ts` 的 Ruling 24 顺序守卫断言 `NAMES == [...NAMES].sort()`）。
+  accounts,
+  // Task 1（Phase 1c）产出 006_quota_grants（`o_account` 余额/冻结 + `o_modelGrant` 模型授权骨架；
+  // **本阶段不计费**，Phase 2 才建 o_usage / o_ledger / o_order / o_price）。
+  quotaGrants,
 ];
 
 /**
