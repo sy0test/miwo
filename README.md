@@ -391,6 +391,10 @@ pnpm.cmd run verify:manual-test -- -Port 10589
 - `o_skillList` / `o_skillAttribution` 不再创建（迁移会 drop 掉老库里的这两张）。
 - `userId` 列已建出但**未回填**（回填归 Phase 1b）。
 - 全新库的 JWT 密钥来自配置 `MIWO_JWT_SECRET`（`o_setting.tokenKey` 不进新库）。
+- **鉴权链路已改写**（Phase 1c Task 2+3）：`/api/auth/{register,login,refresh,logout,me,changePassword}` 上线，
+  旧的 `POST /api/login/login` **保留可用**（前端切换归 Task 11）；令牌是 access(15min)+refresh(7d, HttpOnly Cookie)，
+  口令是 argon2id，连续 5 次失败锁 15 分钟。验签密钥的优先级是 `o_setting.jwtSecret`（新）→
+  `o_setting.tokenKey`（旧，仅兼容）→ `config.jwtSecret`（兜底），**每请求现读**（见 `apps/api/src/auth/secret.ts`）。
 
 ### 5. 测试（含**降级口径**与**验收基线**）
 
@@ -621,8 +625,10 @@ node tools/tenant-redend.cjs   # 11 项红端可复现（隔离副本 + VCS 还�
     用"种子四张表都落地 + 库里没有 tokenKey"取代了原来的"种了 tokenKey 就能起服务"）。
     当前口径见 §5 的「当前验收基线」表。
   - ⚠ `o_setting.tokenKey` **不进新库**（`002_platform_seed` 有一条显式断言兜住它）：JWT 密钥取自配置
-    `MIWO_JWT_SECRET`（`src/app.ts` 的鉴权中间件在库里没有 `tokenKey` 行时回退到它）。把密钥从库里搬进配置
-    正是 spec §6.2 / Phase 1c 的方向，所以"新库里没有 tokenKey"是**预期状态**。
+    `MIWO_JWT_SECRET`。把密钥从库里搬进配置正是 spec §6.2 / Phase 1c 的方向，所以"新库里没有 tokenKey"
+    是**预期状态**。⚠ **Phase 1c Task 3 更新**：链路抽到 `apps/api/src/auth/secret.ts`（HTTP 与 socket 共用），
+    优先级 = `o_setting.jwtSecret`（新位置，显式轮换用）→ `o_setting.tokenKey`（旧位置，老库/夹具仍可能有）→
+    `config.jwtSecret`（兜底）；`tests/auth-token-key.test.ts` 的 R1/R2/R3 把这三档逐条钉住。
 
 ### 真实数据搬迁（导出 → 导入 → 比对）与**回滚语义**
 

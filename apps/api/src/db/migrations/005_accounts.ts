@@ -23,10 +23,15 @@
  *
  * ── 已知的跨任务窗口（**如实登记，不粉饰**）──
  *   本迁移删掉 `o_setting.tokenKey`（Tier 0 #6：JWT 密钥改由 `MIWO_JWT_SECRET` 提供，
- *   运行期已由 `middleware/tenant.ts` 的"库里优先 + 配置兜底"承接），并把 `o_user` 的口令列
- *   换成 `passwordHash`。**旧的路由代码（`routes/login/login.ts` 读 `name`/`password`、
- *   `routes/setting/loginConfig/*`）要等 Phase 1c 的鉴权重写任务才改用新列** ——
- *   本任务是数据模型任务，不把鉴权改写夹带进来；在此期间登录路由**预期不可用**（已登记）。
+ *   运行期由 `src/auth/secret.ts` 的"库值优先（`o_setting.jwtSecret` → `o_setting.tokenKey`）
+ *   + 配置兜底"承接），并把 `o_user` 的口令列换成 `passwordHash`。**旧的路由代码
+ *   （`routes/login/login.ts` 读 `name`/`password`、`routes/setting/loginConfig/*`）要等
+ *   Phase 1c 的鉴权重写任务才改用新列** —— 本任务是数据模型任务，不把鉴权改写夹带进来。
+ *
+ *   ✅【Phase 1c Task 2+3 已闭合】窗口已关：登录链路（`src/auth/**` + `/api/auth/*` +
+ *   保留的 `/api/login/login`）已经改用新列与 argon2id；本文件**不再改一行**（只更新这段注释）。
+ *   红端证据：在迁到 `006` 的库上跑本迁移之前的那两条查询，实测
+ *   `select * from o_user where name = 'admin' → no such column: name`。
  *
  * ⚠ 迁移纪律：只用 schema builder（`createTable` / `renameTable` / 查询构造器），
  *   不用 `knex.raw` —— `tests/migration-ddl-mysql.test.ts` 的假-knex 路径只覆盖 schema builder。

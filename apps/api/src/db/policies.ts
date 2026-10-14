@@ -53,7 +53,10 @@ export class PolicyNotFoundError extends Error {
  *
  * policy 语义（与 spec §6.2 的行为表一字对应）：
  *  - tenant   读：自动 andWhere("userId", ctx.userId)；写：自动填 userId；显式写别人的 userId → 抛错
- *  - platform 读：放行（含无 ctx 的启动期读取，如登录前取 tokenKey）；写：仅 ctx.role === "admin"
+ *  - platform 读：放行（含无 ctx 的启动期读取，如登录前解析 JWT 密钥 —— `o_setting.jwtSecret`
+ *    优先、`o_setting.tokenKey` 兼容、`config.jwtSecret` 兜底，见 `src/auth/secret.ts`）；
+ *    写：仅 ctx.role === "admin"（⛔ **不是** `"user"`：注册/登录/登出/改密对 `o_user` 的写
+ *    一律走 `src/db/noContext.ts` 的 `runAsAuth()` 系统身份，见该文件头）
  *  - global   读：放行；写：**一律抛错**（连管理员也不行）
  */
 export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.freeze({
@@ -69,7 +72,7 @@ export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.free
   o_userSetting: "platform",   // 用户级 setting（§6.2 从 o_setting 迁出的 7 个键；登录期/启动期读）
   o_artStyle: "platform",      // 画风库（附录 A 判 platform；若要"连管理员都只读"→ 改 global）
   o_agentDeploy: "platform",   // 角色→模型绑定（全局）
-  o_setting: "platform",       // 平台级 key（tokenKey/shotsEngine/…；用户级 key 迁 o_userSetting 归 Phase 1c）
+  o_setting: "platform",       // 平台级 key（jwtSecret/tokenKey/shotsEngine/…；用户级 key 迁 o_userSetting 归 Phase 1c）
   o_prompt: "platform",        // 提示词模板（运营资产）
   o_modelPrompt: "platform",   // 模型↔提示词附件
   o_vendorConfig: "platform",  // 供应商配置（key 加密/不回传归 Phase 1c；策略在本阶段就收成"仅 admin 可写"）
@@ -149,15 +152,17 @@ export function isTenantTable(table: string): boolean {
 }
 
 /**
- * `role` 的**临时桥接**：本函数只按 `userId === 1` 判定 admin，**不读 `o_user.role`**。
+ * `role` 的**过渡桥接**：本函数只按 `userId === 1` 判定 admin，**不读 `o_user.role`**。
  *
  * ⚠【Phase 1c Task 1 更正】原注释写"本阶段 `o_user` 还没有 role 列"——**该前提已不成立**：
  *   `005_accounts` 已给 `o_user` 加上 `role`（`user | admin`）与 `status`（`active | disabled`）。
- *   本函数**仍然保留**，因为改判据属于**鉴权链的重写**（Phase 1c 的后续任务：token 里带 role claim
- *   并校验 `o_user.role` / `status` / `tokenVersion`），不属于"数据模型"任务；在这次数据模型改造里
- *   顺手改判据会让 `verify-phase1b` 的 D 组（admin 403/200 对照）失去它现在钉住的那个语义。
- *   ⚠ 旧库迁上来的 admin 行在 `005` 里是 `status='disabled'` ⇒ **即便改成读 `o_user.role`，
- *   老账号也不该立刻拿到 admin**；两者必须一起设计（bootstrap 流程）。
+ * ⚠【Phase 1c Task 3 更新】**鉴权链已经改写**（`src/middleware/auth.ts` / `src/socket/tenant.ts`）：
+ *   · **新形状 token**（`{uid,role,tv,typ}`）的 ctx.role 取 **DB 的 `o_user.role`**（spec §7.3：
+ *     授权判定只信 DB），**不再**经过本函数；
+ *   · 本函数现在只剩**一个**消费者：**旧形状 token**（`{id,name}`，Phase 1b 的验收脚本与夹具
+ *     仍按它签发）的兼容分支。删掉它会让 `verify:phase1b` 的 D 组（admin 403/200 对照）整片红。
+ *   ⚠ 旧库迁上来的 admin 行在 `005` 里是 `status='disabled'` ⇒ 新形状那条路**连登都登不进去**，
+ *   所以"旧账号不会因为这次改写立刻拿到 admin"这一点由数据（status）+ 每条请求的 DB 复核共同保证。
  */
 export function roleOfUserId(userId: number): "user" | "admin" {
   return Number(userId) === 1 ? "admin" : "user";
