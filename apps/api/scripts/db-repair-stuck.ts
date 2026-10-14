@@ -1,7 +1,17 @@
 /**
  * `db:repair-stuck`：手动清除"卡在生成中"的残留行（Phase 1a / Task 4，控制器裁定 2）。
  *
- * ── 为什么需要它 ──
+ * ⚠⚠ **【Phase 1d Task 6 起已弃用】** —— 本脚本**已被取代**，保留只是为了"删文件会撞文档与门禁"
+ *    的过渡期安全（根 README 的登记由 Phase 1d Task 12 统一改）。终点机制是
+ *    **「队列租约回收 + 产物对账」**（`src/jobs/store.ts` 的 `reclaimExpired()` +
+ *    `src/jobs/reconcile.ts` 的 `reconcileAbandoned()`）：
+ *      pnpm.cmd --filter @miwo/api run job:admin -- --reconcile --dry-run     # 先看
+ *      pnpm.cmd --filter @miwo/api run job:admin -- --reconcile --apply       # 再写
+ *    判据从"按时间窗猜"升级为"任务是否还在队列里/还有没有有效租约"（不再误杀正在跑的任务）。
+ *    ⚠ `job:admin` 由 Phase 1d Task 10 提供；在那之前，本脚本仍是唯一可用的手工入口 —— 所以
+ *      **行为一个字都没改**（默认 dry-run、`--apply` 才写、幂等、可按时间窗限定），只加了弃用提示。
+ *
+ * ── 为什么需要它（历史）──
  * 旧 `fixDB` 在**每次启动**时无条件把 6 类 `state='生成中'` 的行改判成失败
  * （见 `src/lib/fixDB.ts` 的「矫正因软件异常退出导致的状态不一致问题」一段）。
  * Phase 1a / Task 4 摘掉了这条启动期副作用，理由是**无条件写**会与多实例互相踩、
@@ -241,6 +251,15 @@ function fmtTime(ms: number | null): string {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const cutoffMs = args.cutoffMs;
+  // ⚠ 【Phase 1d Task 6】弃用提示：**每次运行都打印**（grep 断言点，文案必须含"已被取代"）。
+  //    放在护栏**之前**：即使用户目标库不合法被拦下，也该看到"这个脚本已经不是正路"。
+  console.log(
+    "[db-repair-stuck] 已弃用：Phase 1d 起改用「队列租约回收 + 产物对账」——\n" +
+      "  pnpm.cmd --filter @miwo/api run job:admin -- --reconcile --dry-run     # 先看\n" +
+      "  pnpm.cmd --filter @miwo/api run job:admin -- --reconcile --apply       # 再写\n" +
+      "判据从\"按时间窗猜\"升级为\"任务是否还在队列里/还有没有有效租约\"（不再误杀正在跑的任务）。\n" +
+      "  ⚠ job:admin 由 Phase 1d Task 10 提供；在那之前本脚本仍按原行为工作（默认 dry-run）。",
+  );
   // ⚠ 在 `createKnex()` **之前**判定目标（同 `db-migrate.ts`）：sqlite 分支下建连就等于打开了
   //    那份文件，"连上再拦"已经把目标打开了。dry-run 也拦 —— 判别力不该取决于 `--apply`。
   guard.requireRepoDevDbAllowed({ argv: process.argv.slice(2), what: "db:repair-stuck" });

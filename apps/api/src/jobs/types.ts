@@ -93,6 +93,17 @@ export interface JobDefinition<P = unknown> {
   /** 幂等键；返回 null 表示该类型不去重。 */
   dedupeKey(payload: P, userId: number | null): string | null;
   handle(ctx: JobContext, payload: P): Promise<unknown>;
+  /**
+   * 任务**永久失败**（dead/canceled）时的产物对账钩子（spec §5.2 ② 的替代机制）。
+   * 由 `reconcile.ts` 在"死信 + 宽限期"之后调用；职责是把该任务写过的产物行从"生成中"
+   * 改判为"生成失败"并写 errorReason。**必须幂等**（重复调用不改变结果）。
+   *
+   * ⚠ 可选：`reconcile.ts` 对没有该钩子的类型**跳过**（不改判任何产物行）—— 因为"哪些行是
+   *   这次任务写的"只有类型自己知道，reconcile 不做猜测。
+   * ⚠ 钩子里的 DB 访问走**它自己**的 `u.db`（受租户守卫）还是系统身份，由实现决定；
+   *   reconcile 只负责把 `jobId`/`userId`/`reason` 如实传进来。
+   */
+  onAbandon?(payload: P, reason: string, info: { jobId: number; userId: number | null }): Promise<void>;
 }
 
 /**
