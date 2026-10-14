@@ -151,12 +151,13 @@ const workerKB = (workerAfter.size / 1024).toFixed(1);
  *   直接调用 `__setGateFactory(...)`，只要该模块被 import 进产物，符号就在。
  */
 const GATE_INIT_TRACE = "__setGateFactory(";
+const appBody = fs.readFileSync(artifact, "utf8");
 const workerBody = fs.readFileSync(workerArtifact, "utf8");
-for (const [name, file, body] of [
-  ["app.js", artifact, body],
+for (const [name, file, gateBody] of [
+  ["app.js", artifact, appBody],
   ["worker.js", workerArtifact, workerBody],
 ]) {
-  if (!body.includes(GATE_INIT_TRACE)) {
+  if (!gateBody.includes(GATE_INIT_TRACE)) {
     fail3(
       `${name} 里观测不到 \`${GATE_INIT_TRACE}\`：该启动链**没有注册闸门工厂** ` +
         `⇒ 它的 withVendorSlot() 会抛"[gate] 闸门未初始化"（review-C F2）。\n` +

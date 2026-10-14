@@ -60,7 +60,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** 记录每个客户端收到的 `job:update` 事件。 */
 function collect(sock: { on(event: string, fn: (...a: unknown[]) => void): void }): Array<Record<string, unknown>> {
   const seen: Array<Record<string, unknown>> = [];
-  sock.on("job:update", (p: Record<string, unknown>) => seen.push(p));
+  sock.on("job:update", (...a: unknown[]) => seen.push((a[0] ?? {}) as Record<string, unknown>));
   return seen;
 }
 

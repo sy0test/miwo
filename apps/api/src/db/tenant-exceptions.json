@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-14T21:23:43.824Z",
+  "generatedAt": "2026-10-14T21:52:17.688Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 301,
+    "tsFilesScanned": 302,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)（接收者限定：u.db/db/systemDb/trx/knex/conn/connection）",
     "systemDbUsers": "拿到裸 systemDb 的文件（命名/别名/命名空间/相对路径/动态 import/require 任一形态）",
@@ -204,22 +204,6 @@
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
         "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
-      }
-    },
-    "apps/api/src/routes/production/workbench/batchGeneratePrompt.ts": {
-      "count": 1,
-      "lines": [
-        133
-      ],
-      "tables": [
-        "o_image"
-      ],
-      "confirmed": true,
-      "note": "[133 leftJoin o_image] 被 join 表 o_image 策略=tenant。行号由 131 漂移到 133（Phase 1d Task 7 在文件头补回了 `fs`/`path`/`pLimit`/`trackTableForId`/`storyboardItemsForShots` 导入）——**处数与 SQL 文本均未变**。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
-      "phase1b": {
-        "disposition": "guard-auto",
-        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 trackId/info[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集。"
       }
     },
     "apps/api/src/routes/production/workbench/batchGenerateVideo.ts": {
