@@ -202,10 +202,10 @@ pnpm.cmd run db:bootstrap-admin -- --username=admin --apply
 | # | 条目（来源） | 本阶段处置 | 落点 |
 |---|---|---|---|
 | 1 | Phase 0 ledger：`err.ts` 吞掉未处理拒绝（Tier 1 #16） | ✅ 做 | T6 |
-| 2 | Phase 0 ledger：`TOONFLOW_PROXY` 重命名 | ✅ 做（→ `MIWO_PROXY`） | T10 |
+| 2 | Phase 0 ledger：出网代理变量的旧名重命名 | ✅ 做（→ `MIWO_PROXY`；旧名的废弃留档在 `apps/api/src/proxy.ts` 与两个 `.env.example` 里） | T10 |
 | 3 | Phase 0 ledger：`initDB.ts:24` 明文默认口令 | ✅ 做（旧行禁用 + 引导命令） | T1 / T5 / T12 |
-| 4 | Phase 0 ledger：`toonflow-backup-` 前缀 | ✅ 做（含前端同名前缀） | T4 / T11 |
-| 5 | Phase 0 ledger：`getMaterialData.ts:33` 的 `Toonflow片尾` 显示名 | ✅ 做（改 `谜沃片尾`）+ 删对应豁免 | T9 / T10 |
+| 4 | Phase 0 ledger：备份文件名前缀的品牌收口（含前端同名前缀） | ✅ 做 | T4 / T11 |
+| 5 | Phase 0 ledger：片尾素材的显示名品牌收口 | ✅ 做（+ 删对应豁免） | T9 / T10 |
 | 6 | Phase 0 ledger：`NOTICES.txt` 仍列 electron 系许可证 | ✅ 做 | T5 |
 | 7 | Phase 0 ledger：`src/core.ts` 与 `check-copy` 阈值一起删 | ✅ 做 | T5 |
 | 8 | Phase 1a Ruling 12：`check-copy` 阈值下调随真正删文件的 Task | ✅ 做（下限 = 删除后实测值） | T5 |

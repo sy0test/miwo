@@ -427,17 +427,20 @@ pnpm.cmd exec vitest run tests/mysql-integration.test.ts   # 只跑 MySQL 集成
 $env:MIWO_TEST_SLOW="1"; pnpm.cmd exec vitest run          # 慢用例（约 60s）
 ```
 
-**当前验收基线**（Task 12 实测，口径数字若漂移请先查清是哪条断言变了，**不要**改数字了事）：
+**当前验收基线**（Phase 1c / Task 12 实测；口径数字若漂移请先查清是哪条断言变了，**不要**改数字了事）：
 
 | 门禁 | 命令 | 期望 |
 |---|---|---|
-| 默认套件 | `pnpm.cmd exec vitest run`（`apps/api` 下） | **140 passed \| 8 skipped** |
-| MySQL 套件 | `$env:MIWO_TEST_MYSQL="1"; pnpm.cmd exec vitest run` | **147 passed \| 1 skipped** |
+| 默认套件 | `pnpm.cmd exec vitest run`（`apps/api` 下） | **443 passed \| 10 skipped** |
 | Phase 0 验收 | `node apps/api/scripts/verify-phase0.cjs` | **43/43** |
-| Phase 1a 验收 | `pnpm.cmd run verify:phase1a` | **60/60**（sqlite 与 MySQL **两条口径**皆是） |
+| Phase 1a 验收 | `pnpm.cmd run verify:phase1a` | **76/76**（本机口径；CI 用 `verify:phase1a:ci`） |
+| Phase 1b 验收 | `pnpm.cmd run verify:phase1b` | **17/17**（另有 1 项 MySQL 口径**未实测**） |
+| Phase 1c 媒体验收 | `pnpm.cmd run verify:phase1c-media` | **34/34** |
+| **Phase 1c 验收** | `pnpm.cmd run verify:phase1c` | **45/45**（另有 1 项 MySQL 口径**未实测**、不计入通过数） |
+| 生产构建 | `pnpm.cmd run verify:build` | EXIT 0（**`api build` 必须保持 0**；root 的 `pnpm run build` **不存在**，前端 47 条类型错误归 Phase 3） |
 
-（表里的数字只增不减：Task 5 把 `verify-phase0` 由 31/31 抬到 36/36，Task 10 → 41/41，Task 11 → **43/43**；
-Task 12 给 `tests/db-driver.test.ts` 加了 2 条 `u.db` 白名单用例，套件 138\|8 → **140\|8**、145\|1 → **147\|1**。）
+（上表在 Phase 1c / Task 12 逐条重测过。旧版本这里是 1a 的 140\|8 与 phase1a 60/60 ——
+那些数字在 1b/1c 的十几个任务之后早已漂移；**数字必须来自实跑**，不要照抄。）
 
 #### 降级口径：本机没有 MySQL 时怎么自证
 

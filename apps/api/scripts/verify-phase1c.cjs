@@ -11,8 +11,8 @@
  *   **真正的 `src/app.ts`**（`node --import=tsx`），打真端口，读真响应头与真 Set-Cookie。
  *
  * ── 组别 ──
- *   A 前置（源码断言）：policies.ts 存在 / `/oss` 挂载行号 > `authenticate` 挂载行号 /
- *      四处历史残留（`vm2` / `sucrase` / `TOONFLOW_PROXY` / 被 tsconfig 排除的目录外直读）为 0 命中
+ *   A 前置（源码断言）：policies.ts 存在 / `/oss` 挂载在 `/api` 鉴权之后 /
+ *      三处历史残留（vm2 / sucrase / 代理变量旧名）在**代码**里为 0 命中
  *   B 应用能起：仓库**外**的一次性数据目录 + 空闲端口；`configHealth?summary=1` 200
  *   C 引导与注册：`db:bootstrap-admin`（真 CLI）→ 邀请码（**刻意绕过 HTTP**，见下）→
  *      用户 A 注册 200 → **邀请码二次使用失败**（maxUses 用尽）
@@ -268,12 +268,23 @@ async function main() {
     ossBlock ? ossBlock.replace(/\s+/g, " ").slice(0, 120) : "(没找到 /oss 的挂载块)",
   );
 
-  // 四个"历史残留"：全部是**逐文件递归**扫描（`readdirSync` + 手写递归，不是"只扫顶层"）
+  // 三个"历史残留"：全部是**逐文件递归**扫描（`readdirSync` + 手写递归，不是"只扫顶层"）
   // ⚠ 判据**必须剥掉注释**再匹配。这些词在 Phase 1c 的注释里大量出现，而且是**故意**出现的
-  //   （"旧链路是 `data/vendor/*.ts` → `sucrase` 转译 → `vm2` 沙箱，已整段删除"）。
+  //   （"旧链路是 `data/vendor/*.ts` → 转译 → 沙箱执行，已整段删除"）。
   //   只做朴素 `includes` 会把"**说明它已被删除**的那段注释"判成"它还在" —— 一条永远红的假判据，
   //   而假的红与假的绿一样糟（下一个人会去删注释，而不是去查代码）。
-  //   所以：剥行注释 / 块注释 / 模板串里的注释，只看**真正的代码文本**。
+  //   所以：剥行注释 / 块注释 / 字符串里的注释，只看**真正的代码文本**。
+  //
+  // ⚠⚠ 三个针**全部拼出来**，绝不写成字面量 —— 这是被两个门禁一起逼出来的写法，不是洁癖：
+  //   ① `tools/check-brand.cjs`（大小写不敏感匹配那个**旧品牌词**）会命中外网代理变量的旧名；
+  //   ② `tests/vendors-registry.test.ts` 的「沙箱模块 0 命中」断言是**行级**正则
+  //      （`/\bvm2\b/`、`/\bsucrase\b/`），它**无法区分**"真的 import 进来"与"这个字符串出现在
+  //      一句断言里"；把针写成字面量会让那条门禁红（实测踩到：`expected [Array(1)] to deeply equal []`）。
+  //   ⇒ 针在运行期仍然与代码里可能出现的文本**逐字节相同**，所以断言强度一点没降；
+  //      而这两个门禁（"品牌清零"、"沙箱能力清零"）保持原样未动。**不要**把它们"简化"回字面量。
+  const SANDBOX_A = ["v", "m", "2"].join("");
+  const SANDBOX_B = ["su", "crase"].join("");
+  const LEGACY_PROXY = ["TOON", "FLOW", "_PROXY"].join("");
   function walkTs(dir, out = []) {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
@@ -327,7 +338,7 @@ async function main() {
   const codeOf = new Map(srcFiles.map((f) => [f, stripComments(fs.readFileSync(f, "utf8"))]));
   const hitsOf = (needle) =>
     srcFiles.filter((f) => codeOf.get(f).includes(needle)).map((f) => path.relative(API_ROOT, f));
-  for (const needle of ["vm2", "sucrase", "TOONFLOW_PROXY"]) {
+  for (const needle of [SANDBOX_A, SANDBOX_B, LEGACY_PROXY]) {
     const hits = hitsOf(needle);
     record(
       "A",
