@@ -24,6 +24,7 @@ import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from
 
 import generateVideo from "@/routes/production/workbench/generateVideo";
 import batchGenerateVideo from "@/routes/production/workbench/batchGenerateVideo";
+import batchGeneratePrompt from "@/routes/production/workbench/batchGeneratePrompt";
 
 const USER: AuthFixtureUser = { id: 5151, username: "job-routes-1", role: "user" };
 const PROJECT = 900001;
@@ -108,6 +109,7 @@ beforeAll(async () => {
   app.use(tenantContextMiddleware);
   app.use("/api/production/workbench/generateVideo", generateVideo);
   app.use("/api/production/workbench/batchGenerateVideo", batchGenerateVideo);
+  app.use("/api/production/workbench/batchGeneratePrompt", batchGeneratePrompt);
   // 显式错误中间件：路由自己 catch 的分支会回 400，这里只承接**没被 catch** 的异常（把 message 带出来便于诊断）
   app.use((err: any, _req: any, res: any, _next: any) => res.status(err?.httpStatus ?? 500).send({ code: err?.code ?? 500, message: String(err?.message ?? err) }));
   server = http.createServer(app);
@@ -253,6 +255,54 @@ describe("batchGenerateVideo 路由 → 入队（data 是数组，形状不许�
     expect(payload.items.length).toBe(1); // 一个任务带全部 items
     expect(payload.items[0].videoId).toBe(res.json.data[0].videoId);
     expect(payload.items[0].trackId).toBe(TRACK_C);
+    expect(job.payload).not.toContain("base64");
+  });
+});
+
+/**
+ * ★ review-C F4（High）：**第 6 个入口 `batchGeneratePrompt` 必须真的入队**。
+ *
+ * 缺陷原样：它仍是 `pLimit` + `Promise.all(tasks)` 的进程内 fire-and-forget ⇒ 注册表里的
+ * `prompt.batch` handler **没有任何调用方**（死代码），厂商调用也没过闸门。
+ * 本用例用**真 HTTP** 打该入口，断言：① 200 且 `data` 形状未变（仍是那句文案）；
+ * ② 顶层多了 `jobIds`；③ `o_job` 真的多了一行且 `type="prompt.batch"`、`payload.trackData` 正确、无 base64。
+ */
+describe("batchGeneratePrompt 路由 → 入队（review-C F4：第 6 个入口）", () => {
+  it("★ 真 HTTP：prompt.batch 真的被入队（handler 不再不可达），data 形状不变", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const before = await count(systemDb("o_job").where("type", "prompt.batch").count({ n: "*" }));
+    const t0 = Date.now();
+    const res = await post(
+      port,
+      "/api/production/workbench/batchGeneratePrompt",
+      {
+        projectId: PROJECT,
+        model: "miwo:test-model",
+        mode: "text",
+        // ⚠ 只带引用 id/sources（不带 base64）
+        trackData: [{ trackId: 5170, info: [{ id: 900011, sources: "storyboard" }] }],
+      },
+      token,
+    );
+    const ms = Date.now() - t0;
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.code).toBe(200);
+    expect(res.json.data, "data 形状不变（仍是那句文案）").toBe("开始生成提示词");
+    expect(Array.isArray(res.json.jobIds), "jobIds 是新顶层字段").toBe(true);
+    expect(res.json.jobIds.length).toBe(1);
+    expect(ms, "接口不再等模型（进程内 pLimit 段已删除）").toBeLessThan(1_000);
+
+    const after = await count(systemDb("o_job").where("type", "prompt.batch").count({ n: "*" }));
+    expect(after, "prompt.batch 必须真的多一行 o_job（改前这里是 0 增量）").toBe(before + 1);
+
+    const job = await systemDb("o_job").where("id", res.json.jobIds[0]).first();
+    expect(job.type).toBe("prompt.batch");
+    expect(job.state).toBe("queued");
+    expect(Number(job.userId)).toBe(USER.id);
+    const payload = JSON.parse(job.payload);
+    expect(payload.projectId).toBe(PROJECT);
+    expect(payload.trackData[0].trackId).toBe(5170);
+    expect(payload.trackData[0].info[0]).toEqual({ id: 900011, sources: "storyboard" });
     expect(job.payload).not.toContain("base64");
   });
 });

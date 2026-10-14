@@ -138,7 +138,36 @@ if (beforeWorker && workerAfter.mtimeMs < buildStartedAt - 1000) {
 const changed = !before || before.size !== after.size;
 const bundleKB = (after.size / 1024).toFixed(1);
 const workerKB = (workerAfter.size / 1024).toFixed(1);
+
+/**
+ * ⑤ 【C 组修复轮 F2】闸门初始化必须**在两条启动链的产物里都观测到**。
+ *
+ * review-C 实测：`__setGateFactory()` 原先只写在 `@/jobs`（桶文件）里，而 API 侧才 import 它
+ * ⇒ 构建出的 `worker.js` 里**连这个符号都没有**，worker 进程里六个 handler 的第一次
+ * `withVendorSlot()` 直接抛 `[gate] 闸门未初始化`（厂商调用一次都发不出去）。
+ * 这条断言把"接线丢失"变成产物级可见的失败：**任一产物观测不到 ⇒ exit 3，不是绿**。
+ *
+ * ⚠ 只断言符号出现（不依赖构建器是否 tree-shake 得漂亮）：`bootstrapJobInfra()` 内部是
+ *   直接调用 `__setGateFactory(...)`，只要该模块被 import 进产物，符号就在。
+ */
+const GATE_INIT_TRACE = "__setGateFactory(";
+const workerBody = fs.readFileSync(workerArtifact, "utf8");
+for (const [name, file, body] of [
+  ["app.js", artifact, body],
+  ["worker.js", workerArtifact, workerBody],
+]) {
+  if (!body.includes(GATE_INIT_TRACE)) {
+    fail3(
+      `${name} 里观测不到 \`${GATE_INIT_TRACE}\`：该启动链**没有注册闸门工厂** ` +
+        `⇒ 它的 withVendorSlot() 会抛"[gate] 闸门未初始化"（review-C F2）。\n` +
+        `  ⇒ 修法：让该入口 import \`@/jobs/bootstrap\` 并调用 \`bootstrapJobInfra()\` —— **不要**删这条断言。\n` +
+        `  （对照：${file}）`,
+    );
+  }
+}
+
 console.log(`check-build 通过（构建 EXIT 0）`);
 console.log(`  · 产物：apps/api/data/serve/app.js = ${after.size} 字节 (${bundleKB} KB)`);
 console.log(`  · 产物：apps/api/data/serve/worker.js = ${workerAfter.size} 字节 (${workerKB} KB)`);
 console.log(`  · 自证：字节数已打印；app 含 \`${TRACE}\` require ✓；worker 体积下界 ✓ 且非陈旧 ✓；seed 4 个 .ndjson ✓；构建前后 app 体积${changed ? "有变化" : "一致（同源同参数打包，属预期）"}`);
+console.log(`  · 闸门初始化：app.js 与 worker.js 均含 \`${GATE_INIT_TRACE}\` ✓（review-C F2 的产物级守卫，缺一即 exit 3）`);

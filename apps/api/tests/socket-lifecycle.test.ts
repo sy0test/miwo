@@ -10,9 +10,20 @@
  *   + 两个路由都必须接线"两处共同守住。
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { bindSocketLifecycle, joinUserRoom, type SocketLike } from "@/socket/lifecycle";
+
+/** 递归列出目录下全部 `.ts`（review-C F7：真扫目录，不再用硬编码清单）。 */
+function walkTs(dir: string, out: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walkTs(p, out);
+    else if (e.name.endsWith(".ts")) out.push(p);
+  }
+  return out;
+}
 
 function fakeSocket(id = "s1") {
   const handlers: Record<string, Array<(...a: unknown[]) => void>> = {};
@@ -80,9 +91,14 @@ describe("socket 生命周期（spec §9.5）", () => {
 
 /**
  * 源码级静态守卫（判据 3 的后半）。**不许**把它当成"行为已测"的替代 —— 它守的是"接线有没有被改回去"：
- *  · 反向：`src/socket/**` 里不得再出现 `nsp.on("disconnect"`（排除注释行）；
+ *  · 反向：`src/socket/**`（**真扫目录**，review-C F7）里不得再出现 `nsp.on("disconnect"`（排除注释行）；
  *  · 正向：两个 socket 路由（productionAgent / scriptAgent）都必须 `joinUserRoom` + `bindSocketLifecycle`；
  *  · 方向：`disconnect` 必须注册在 `socket.on` 上（lifecycle 的**唯一**注册点）。
+ *
+ * ⚠ review-C F7（Low）：原来这里用**3 项硬编码清单**，与测试名声称的 `src/socket/**` 不符 ——
+ *   reviewer 往 `src/socket/index.ts` 塞回 `nsp.on("disconnect")` 守卫**仍 9/9 绿**。
+ *   现在改为真扫目录（`fs.readdirSync(..., {recursive:true})`），并额外用**临时目录**证明扫描器
+ *   对"新增文件"也有判别力（不往仓库里塞测试文件）。
  */
 describe("socket 生命周期 —— 源码级静态守卫（spec §9.5 接线不回退）", () => {
   const SOCKET_SRC = path.resolve(__dirname, "..", "src", "socket");
@@ -94,10 +110,28 @@ describe("socket 生命周期 —— 源码级静态守卫（spec §9.5 接线�
       .map((l) => l.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, "").replace(/^\s*\/\*.*$/, ""))
       .join("\n");
 
-  it('★ 反向：src/socket/** 里不得再有 `nsp.on("disconnect"`（那是永不触发的命名空间挂法）', () => {
-    const files = [path.join("routes", "productionAgent.ts"), path.join("routes", "scriptAgent.ts"), "lifecycle.ts"];
+  it('★ 反向：**真扫 `src/socket/**`**，任何文件都不得再有 `nsp.on("disconnect"`', () => {
+    const files = walkTs(SOCKET_SRC);
+    // 反恒真：确实扫到了一批文件（目录遍历写坏时立刻可见）
+    expect(files.length, "src/socket 下应扫到多个 .ts").toBeGreaterThanOrEqual(4);
     for (const f of files) {
-      expect(stripLineComments(read(f)), `${f} 不得再挂 namespace 级 disconnect`).not.toContain('nsp.on("disconnect"');
+      const src = stripLineComments(fs.readFileSync(f, "utf8"));
+      expect(src, `${path.relative(SOCKET_SRC, f)} 不得再挂 namespace 级 disconnect`).not.toContain('nsp.on("disconnect"');
+    }
+    // 目录里确实包含 index.ts（reviewer 塞回后应被抓到的那一个）
+    expect(files.map((f) => path.basename(f))).toContain("index.ts");
+  });
+
+  it("★ 判别力：扫描器对**新增文件**同样有效（不往仓库里塞文件）", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-socket-scan-"));
+    try {
+      fs.mkdirSync(path.join(tmp, "routes"), { recursive: true });
+      fs.writeFileSync(path.join(tmp, "index.ts"), 'nsp.on("disconnect", () => {});\n', "utf8");
+      fs.writeFileSync(path.join(tmp, "routes", "x.ts"), "export const x = 1;\n", "utf8");
+      const bad = walkTs(tmp).filter((f) => stripLineComments(fs.readFileSync(f, "utf8")).includes('nsp.on("disconnect"'));
+      expect(bad.map((f) => path.basename(f)), "新增文件里的坏接线必须被抓到").toEqual(["index.ts"]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
@@ -116,5 +150,17 @@ describe("socket 生命周期 —— 源码级静态守卫（spec §9.5 接线�
     const src = read("lifecycle.ts");
     expect(stripLineComments(src)).toContain('socket.on("disconnect"');
     expect(stripLineComments(src)).not.toMatch(/\bnsp\b/);
+  });
+
+  /**
+   * ★ review-C F3 的接线守卫：relay 的发送目标**不能**是根 io。
+   * `app.ts` 必须传 `targetOf: makeRelayTargetResolver(io)`（否则事件打进根命名空间，真客户端收不到）。
+   */
+  it("★ relay 接线：app.ts 必须把 namespace 解析器交给 relay（不许再传裸根 io）", () => {
+    const app = fs.readFileSync(path.resolve(__dirname, "..", "src", "app.ts"), "utf8");
+    expect(app, "app.ts 必须用 makeRelayTargetResolver").toContain("makeRelayTargetResolver(io)");
+    expect(app, "startProgressRelay 调用里必须带 targetOf").toMatch(/startProgressRelay\(\{[^}]*targetOf/);
+    const sockIndex = read("index.ts");
+    expect(sockIndex, "namespace 名必须是 productionAgent 那个").toContain("/api/socket/productionAgent");
   });
 });
