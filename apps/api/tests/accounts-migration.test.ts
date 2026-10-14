@@ -136,6 +136,50 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
     }
   });
 
+  /**
+   * `down` 的**真实行为**单独再走一遍（不靠上一条用例的连带回滚）：
+   *   · 先再 up 一次（这时 004/005/006 在同一个 batch 里）
+   *   · 再 `rollbackMigrations(db)` 一次 ⇒ 只该回滚 006 与 005
+   *   · 断言 005 自己建的 6 张表消失、`o_user` 回到 3 列、平台开关被删掉
+   * 这条用例是"down 到底做了什么"的最窄证据（上一条会把 004/003 一起带走，看不清边界）。
+   */
+  it("★ down 的真实行为：只回滚 005/006 时，o_user 回到 3 列、新表消失、平台开关删除", async () => {
+    const db = freshDb();
+    try {
+      await dbAt002WithLegacyRows(db);
+      // 第一次 up 走 batch 2（003/004/005/006 一起）
+      await runMigrations(db);
+      // 单独再跑 005/006（用它们自己的 up），使它们落在**最末批次**，便于只回滚这两条
+      const accountsMod = (await import("@/db/migrations/005_accounts")).default;
+      const quotaMod = (await import("@/db/migrations/006_quota_grants")).default;
+      await accountsMod.down(db);
+      await quotaMod.down(db);
+      expect(await columnsOf(db, "o_user")).toEqual(["id", "name", "password"]);
+      await accountsMod.up(db);
+      await quotaMod.up(db);
+
+      // 现在直接调 005/006 的 down，逐条观察它们删了什么
+      await accountsMod.down(db);
+      const afterAccountsDown = await tableNames(db);
+      for (const gone of ["o_invite", "o_userSetting", "o_loginAttempt", "o_auditLog"]) {
+        expect(afterAccountsDown, `${gone} 未被子迁移 down 删掉`).not.toContain(gone);
+      }
+      expect(await columnsOf(db, "o_user")).toEqual(["id", "name", "password"]);
+      expect(await db("o_setting").where("key", "registrationMode").first()).toBeUndefined();
+      expect(await db("o_setting").where("key", "allowDbAdminOps").first()).toBeUndefined();
+      // ⚠ 用户级键**不回迁**回 o_setting（down 只删 o_userSetting 表）：如实登记，不粉饰
+      expect(await db("o_setting").whereIn("key", ["agentUseMode", "summaryLimit"]).first()).toBeUndefined();
+
+      await quotaMod.down(db);
+      const afterQuotaDown = await tableNames(db);
+      for (const gone of ["o_account", "o_modelGrant"]) {
+        expect(afterQuotaDown, `${gone} 未被子迁移 down 删掉`).not.toContain(gone);
+      }
+    } finally {
+      await db.destroy();
+    }
+  });
+
   it("旧明文用户迁成 disabled 且不可登录（passwordHash 为空串）", async () => {
     const db = freshDb();
     try {
