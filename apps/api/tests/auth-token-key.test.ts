@@ -25,11 +25,13 @@
  *        legacy one AND over the config fallback. Proves the "DB value first" semantic survived
  *        the move to the new location, and pins the precedence order (new > legacy > config).
  *
- * ⚠ Token shapes: the middleware accepts BOTH the modern shape ({uid,role,tv,typ}, minted by
- *   /api/auth/login) and the legacy {id,name} shape (Phase 1b fixtures sign this way:
- *   scripts/verify-phase1b.cjs, ops-endpoints-auth.test.ts, socket-tenant.test.ts). These cases
- *   sign the LEGACY shape on purpose - the point under test is *which secret verifies*, not the
- *   claim set (the modern shape is covered by tests/auth-service.test.ts + tests/auth-http-e2e.test.ts).
+ * ⚠ Token shapes (Phase 1c Task 11): the middleware used to accept BOTH the modern shape
+ *   ({uid,role,tv,typ}, minted by /api/auth/login) and the legacy {id,name} shape. The legacy
+ *   branch was **retired in Task 11** (it never read the DB, so a disabled account stayed valid
+ *   and `roleOfUserId(1)==="admin"` made any old `{id:1}` token an admin). These cases therefore
+ *   sign the MODERN shape and seed an `active` `o_user` row - the point under test is still
+ *   *which secret verifies*, but a token that verifies against a secret only reaches the handler
+ *   when the DB row (`status`/`tokenVersion`) agrees.
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -37,10 +39,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import jwt from "jsonwebtoken";
 import type { Knex } from "knex";
 import { afterAll, describe, expect, it } from "vitest";
 import { createKnex } from "@/db/connect";
+import { signToken } from "@/auth/tokens";
 import type { MiwoConfig } from "@/config";
 
 const API_ROOT = path.resolve(__dirname, "..");
@@ -183,9 +185,37 @@ function openDb(dataDir: string, tag: string): Knex {
   } as MiwoConfig);
 }
 
-/** Sign a token the way routes/login/login.ts does (HS256, 180 days). */
+/** The single fixture account every case signs for (`uid=1`, role admin, tokenVersion 0). */
+const FIXTURE_UID = 1;
+
+/**
+ * Seed the `o_user` row the modern token shape needs (Phase 1c Task 11).
+ *
+ * ⚠ Without it every signed token would be rejected by `loadUserCtx()` (no row = 401) and these
+ *   cases would pass/fail for the wrong reason. `passwordHash` is empty on purpose: the fixture
+ *   account cannot log in, it only ever passes a JWT.
+ */
+async function seedFixtureUser(db: Knex): Promise<void> {
+  await db("o_user")
+    .insert({
+      id: FIXTURE_UID,
+      username: "auth-priority-test",
+      email: null,
+      passwordHash: "",
+      role: "admin",
+      status: "active",
+      tokenVersion: 0,
+      mustChangePassword: 0,
+      createdAt: 1,
+      lastLoginAt: null,
+    })
+    .onConflict("id")
+    .merge();
+}
+
+/** Sign a modern access token with an explicit secret (the thing this file varies). */
 function sign(secret: string): string {
-  return (jwt.sign as any)({ id: 1, name: "auth-priority-test" }, secret, { expiresIn: "180Days" });
+  return signToken({ uid: FIXTURE_UID, role: "admin", tv: 0, typ: "access" }, secret);
 }
 
 /**
@@ -210,6 +240,7 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
       try {
         // 前置：确认库里确实没有 tokenKey（这正是 002_platform_seed 之后新库的预期状态）
         expect(await db("o_setting").where("key", "tokenKey").first()).toBeUndefined();
+        await seedFixtureUser(db);
       } finally {
         await db.destroy();
       }
@@ -235,6 +266,7 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
         // 写入"库里的密钥"行（这就是老库的形态）—— 无需重启：中间件每个请求都现读这一行。
         await db("o_setting").insert({ key: "tokenKey", value: DB_SECRET });
         expect((await db("o_setting").where("key", "tokenKey").first()).value).toBe(DB_SECRET);
+        await seedFixtureUser(db);
       } finally {
         await db.destroy();
       }
@@ -262,6 +294,7 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
         await db("o_setting").insert({ key: "tokenKey", value: DB_SECRET });
         expect((await db("o_setting").where("key", "jwtSecret").first()).value).toBe(NEW_SECRET);
         expect((await db("o_setting").where("key", "tokenKey").first()).value).toBe(DB_SECRET);
+        await seedFixtureUser(db);
       } finally {
         await db.destroy();
       }

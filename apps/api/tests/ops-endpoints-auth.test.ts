@@ -31,7 +31,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import jwt from "jsonwebtoken";
+import { signToken } from "@/auth/tokens";
 import type { Knex } from "knex";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createKnex } from "@/db/connect";
@@ -175,11 +175,18 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
   let output = "";
 
   const url = (p: string): string => `http://127.0.0.1:${port}${p}`;
-  /** 用**当前**库里的 tokenKey 签发（没有则回退配置密钥）——这样"改造前的清库"也不会让后续断言失去意义。 */
-  async function signAs(db: Knex, userId: number): Promise<string> {
+  /**
+   * 用**当前**库里的 tokenKey 签发（没有则回退配置密钥）——这样"改造前的清库"也不会让后续断言失去意义。
+   *
+   * ⚠【Phase 1c Task 11】令牌形状从旧形状 `{id,name}` 换成**新形状** `{uid,role,tv,typ}`：
+   *   旧形状的 legacy 分支已整体退役（`middleware/auth.ts`）⇒ 再用它签就是**全体 401**。
+   *   配套：`o_user` 夹具行必须是 `status="active"`（见 beforeAll），且 `tv` 与行里的
+   *   `tokenVersion` 相等（本文件种的恒为 0）。
+   */
+  async function signAs(db: Knex, userId: number, role: "user" | "admin"): Promise<string> {
     const row: any = await db("o_setting").where("key", "tokenKey").first();
     const secret = (row && row.value) || CONFIG_SECRET;
-    return (jwt.sign as any)({ id: userId, name: `ops-auth-${userId}` }, secret, { expiresIn: "180Days" });
+    return signToken({ uid: userId, role, tv: 0, typ: "access" }, secret);
   }
 
   beforeAll(async () => {
@@ -233,12 +240,14 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       const skillsDir = path.join(dataDir, "skills");
       fs.mkdirSync(skillsDir, { recursive: true });
       fs.writeFileSync(path.join(skillsDir, "ops-auth-skill-fixture.md"), SKILL_FIXTURE, "utf8");
-      // 前置：种一个**账号夹具**（本用例族用旧形状 token `{id:…}` 鉴权，而 `roleOfUserId(1)="admin"`）。
-      // 005_accounts 之后迁移不再种 o_user 行（旧系统的单账号是迁成 disabled 的），
-      // 但 `o_user` 表存在且有 `id` 列 ⇒ 这里显式种两行，好让"导出里含/不含 passwordHash"
-      // 有**可判别的真实数据**（不是空表断言）。
-      await db("o_user").insert({ id: ADMIN_USER, username: "ops-auth-admin", email: null, passwordHash: "", role: "admin", status: "disabled", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null }).onConflict("id").ignore();
-      await db("o_user").insert({ id: NORMAL_USER, username: "ops-auth-user", email: null, passwordHash: "", role: "user", status: "disabled", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null }).onConflict("id").ignore();
+      // 前置：种两个**账号夹具**。
+      // ⚠【Phase 1c Task 11】`status` 必须是 **active**：令牌换成新形状之后，中间件每请求
+      //   都要 `loadUserCtx()` 复核 `status`/`tokenVersion`（旧形状的"不读 DB"那条桥接已退役）
+      //   ⇒ 这里若还是 `disabled`，整片用例会以 401 假红（而失败信息指向的却是权限断言）。
+      //   `passwordHash` 留空串 ⇒ 夹具账号登不进来，只用于 JWT 鉴权；但它同时让
+      //   "导出里含/不含 passwordHash" 有**可判别的真实数据**（不是空表断言）。
+      await db("o_user").insert({ id: ADMIN_USER, username: "ops-auth-admin", email: null, passwordHash: "", role: "admin", status: "active", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null }).onConflict("id").merge();
+      await db("o_user").insert({ id: NORMAL_USER, username: "ops-auth-user", email: null, passwordHash: "", role: "user", status: "active", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null }).onConflict("id").merge();
     } finally {
       await db.destroy();
     }
@@ -259,7 +268,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
   it("② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, NORMAL_USER);
+      const token = await signAs(db, NORMAL_USER, "user");
       const before = await snapshot(db);
       expect(before.markerProject).toBe(1); // 前置：改造前这里会被破坏性接口抹掉 ⇒ 下面的快照比对就会红
 
@@ -288,7 +297,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       await db("o_project").insert({ id: MARKER_PROJECT, userId: NORMAL_USER, name: "ops-auth-marker", createTime: 3 }).onConflict("id").ignore();
       const before = await snapshot(db);
       expect(before.markerProject, "前置：marker 行必须在").toBe(1);
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
 
       const del = await request("POST", url("/api/other/deleteAllData"), { token, body: {} });
       console.log(`[ops-auth] admin 打 deleteAllData（已删除的接口）：status=${del.status} body=${del.body.slice(0, 160)}`);
@@ -308,7 +317,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       await db("o_project").insert({ id: MARKER_PROJECT, userId: NORMAL_USER, name: "ops-auth-marker", createTime: 4 }).onConflict("id").ignore();
       const before = await snapshot(db);
       expect(before, "前置：两行都要在").toMatchObject({ markerProject: 1, markerScript: 1 });
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const auditBefore = await auditCount(db, "db.clearTable");
 
       for (const ep of DESTRUCTIVE_ENDPOINTS) {
@@ -335,7 +344,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       // 种一个**可判别的** tokenKey：导出里若出现它，就是线上凭据泄露
       await db("o_setting").where("key", "tokenKey").del();
       await db("o_setting").insert({ key: "tokenKey", value: DB_SECRET });
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
 
       const info = await request("GET", url("/api/setting/dbConfig/dbInfo"), { token });
       expect(info.status, `admin 打 dbInfo 必须可达：${info.body.slice(0, 200)}`).toBe(200);
@@ -370,7 +379,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       expect(user, "前置：库里要有 o_user 行").toBeTruthy();
       await db("o_user").where("id", user.id).update({ passwordHash: HASH_MARK });
       await db("o_vendorConfig").insert({ id: "ops-auth-vendor", inputValues: JSON.stringify({ apiKey: VENDOR_SECRET }), models: "[]", enable: 0 }).onConflict("id").merge();
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
 
       const full = await request("GET", url("/api/setting/dbConfig/exportData"), { token });
       expect(full.status).toBe(200);
@@ -403,7 +412,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
     try {
       await db("o_script").insert({ id: MARKER_SCRIPT, projectId: MARKER_PROJECT, userId: NORMAL_USER, name: "ep-marker" }).onConflict("id").ignore();
       await db("o_project").insert({ id: MARKER_PROJECT, userId: NORMAL_USER, name: "ops-auth-marker", createTime: 5 }).onConflict("id").ignore();
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const before = await snapshot(db);
       expect(before, "前置：两行都要在").toMatchObject({ markerProject: 1, markerScript: 1 });
 
@@ -441,7 +450,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       await db("o_project").insert({ id: MARKER_PROJECT, userId: NORMAL_USER, name: "ops-auth-marker", createTime: 6 }).onConflict("id").ignore();
       const before = await snapshot(db);
       expect(before.markerProject).toBe(1);
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
 
       // 白名单外的表名：必须在"drop 全库"**之前**就被拒（否则库已经没了）
       const bad = await request("POST", url("/api/setting/dbConfig/importData"), { token, body: { tables: { knex_migrations: [{ a: 1 }] } } });
@@ -480,7 +489,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       expect(isExportableTable("o_user"), "o_user 必须仍是可导出表（导出侧不收窄）").toBe(true);
       expect(isExportableTable("o_vendorConfig")).toBe(true);
       expect(isExportableTable("o_setting")).toBe(true);
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
 
       for (const table of ["o_user", "o_vendorConfig", "o_setting"]) {
         const r = await request("POST", url("/api/setting/dbConfig/importData"), {
@@ -530,7 +539,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
         expect(res.status, `${ep.method} ${ep.path} 无 token 必须 401（实际 ${res.status}）`).toBe(401);
       }
       // ② 普通 token ⇒ 全 403
-      const token = await signAs(db, NORMAL_USER);
+      const token = await signAs(db, NORMAL_USER, "user");
       for (const ep of AGENT_DEPLOY_ENDPOINTS) {
         const res = await request(ep.method, url(ep.path), { token, body: ep.body });
         expect(res.status, `${ep.method} ${ep.path} 普通 token 必须 403（实际 ${res.status}）：${res.body.slice(0, 200)}`).toBe(403);
@@ -543,7 +552,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       };
       expect(after, "普通 token 的 6 次尝试必须零写入").toEqual(before);
       // ④ admin 正向对照：读接口仍可用 ⇒ 403 是"收权"，不是"接口坏了"
-      const admin = await signAs(db, ADMIN_USER);
+      const admin = await signAs(db, ADMIN_USER, "admin");
       const read1 = await request("POST", url("/api/setting/agentDeploy/getAgentDeploy"), { token: admin });
       expect(read1.status, `admin 打 getAgentDeploy 应 200：${read1.body.slice(0, 200)}`).toBe(200);
       const read2 = await request("GET", url("/api/setting/agentDeploy/getAgentUseMode"), { token: admin });
@@ -594,7 +603,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
         const noToken = await request(ep.method, url(ep.path), { body: ep.body });
         expect(noToken.status, `${ep.method} ${ep.path} 无 token 必须 401（实际 ${noToken.status}）`).toBe(401);
       }
-      const token = await signAs(db, NORMAL_USER);
+      const token = await signAs(db, NORMAL_USER, "user");
       for (const ep of VENDOR_CONFIG_ENDPOINTS) {
         const res = await request(ep.method, url(ep.path), { token, body: ep.body });
         expect(res.status, `${ep.method} ${ep.path} 普通 token 必须 403（实际 ${res.status}）：${res.body.slice(0, 200)}`).toBe(403);
@@ -606,7 +615,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       expect(after, "普通 token 的 11 次尝试必须零写入（尤其 HACKED-VENDOR-KEY 不许落库）").toEqual(before);
 
       // admin 正向对照：读端点必须**非 403**（证明 403 是收权，不是接口坏了）
-      const admin = await signAs(db, ADMIN_USER);
+      const admin = await signAs(db, ADMIN_USER, "admin");
       const list = await request("POST", url("/api/setting/vendorConfig/getVendorList"), { token: admin });
       expect(list.status, `admin 打 getVendorList 必须非 403：${list.body.slice(0, 200)}`).not.toBe(403);
       expect(list.status, `admin 打 getVendorList 必须 200：${list.body.slice(0, 200)}`).toBe(200);
@@ -635,7 +644,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
         const noToken = await request(ep.method, url(ep.path), { body: ep.body });
         expect(noToken.status, `${ep.method} ${ep.path} 无 token 必须 401（实际 ${noToken.status}）`).toBe(401);
       }
-      const token = await signAs(db, NORMAL_USER);
+      const token = await signAs(db, NORMAL_USER, "user");
       for (const ep of OTHER_ADMIN_ONLY) {
         const res = await request(ep.method, url(ep.path), { token, body: ep.body });
         expect(res.status, `${ep.method} ${ep.path} 普通 token 必须 403（实际 ${res.status}）：${res.body.slice(0, 200)}`).toBe(403);
@@ -644,7 +653,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       expect(fs.readFileSync(skillFile, "utf8"), "普通 token 的写尝试必须零副作用").toBe(SKILL_FIXTURE);
 
       // L3 / 路径白名单的反向证据：admin 传非 .md 也要 400（不是 403）
-      const admin = await signAs(db, ADMIN_USER);
+      const admin = await signAs(db, ADMIN_USER, "admin");
       const notMd = await request("POST", url("/api/setting/skillManagement/saveSkillContent"), { token: admin, body: { path: "ops-auth-skill-fixture.txt", content: "x" } });
       expect(notMd.status, `非 .md 必须 400（白名单口径），实际 ${notMd.status}：${notMd.body.slice(0, 200)}`).toBe(400);
       const escape = await request("POST", url("/api/setting/skillManagement/saveSkillContent"), { token: admin, body: { path: "../db2.sqlite", content: "x" } });

@@ -10,10 +10,9 @@
 import express from "express";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import jwt from "jsonwebtoken";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { config } from "@/config";
 import { systemDb } from "@/utils/db";
+import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import { tenantContextMiddleware } from "@/middleware/tenant";
 
 import getTaskApi from "@/routes/task/getTaskApi";
@@ -24,20 +23,33 @@ import getMemory from "@/routes/agents/getMemory";
 import getFileUrl from "@/routes/production/workbench/getFileUrl";
 import dbInfo from "@/routes/setting/dbConfig/dbInfo";
 
-const TOKEN_KEY = "http-isolation-token-key-0123456789";
+const P_A = 7001;
+const P_B = 8001;
+
 let server: http.Server;
 let base = "";
 let tokenA = "";
 let tokenB = "";
 let tokenAdmin = "";
 
-const P_A = 7001;
-const P_B = 8001;
-
-async function secret(): Promise<string> {
-  const row: any = await systemDb("o_setting").where("key", "tokenKey").first();
-  return (row && row.value) || config.jwtSecret;
-}
+/**
+ * 账号夹具（Phase 1c Task 11）。
+ *
+ * ⚠ 旧形状 `{id,name}` 令牌的 legacy 分支已退役 ⇒ **必须有 `status="active"` 的 `o_user` 行**，
+ *   否则 `loadUserCtx()` 拿不到人，整片用例会以 401 假红。角色只信库里的 `role`（A/B = user、
+ *   1 = admin），令牌里带 `tv` 且要与行里的 `tokenVersion` 相等。
+ * ⚠ 夹具行在 `afterAll` 里按 id 逐条删除：本文件用的是**共享测试库**（vitest 的 `MIWO_DATA_DIR`），
+ *   不留脏数据。`passwordHash` 为空 ⇒ 夹具账号登不进来，只用于 JWT。
+ */
+const USER_A: AuthFixtureUser = { id: 7, username: "iso-a", role: "user" };
+const USER_B: AuthFixtureUser = { id: 8, username: "iso-b", role: "user" };
+const USER_ADMIN: AuthFixtureUser = { id: 1, username: "iso-admin", role: "admin" };
+/** U4 并发用例的 20 个账号（9101..9120）。 */
+const CONC_USERS: AuthFixtureUser[] = Array.from({ length: 20 }, (_, i) => ({
+  id: 9101 + i,
+  username: `iso-conc-${9101 + i}`,
+  role: "user" as const,
+}));
 
 function req(method: string, path: string, body?: unknown, token?: string): Promise<{ status: number; text: string; json: any }> {
   return new Promise((resolve, reject) => {
@@ -78,10 +90,11 @@ const post = (p: string, body: unknown, token?: string) => req("POST", p, body, 
 const get = (p: string, token?: string) => req("GET", p, undefined, token);
 
 beforeAll(async () => {
-  const key = await secret();
-  tokenA = jwt.sign({ id: 7, name: "A" }, key, { expiresIn: "1h" });
-  tokenB = jwt.sign({ id: 8, name: "B" }, key, { expiresIn: "1h" });
-  tokenAdmin = jwt.sign({ id: 1, name: "admin" }, key, { expiresIn: "1h" });
+  // 账号夹具先落地：令牌每请求都要在库里查得到人（Phase 1c Task 11）
+  await seedAuthUsers(systemDb, [USER_A, USER_B, USER_ADMIN]);
+  tokenA = await mintAccess(USER_A);
+  tokenB = await mintAccess(USER_B);
+  tokenAdmin = await mintAccess(USER_ADMIN);
 
   // 夹具（幂等：onConflict.merge）—— A=7 → project 7001；B=8 → project 8001
   await systemDb("o_project").insert([
@@ -148,6 +161,8 @@ afterAll(async () => {
   await systemDb("o_tasks").whereIn("id", [7002, 8002]).del();
   await systemDb("o_project").whereIn("id", [P_A, P_B]).del();
   await systemDb("memories").whereIn("id", ["iso-ha", "iso-hb"]).del();
+  // 账号夹具逐条清理（Phase 1c Task 11）：共享测试库不留脏数据
+  await removeAuthUsers(systemDb, [USER_A.id, USER_B.id, USER_ADMIN.id, ...CONC_USERS.map((u) => u.id)]);
 });
 
 describe("HTTP 跨租户（spec §12.2 T1 的端到端部分）", () => {
@@ -236,10 +251,13 @@ describe("HTTP 跨租户（spec §12.2 T1 的端到端部分）", () => {
    * 只有并发才暴露串号 ⇒ 这条是"隔离在并发下成立"的等价证据。
    */
   it("★ U4 并发：20 个不同 userId 同时打（Promise.all），每个响应只含自己的数据", async () => {
-    const key = await secret();
     const USERS = Array.from({ length: 20 }, (_, i) => 9101 + i);
     const PROJECT_OF = (u: number) => u + 100; // 9201..9220
     const TASK_OF = (u: number) => u + 200; // 9301..9320
+    // 账号夹具：新形状令牌每请求读库（Phase 1c Task 11）
+    await seedAuthUsers(systemDb, CONC_USERS);
+    const tokenOf = new Map<number, string>();
+    for (const u of CONC_USERS) tokenOf.set(u.id, await mintAccess(u));
     await systemDb("o_project")
       .insert(USERS.map((u) => ({ id: PROJECT_OF(u), userId: u, name: `conc-${u}`, createTime: 1 })))
       .onConflict("id")
@@ -251,7 +269,7 @@ describe("HTTP 跨租户（spec §12.2 T1 的端到端部分）", () => {
     try {
       const results = await Promise.all(
         USERS.map(async (u) => {
-          const token = jwt.sign({ id: u, name: `conc-${u}` }, key, { expiresIn: "1h" });
+          const token = tokenOf.get(u)!;
           const [projects, tasks] = await Promise.all([
             post("/api/project/getProject", {}, token),
             post("/api/task/getTaskApi", { page: 1, limit: 100 }, token),

@@ -27,7 +27,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import jwt from "jsonwebtoken";
+import { signToken } from "@/auth/tokens";
 import type { Knex } from "knex";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createKnex } from "@/db/connect";
@@ -168,11 +168,17 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
 
   const url = (p: string): string => `http://127.0.0.1:${port}${p}`;
 
-  /** 旧形状 `{id:N}` 令牌（`roleOfUserId(1)==="admin"`、其余为 user）—— 与 Task 4 的矩阵同口径。 */
-  async function signAs(db: Knex, userId: number): Promise<string> {
+  /**
+   * **新形状** access 令牌（Phase 1c Task 11）。
+   *
+   * ⚠ 旧形状 `{id:N}`（靠 `roleOfUserId(1)==="admin"` 桥接角色）已随 legacy 分支整体退役：
+   *   它**不读 DB** ⇒ 停用账号照样是 admin，这正是 Task 11 要堵的洞。现在角色只信库里的
+   *   `o_user.role`，令牌里带 `tv` 还要与库里的 `tokenVersion` 相等。
+   */
+  async function signAs(db: Knex, userId: number, role: "user" | "admin"): Promise<string> {
     const row: any = await db("o_setting").where("key", "tokenKey").first();
     const secret = (row && row.value) || CONFIG_SECRET;
-    return (jwt.sign as any)({ id: userId, name: `vs-${userId}` }, secret, { expiresIn: "180Days" });
+    return signToken({ uid: userId, role, tv: 0, typ: "access" }, secret);
   }
 
   beforeAll(async () => {
@@ -265,15 +271,16 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
 
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      // 账号夹具：旧形状令牌靠 `roleOfUserId`（id===1 ⇒ admin）
+      // 账号夹具：新形状令牌每请求读 `o_user` 复核 role/status/tokenVersion ⇒ 必须 active
+      //（旧形状靠 `roleOfUserId`（id===1 ⇒ admin）桥接，那条路已随 legacy 分支退役）。
       await db("o_user")
-        .insert({ id: ADMIN_USER, username: "vs-admin", email: null, passwordHash: "", role: "admin", status: "disabled", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null })
+        .insert({ id: ADMIN_USER, username: "vs-admin", email: null, passwordHash: "", role: "admin", status: "active", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null })
         .onConflict("id")
-        .ignore();
+        .merge();
       await db("o_user")
-        .insert({ id: NORMAL_USER, username: "vs-user", email: null, passwordHash: "", role: "user", status: "disabled", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null })
+        .insert({ id: NORMAL_USER, username: "vs-user", email: null, passwordHash: "", role: "user", status: "active", tokenVersion: 0, mustChangePassword: 0, createdAt: Date.now(), lastLoginAt: null })
         .onConflict("id")
-        .ignore();
+        .merge();
       // ★ 关键夹具：一个**带明文 key 的行**（判据 A 的红端就靠它）
       await db("o_vendorConfig")
         .insert({
@@ -304,7 +311,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ A1 admin 打 getVendorList：响应体**不含**明文 key（改前含）、不含 code 字段", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const res = await request("POST", url("/api/setting/vendorConfig/getVendorList"), { token });
       expect(res.status, `admin 打 getVendorList 必须 200：${res.body.slice(0, 200)}`).toBe(200);
 
@@ -339,7 +346,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ A2 `updateVendorInputs`（admin）响应**不回显** key，但库里真的写进去了 + 落审计", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const NEW_KEY = "sk-vendor-secrets-UPDATED-9876543210";
       const auditBefore = await auditCount(db, "setting.vendor.inputs.update", "miwo");
       const res = await request("POST", url("/api/setting/vendorConfig/updateVendorInputs"), {
@@ -361,7 +368,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ A3 普通用户打 getVendorList ⇒ **403**（与 Task 4 的矩阵互为印证，且响应里没有 key）", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, NORMAL_USER);
+      const token = await signAs(db, NORMAL_USER, "user");
       const res = await request("POST", url("/api/setting/vendorConfig/getVendorList"), { token });
       expect(res.status, `普通用户必须 403（实际 ${res.status}）：${res.body.slice(0, 200)}`).toBe(403);
       expect(res.body, "被拒的响应里同样不能有凭据").not.toContain(FAKE_KEY);
@@ -375,7 +382,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ B1 旧的三个接口 ⇒ **404**（addVendor / updateCode / getCodeByLink），连 admin 也是 404", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const before = listFiles(dataDir);
       const CASES: Array<{ p: string; body: unknown; why: string }> = [
         { p: "/api/setting/vendorConfig/addVendor", body: { tsCode: "export default {};" }, why: "提交新适配器源码" },
@@ -404,7 +411,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ C1 五种越界 id（`../` / 反斜杠 / 绝对路径 / UNC / 大小写）**全被拒（400）**，且目标外文件原封不动", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const probeInVendor = path.join(dataDir, "vendor", PROBE_FILE);
       const probeOutside = path.join(dataDir, PROBE_FILE);
 
@@ -447,7 +454,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ C1b 符号链接：`deleteVendor` **不做任何文件操作**（静态 + 行为双证据），故链接目标绝不会被动", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const probeOutside = path.join(dataDir, PROBE_FILE);
       const linkName = "vs-link";
       const linkPath = path.join(dataDir, "vendor", linkName);
@@ -484,7 +491,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ C2 合法 id ⇒ 200、DB 行消失、`o_agentDeploy` 的 vendorId/model 置空 + 落审计", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       // ⚠ 夹具在**本用例内部**重建：C1b 会删一个合法形状的 id（`vs-link`），而"两次都删同一行"
       //   会让 C2 的前置断言变成"夹具必须还在"这种脆弱写法。这里自己 upsert，用例之间不共享状态。
       await db("o_vendorConfig").insert({ id: MARKER_VENDOR, inputValues: "{}", models: "[]", enable: 0 }).onConflict("id").merge();
@@ -529,7 +536,7 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
   it("★ E1 新路径的失败响应里没有绝对路径 / 表名 / 堆栈", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {
-      const token = await signAs(db, ADMIN_USER);
+      const token = await signAs(db, ADMIN_USER, "admin");
       const replies: Array<{ name: string; r: Reply }> = [];
       replies.push({ name: "deleteVendor 越界 id", r: await request("POST", url("/api/setting/vendorConfig/deleteVendor"), { token, body: { id: "../x" } }) });
       // 未知供应商 + 合法形状 id：走 DB 分支（不抛）

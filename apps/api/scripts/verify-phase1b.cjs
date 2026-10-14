@@ -16,6 +16,11 @@
  * ⚠ 空转护栏（Lead 的重点）：本脚本所有"跨租户读为空"的断言在"库是空的/应用是坏的"时也会通过。
  *   所以 A 组最后做一次**直接读库**的夹具计数：`fixtureRows < 11` ⇒ 报"空转"并 exit 1；
  *   且 C 组的每组都带一条"自己的数据看得见"的正向对照。
+ *
+ * ⚠【Phase 1c Task 11】令牌形状：原来是旧形状 `{id,name}`（靠 `roleOfUserId` 桥接角色），
+ *   Task 11 已把 legacy 分支整体退役 ⇒ 现在签**新形状** `{uid,role,tv,typ:"access"}`。
+ *   它能通过的前提是 `seed-tenant-fixture.ts` 种下的 `o_user` 夹具行是 `status="active"` 且
+ *   `tokenVersion=0`（该脚本本来就是这么种的）—— 中间件每请求会 `loadUserCtx()` 复核这两列。
  */
 const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
@@ -192,9 +197,9 @@ async function main() {
     return finish();
   }
 
-  const tokenA = jwt.sign({ id: 7, name: "a" }, TOKEN_KEY, { expiresIn: "1h" });
-  const tokenB = jwt.sign({ id: 8, name: "b" }, TOKEN_KEY, { expiresIn: "1h" });
-  const tokenAdmin = jwt.sign({ id: 1, name: "admin" }, TOKEN_KEY, { expiresIn: "1h" });
+  const tokenA = jwt.sign({ uid: 7, role: "user", tv: 0, typ: "access", jti: "p1b-a" }, TOKEN_KEY, { expiresIn: "1h" });
+  const tokenB = jwt.sign({ uid: 8, role: "user", tv: 0, typ: "access", jti: "p1b-b" }, TOKEN_KEY, { expiresIn: "1h" });
+  const tokenAdmin = jwt.sign({ uid: 1, role: "admin", tv: 0, typ: "access", jti: "p1b-admin" }, TOKEN_KEY, { expiresIn: "1h" });
 
   // ---------- B：鉴权仍在 ----------
   const noToken = await request("POST", "/api/task/getTaskApi", { page: 1, limit: 10 });

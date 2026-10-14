@@ -21,10 +21,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
-import jwt from "jsonwebtoken";
 import morgan from "morgan";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { config } from "@/config";
+import { dbReady, systemDb } from "@/utils/db";
+import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import { mountStaticAssets } from "@/app";
 import { optionalMediaAuth } from "@/middleware/auth";
 import {
@@ -42,6 +43,19 @@ import u from "@/utils";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-media-sign-"));
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
+
+/**
+ * "带 Bearer 取媒体"那条用例的**账号夹具**（Phase 1c Task 11）。
+ *
+ * ⚠ 为什么必须在**共享测试库**里种这一行：`optionalMediaAuth` 有 `Authorization` 头时会把请求交给
+ *   `authenticate`，而新形状令牌**每请求**都要 `loadUserCtx()` 复核 `status`/`tokenVersion`
+ *   —— 没有这一行 ⇒ 一律 401（旧形状的"不读 DB"桥接已退役）。
+ *   夹具账号 `passwordHash` 为空 ⇒ 登不进来，只用于 JWT。
+ */
+const BEARER_FIXTURE: AuthFixtureUser = { id: 7, username: "media-sign-bearer", role: "user" };
+afterAll(async () => {
+  await removeAuthUsers(systemDb, [BEARER_FIXTURE.id]);
+});
 
 const ROUTES_DIR = path.join(__dirname, "..", "src", "routes");
 
@@ -536,8 +550,11 @@ describe("ms 9-13. 守卫与静态资源：真 HTTP 两端", () => {
         app.use("/assets", optionalMediaAuth);
         mountStaticAssets(app, () => undefined);
       };
-      // 与 1b 的 e2e 同形状的旧 token（`{id,name}`，无 typ）—— `authenticate` 的 legacy 分支认它。
-      const bearer = `Bearer ${jwt.sign({ id: 7, name: "u7" }, config.jwtSecret, { expiresIn: "1h" })}`;
+      // Phase 1c Task 11：旧形状 `{id,name}` 令牌已随 legacy 分支退役（它不读 DB）。
+      // 现在用**生产路径的形状**：库里一行 active 的 `o_user` + 新形状 access（`tv` 与行里的相等）。
+      await dbReady;
+      await seedAuthUsers(systemDb, [BEARER_FIXTURE]);
+      const bearer = `Bearer ${await mintAccess(BEARER_FIXTURE)}`;
 
       const ossOk = await serveAndFetch(build, { path: "/oss/bearer.bin", headers: { authorization: bearer } });
       expect(ossOk.status, "★ 带 Bearer + **无签名** 取 /oss ⇒ 200（这就是 Task 10 修好的那一端）").toBe(200);

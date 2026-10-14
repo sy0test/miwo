@@ -24,10 +24,22 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { config } from "@/config";
 import { currentTenant, runWithTenant } from "@/db/tenant-context";
 import { systemDb } from "@/utils/db";
+import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import { tenantContextMiddleware, requireAdmin, tenantErrorHandler } from "@/middleware/tenant";
 import { TenantIsolationError } from "@/db/tenant-guard";
 
 const TOKEN_KEY = "test-token-key-for-tenant-middleware";
+
+/**
+ * 账号夹具（Phase 1c Task 11）。
+ *
+ * ⚠ 旧形状 `{id,name}` 令牌的 legacy 分支已退役（`middleware/auth.ts`）：它**不读 DB**，
+ *   所以 `roleOfUserId(1)==="admin"` 这条桥接让"任何用当前密钥签的 `{id:1}` 旧令牌"都是管理员，
+ *   且 005 把旧账号迁成 `status="disabled"` 的封禁对它不生效。现在 ctx 的 role 只来自
+ *   `o_user.role`，`status`/`tokenVersion` 每请求复核 ⇒ 夹具必须落到库里。
+ */
+const CTX_USER_7: AuthFixtureUser = { id: 7, username: "ctx-7", role: "user" };
+const CTX_ADMIN_1: AuthFixtureUser = { id: 1, username: "ctx-admin", role: "admin" };
 
 /** 极简 req/res 假件：既能单测中间件，也不需要真起 HTTP（真起 HTTP 在 Task 9 的 verify-phase1b 里）。 */
 function fakeReq(over: Record<string, any> = {}) {
@@ -48,16 +60,18 @@ beforeAll(async () => {
   const row: any = await systemDb("o_setting").where("key", "tokenKey").select("value").first();
   originalTokenKey = row?.value;
   await systemDb("o_setting").insert({ key: "tokenKey", value: TOKEN_KEY }).onConflict("key").merge();
+  await seedAuthUsers(systemDb, [CTX_USER_7, CTX_ADMIN_1]);
 });
 
 afterAll(async () => {
   if (originalTokenKey === undefined) await systemDb("o_setting").where("key", "tokenKey").del();
   else await systemDb("o_setting").where("key", "tokenKey").update({ value: originalTokenKey });
+  await removeAuthUsers(systemDb, [CTX_USER_7.id, CTX_ADMIN_1.id]);
 });
 
 describe("HTTP 租户上下文中间件（spec §6.4）", () => {
   it("合法 token → ctx 在下游可见（含 await 之后），且带 userId / role / requestId / source", async () => {
-    const token = jwt.sign({ id: 7, name: "u7" }, TOKEN_KEY, { expiresIn: "1h" });
+    const token = await mintAccess(CTX_USER_7);
     const req = fakeReq({ headers: { authorization: `Bearer ${token}` } });
     const res = fakeRes();
     let seen: any = null;
@@ -74,11 +88,22 @@ describe("HTTP 租户上下文中间件（spec §6.4）", () => {
     expect((req as any).user).toMatchObject({ id: 7 });   // spec §6.4：保留 req.user（**当前全仓 0 个消费者**；消费方归 Phase 1c）
   });
 
-  it("admin 桥接：id=1 → role=admin（走 roleOfUserId，不是硬编码）", async () => {
-    const token = jwt.sign({ id: 1, name: "admin" }, TOKEN_KEY, { expiresIn: "1h" });
+  it("admin 判定**只信库里的 role**（令牌里的 role 只是提示；不再由 roleOfUserId 按 id 猜）", async () => {
+    const token = await mintAccess(CTX_ADMIN_1);
     let seen: any = null;
     await tenantContextMiddleware(fakeReq({ headers: { authorization: `Bearer ${token}` } }), fakeRes(), () => { seen = currentTenant(); });
     expect(seen?.role).toBe("admin");
+    // 反向对照：把同一行的 role 改成 user ⇒ 同一个 id（=1）必须**不再**是 admin
+    //（旧实现里 `roleOfUserId(1)="admin"` 是硬编码的，这条对照当场会红）
+    await systemDb("o_user").where("id", CTX_ADMIN_1.id).update({ role: "user" });
+    try {
+      const demoted = await mintAccess({ ...CTX_ADMIN_1, role: "user" });
+      let seen2: any = null;
+      await tenantContextMiddleware(fakeReq({ headers: { authorization: `Bearer ${demoted}` } }), fakeRes(), () => { seen2 = currentTenant(); });
+      expect(seen2, "库里 role=user ⇒ ctx.role 必须是 user（授权不信令牌/不信 id）").toMatchObject({ userId: 1, role: "user" });
+    } finally {
+      await systemDb("o_user").where("id", CTX_ADMIN_1.id).update({ role: "admin" });
+    }
   });
 
   it("无 token / 坏 token / token 里没有 id → 401，且**不建立 ctx**", async () => {
@@ -104,7 +129,7 @@ describe("HTTP 租户上下文中间件（spec §6.4）", () => {
     await systemDb("o_setting").where("key", "tokenKey").del();
     let fallbackCtx: any = null;
     await tenantContextMiddleware(
-      fakeReq({ headers: { authorization: `Bearer ${jwt.sign({ id: 7, name: "u7" }, config.jwtSecret, { expiresIn: "1h" })}` } }),
+      fakeReq({ headers: { authorization: `Bearer ${await mintAccess(CTX_USER_7, config.jwtSecret)}` } }),
       fakeRes(),
       () => { fallbackCtx = currentTenant(); },
     );
@@ -113,7 +138,7 @@ describe("HTTP 租户上下文中间件（spec §6.4）", () => {
     // 而不是"任意 token 都能过"。
     const res = fakeRes();
     await tenantContextMiddleware(
-      fakeReq({ headers: { authorization: `Bearer ${jwt.sign({ id: 7, name: "u7" }, TOKEN_KEY, { expiresIn: "1h" })}` } }),
+      fakeReq({ headers: { authorization: `Bearer ${await mintAccess(CTX_USER_7, TOKEN_KEY)}` } }),
       res,
       () => {},
     );

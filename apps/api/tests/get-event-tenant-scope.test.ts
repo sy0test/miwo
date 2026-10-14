@@ -18,11 +18,11 @@
  */
 import express from "express";
 import http from "node:http";
-import jwt from "jsonwebtoken";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Knex } from "knex";
 import { config } from "@/config";
 import { createKnex } from "@/db/connect";
+import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import { tenantContextMiddleware } from "@/middleware/tenant";
 import getEvent from "@/routes/novel/event/getEvent";
 
@@ -41,10 +41,14 @@ let db: Knex;
 let server: http.Server;
 let port = 0;
 
-function sign(userId: number, secret: string): string {
-  return (jwt.sign as any)({ id: userId, name: `get-event-${userId}` }, secret, { expiresIn: "180Days" });
-}
-
+/**
+ * 账号夹具（Phase 1c Task 11）。
+ *
+ * ⚠ 旧形状 `{id,name}` 令牌的 legacy 分支已退役 ⇒ 库里必须有 `status="active"` 的 `o_user` 行
+ *   （`loadUserCtx()` 每请求复核 role/status/tokenVersion），否则整片用例以 401 假红。
+ */
+const OWNER_USER: AuthFixtureUser = { id: OWNER, username: "get-event-owner", role: "user" };
+const STRANGER_USER: AuthFixtureUser = { id: STRANGER, username: "get-event-stranger", role: "user" };
 function post(token: string, body: unknown): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const data = Buffer.from(JSON.stringify(body));
@@ -79,6 +83,7 @@ function payload(body: string): any {
 describe("getEvent 的租户可读范围（真中间件 + 真守卫 + 真 HTTP）", () => {
   beforeAll(async () => {
     db = createKnex(config);
+    await seedAuthUsers(db, [OWNER_USER, STRANGER_USER]);
     // 两个租户各一套：项目 → 小说(两章) → 事件 → 事件-章节关联
     await db("o_project").insert([
       { id: P_OWN, userId: OWNER, name: "own", createTime: 1 },
@@ -118,17 +123,12 @@ describe("getEvent 的租户可读范围（真中间件 + 真守卫 + 真 HTTP�
     await db("o_event").whereIn("id", [E_OWN, E_OTHER]).del();
     await db("o_novel").whereIn("id", [N_OWN_A, N_OWN_B, N_OTHER]).del();
     await db("o_project").whereIn("id", [P_OWN, P_OTHER]).del();
+    await removeAuthUsers(db, [OWNER_USER.id, STRANGER_USER.id]);
     await db.destroy();
   });
 
-  /** 中间件优先用库里的 tokenKey（没有才回退配置密钥）——测试与它保持一致，否则全是 401。 */
-  async function secretOf(): Promise<string> {
-    const row: any = await db("o_setting").where("key", "tokenKey").first();
-    return (row && row.value) || config.jwtSecret;
-  }
-
   it("① 本租户项目：看得到自己的事件、看不到别人的（含 GROUP_CONCAT 聚合）", async () => {
-    const token = sign(OWNER, await secretOf());
+    const token = await mintAccess(OWNER_USER);
     const res = await post(token, { projectId: P_OWN, page: 1, limit: 10 });
     expect(res.status, `本租户查询应 200：${res.body.slice(0, 300)}`).toBe(200);
     const data = payload(res.body);
@@ -140,7 +140,7 @@ describe("getEvent 的租户可读范围（真中间件 + 真守卫 + 真 HTTP�
   }, 60000);
 
   it("② 别人的项目 id：一行都看不到（改前这里会返回 OTHER-EVENT）", async () => {
-    const token = sign(OWNER, await secretOf());
+    const token = await mintAccess(OWNER_USER);
     const res = await post(token, { projectId: P_OTHER, page: 1, limit: 10 });
     expect(res.status, `跨租户查询不该 500（守卫应把它过滤成空集）：${res.body.slice(0, 300)}`).toBe(200);
     const data = payload(res.body);
@@ -150,7 +150,7 @@ describe("getEvent 的租户可读范围（真中间件 + 真守卫 + 真 HTTP�
   }, 60000);
 
   it("②b 反向对照：陌生人拿**我的**项目 id 也看不到（证明不是'只有 7 号被特殊对待'）", async () => {
-    const token = sign(STRANGER, await secretOf());
+    const token = await mintAccess(STRANGER_USER);
     const res = await post(token, { projectId: P_OWN, page: 1, limit: 10 });
     expect(res.status).toBe(200);
     const data = payload(res.body);

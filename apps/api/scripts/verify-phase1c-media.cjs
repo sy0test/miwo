@@ -111,21 +111,59 @@ const query = (rel, ttlSec = DEFAULT_TTL_SEC) => {
 };
 
 /**
- * 手搓一个 HS256 的**旧形状** JWT（`{id,name}`，无 `typ`）—— 给 D 组"带 Bearer 取媒体"那条用。
+ * 手搓一个 HS256 的**新形状** access JWT（`{uid,role,tv,typ:"access"}`）—— 给 D 组"带 Bearer 取媒体"那条用。
  *
  * ⚠ 为什么不用 `jsonwebtoken`：本脚本是 `apps/api/scripts/` 下的 `.cjs`，而 `jsonwebtoken` 在
  *   `apps/api/node_modules` 里（能解析到），但**少一个依赖就少一处"脚本自己坏了"的可能**；
- *   而旧形状的载荷就是两个字段，HS256 就是 base64url(header).base64url(payload).base64url(HMAC)。
- *   ⚠ 载荷**必须没有 `typ`/`tv`**：`verifyLegacyToken` 的判据是"**恰好**是旧形状才认"
- *   （有 `typ` 就走新路径 ⇒ 新路径要查 DB 复核 tokenVersion ⇒ 这条 e2e 不再是"只测鉴权开关"）。
- *   `authenticate` 的 legacy 分支会把 userId 经 `roleOfUserId` 桥接成 role，不读 DB 的 tokenVersion。
+ *   而载荷就是几个字段，HS256 就是 base64url(header).base64url(payload).base64url(HMAC)。
+ * ⚠【Phase 1c Task 11】载荷**必须**是新形状：旧形状（`{id,name}`，无 `typ`/`tv`）的 legacy 分支
+ *   已整体退役 —— 它**不读 DB**，于是 `roleOfUserId(1)="admin"` 让任何旧令牌都是管理员、
+ *   被停用的账号也照样有效。现在这条链要 `loadUserCtx()` 读库 ⇒ 本脚本起完应用后必须
+ *   **种一行 active 的 `o_user`**（见 `seedBearerUser()`），且 `tv` 与那行的 `tokenVersion` 相等。
  */
-function legacyBearerJwt(userId, name, secret) {
+function accessBearerJwt(userId, role, secret, tv = 0) {
   const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
   const head = b64({ alg: "HS256", typ: "JWT" });
-  const body = b64({ id: userId, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 });
+  const now = Math.floor(Date.now() / 1000);
+  const body = b64({ uid: userId, role, tv, typ: "access", jti: "p1c-media-bearer", iat: now, exp: now + 3600 });
   const sig = crypto.createHmac("sha256", secret).update(`${head}.${body}`).digest("base64url");
   return `${head}.${body}.${sig}`;
+}
+
+/**
+ * 种下 D-② 要用的账号夹具（`o_user` 里一行 `status="active"` / `tokenVersion=0`）。
+ *
+ * ⚠ 必须在应用就绪**之后**做：`o_user` 表是应用启动时跑迁移建出来的（本脚本自己不跑迁移）。
+ * ⚠ 用 better-sqlite3 直连那个一次性库（`MIWO_DATA_DIR/db2.sqlite`），带重试：应用进程自己也在
+ *   写这个库（审计/登录计数），偶发 `SQLITE_BUSY` 不该让整条验收红。
+ */
+function seedBearerUser(userId, username) {
+  const Database = require(path.join(API_ROOT, "node_modules", "better-sqlite3"));
+  const file = path.join(DATA_DIR, "db2.sqlite");
+  let lastErr = null;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let db = null;
+    try {
+      db = new Database(file, { timeout: 5000 });
+      const row = db.prepare("SELECT id FROM o_user WHERE id = ?").get(userId);
+      if (row) db.prepare("UPDATE o_user SET username=?, role=?, status='active', tokenVersion=0 WHERE id=?").run(username, "user", userId);
+      else
+        db
+          .prepare(
+            "INSERT INTO o_user (id, username, email, passwordHash, role, status, tokenVersion, mustChangePassword, createdAt, lastLoginAt) VALUES (?,?,?,?,?,?,?,?,?,?)",
+          )
+          .run(userId, username, null, "", "user", "active", 0, 0, 1, null);
+      return true;
+    } catch (err) {
+      lastErr = err;
+    } finally {
+      if (db) db.close();
+    }
+    // 忙等一小会儿再重试（同步 sleep：本脚本本来就是顺序执行的验收脚本）
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  }
+  console.error("[verify-phase1c-media] 种账号夹具失败：", String(lastErr));
+  return false;
 }
 
 // ---------- HTTP ----------
@@ -502,7 +540,16 @@ async function main() {
     // 现在：`/oss`、`/assets` 之前挂了 `optionalMediaAuth`（有 Authorization 就建 ctx，没有就 next()）。
     // ⚠ 两端都必须有：带 Bearer **无签名** ⇒ 200；无 Bearer **无签名** ⇒ 403。
     //   只测 200 的话，"守卫整个失效"也会绿；只测 403 的话，这条修复本身测不到。
-    const bearer = `Bearer ${legacyBearerJwt(7, "u7", SECRET)}`;
+    // ⚠【Phase 1c Task 11】Bearer 换成**新形状**令牌 + 先种一行 active 的 `o_user`
+    //   （旧形状的 legacy 分支已退役 ⇒ 旧令牌现在是 401，不再是 200）。
+    const bearerUserSeeded = seedBearerUser(7, "p1c-media-bearer");
+    record(
+      "D",
+      "★ 前置：D-② 的账号夹具（`o_user` id=7 / status=active / tokenVersion=0）真的落库了（否则下面是空断言）",
+      bearerUserSeeded,
+      bearerUserSeeded ? "o_user#7 已就位" : "种账号夹具失败",
+    );
+    const bearer = `Bearer ${accessBearerJwt(7, "user", SECRET)}`;
     const ossBearer = await request(PORT, "GET", "/oss/u7/own.bin", { Authorization: bearer });
     const assetsBearer = await request(PORT, "GET", "/assets/ending.bin", { Authorization: bearer });
     record(

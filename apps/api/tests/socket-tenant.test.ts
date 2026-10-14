@@ -27,6 +27,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { config } from "@/config";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
 import { systemDb } from "@/utils/db";
+import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import u from "@/utils";
 import { bindSocketTenant, buildIsolationKey, decodeSocketToken, resolveOwnedProject, resolveOwnedScript } from "@/socket/tenant";
 import { tenantContextMiddleware, tenantErrorHandler } from "@/middleware/tenant";
@@ -52,7 +53,20 @@ const MEM_SCRIPT_ID = "sock-mem-script-key-1";
 
 const ctx7: TenantCtx = { userId: 7, role: "user", requestId: "r", source: "socket" };
 const ctx8: TenantCtx = { userId: 8, role: "user", requestId: "r", source: "socket" };
-const token7 = () => `Bearer ${jwt.sign({ id: 7, name: "u7" }, TOKEN_KEY, { expiresIn: "1h" })}`;
+
+/**
+ * 账号夹具（Phase 1c Task 11）。
+ *
+ * ⚠ 旧形状 `{id,name}` 令牌（靠 `roleOfUserId` 桥接角色）已随 legacy 分支退役：它**不读 DB**
+ *   ⇒ 被停用的账号照样能连、`{id:1}` 恒为 admin。现在两侧（HTTP 与 socket）都只信库里的
+ *   `o_user.role`/`status`/`tokenVersion`，所以夹具换成"active 账号 + 新形状令牌"。
+ */
+const SOCK_USER_7: AuthFixtureUser = { id: 7, username: "sock-7", role: "user" };
+const SOCK_USER_8: AuthFixtureUser = { id: 8, username: "sock-8", role: "user" };
+const SOCK_ADMIN_1: AuthFixtureUser = { id: 1, username: "sock-admin", role: "admin" };
+/** `beforeAll` 里预生成（令牌每请求现查库，但本文件多处同步取用 ⇒ 预生成避免把调用点改成 async）。 */
+let bearer7 = "";
+const token7 = () => bearer7;
 
 /** 假 socket：记录 on() 注册的 handler，之后手工 emit（不需要真起 socket.io 服务）。 */
 function fakeSocket(auth: Record<string, any> = {}, id = "s-1") {
@@ -115,6 +129,8 @@ beforeAll(async () => {
   const row: any = await systemDb("o_setting").where("key", "tokenKey").select("value").first();
   originalTokenKey = row?.value;
   await systemDb("o_setting").insert({ key: "tokenKey", value: TOKEN_KEY }).onConflict("key").merge();
+  await seedAuthUsers(systemDb, [SOCK_USER_7, SOCK_USER_8, SOCK_ADMIN_1]);
+  bearer7 = `Bearer ${await mintAccess(SOCK_USER_7)}`;
   await systemDb("o_project")
     .insert([
       { id: OWN_PROJECT, userId: 7, name: "socket-own", createTime: 1 },
@@ -143,6 +159,7 @@ afterAll(async () => {
   await systemDb("memories").where("isolationKey", "like", "7:97005:%").del();
   if (originalTokenKey === undefined) await systemDb("o_setting").where("key", "tokenKey").del();
   else await systemDb("o_setting").where("key", "tokenKey").update({ value: originalTokenKey });
+  await removeAuthUsers(systemDb, [SOCK_USER_7.id, SOCK_USER_8.id, SOCK_ADMIN_1.id]);
 });
 
 describe("A. socket 租户上下文单元（spec §6.4 / Ruling 220）", () => {
@@ -152,22 +169,29 @@ describe("A. socket 租户上下文单元（spec §6.4 / Ruling 220）", () => {
     expect(ctx?.role).toBe("user");
     expect(ctx?.source).toBe("socket");
     expect(typeof ctx?.requestId).toBe("string");
-    expect((await decodeSocketToken(`Bearer ${jwt.sign({ id: 1 }, TOKEN_KEY)}`))?.role).toBe("admin");
+    // admin 也**只信库里的 role**（Phase 1c Task 11：旧形状靠 `roleOfUserId(1)` 桥接，
+    // 于是任何旧令牌都能装 admin；现在令牌里的 `role` 只是提示，判定看 `o_user.role`）。
+    const adminBearer = `Bearer ${await mintAccess(SOCK_ADMIN_1)}`;
+    const adminCtx = await decodeSocketToken(adminBearer);
+    expect(adminCtx?.userId).toBe(1);
+    expect(adminCtx?.role).toBe("admin");
     expect(await decodeSocketToken("Bearer garbage")).toBeNull();
+    // 形状不对（缺 `uid`/`tv`/`typ`）与非法 id 一律拒（新形状的载荷校验会先拦下来）
     expect(await decodeSocketToken(`Bearer ${jwt.sign({ name: "x" }, TOKEN_KEY)}`)).toBeNull();
-    expect(await decodeSocketToken(`Bearer ${jwt.sign({ id: -1 }, TOKEN_KEY)}`)).toBeNull();
+    expect(await decodeSocketToken(`Bearer ${jwt.sign({ id: -1, name: "x" }, TOKEN_KEY)}`)).toBeNull();
     expect(await decodeSocketToken(undefined)).toBeNull();
   });
 
   it("★ 密钥优先级（D1 对齐，Ruling 220 #3）：库里没有 tokenKey → 回退 config.jwtSecret；原库值签的 token 被拒", async () => {
     await systemDb("o_setting").where("key", "tokenKey").del();
     try {
-      const viaConfig = await decodeSocketToken(`Bearer ${jwt.sign({ id: 7, name: "u7" }, config.jwtSecret, { expiresIn: "1h" })}`);
+      // 令牌形状与生产一致（新形状）；被测对象仍是"**哪个密钥**能验签"
+      const viaConfig = await decodeSocketToken(`Bearer ${await mintAccess(SOCK_USER_7, config.jwtSecret)}`);
       expect(viaConfig?.userId).toBe(7);
       expect(viaConfig?.source).toBe("socket");
       // 判别力：库里那行被删掉后，**原库值**签的 token 必须被拒 —— 证明"库值真的被读走了"，
       // 而不是"任意密钥都能过"。
-      expect(await decodeSocketToken(`Bearer ${jwt.sign({ id: 7, name: "u7" }, TOKEN_KEY, { expiresIn: "1h" })}`)).toBeNull();
+      expect(await decodeSocketToken(`Bearer ${await mintAccess(SOCK_USER_7, TOKEN_KEY)}`)).toBeNull();
     } finally {
       await systemDb("o_setting").insert({ key: "tokenKey", value: TOKEN_KEY }).onConflict("key").merge();
     }
