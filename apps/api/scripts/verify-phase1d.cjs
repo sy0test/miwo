@@ -277,8 +277,18 @@ function groupE() {
     ? pass("E", "E3 单测全绿", `${m[1]} passed${m[2] ? ` | ${m[2]} skipped` : ""}，0 failed`)
     : fail("E", "E3 单测全绿", `exit=${t.status} failed=${failed}${m ? ` passed=${m[1]}` : "（计数观测不到）"}`);
 
+  // ⚠ 必须**直跑 `node <脚本>`**，不要 `spawnSync("pnpm.cmd", …)`：Windows 上 `.cmd` 是壳脚本，
+  //   `shell: false` 起不来（实测 `EXIT null` = 进程根本没起来）+ `shell: true` 会引入 DEP0190 与参数拼接坑。
+  //   命令直接从根 package.json 的 scripts 里解析（单一来源，不手抄第二份）。
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   for (const s of ["verify:phase0", "verify:phase1a", "verify:phase1b", "verify:phase1c", "verify:phase1c-media", "verify:build"]) {
-    const r = run(process.platform === "win32" ? "pnpm.cmd" : "pnpm", ["run", s], { timeout: 1_800_000 });
+    const cmd = String((rootPkg.scripts || {})[s] || "");
+    const m = /^node\s+(.+)$/.exec(cmd);
+    if (!m) {
+      fail("E", `E4 ${s}`, `package.json 里的 script 不是 \`node …\` 形式：${cmd}`);
+      continue;
+    }
+    const r = run(process.execPath, m[1].split(" ").filter(Boolean), { timeout: 1_800_000 });
     r.status === 0 ? pass("E", `E4 ${s}`, "EXIT 0") : fail("E", `E4 ${s}`, `EXIT ${r.status}`);
   }
 }
