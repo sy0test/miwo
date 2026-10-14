@@ -19,6 +19,8 @@
     "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
     "db:types": "node --env-file-if-exists=.env --import=tsx scripts/gen-db-types.ts",
     "db:migrate": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts",
+    "db:bootstrap-admin": "node --env-file-if-exists=.env --import=tsx scripts/bootstrap-admin.ts",
+    "manual-test:seed": "node --env-file-if-exists=.env --import=tsx scripts/seed-manual-test.ts",
     "db:migrate:status": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --status",
     "db:migrate:down": "node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts --down",
     "db:repair-stuck": "node --env-file-if-exists=.env --import=tsx scripts/db-repair-stuck.ts",

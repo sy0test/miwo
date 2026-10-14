@@ -10,8 +10,23 @@
  * 内联进 .ts 有被编辑器/计划文档截断的真实风险（Phase 0 的 fixDB.ts:239 就在计划里被截断过）。
  *
  * ⚠ **不 seed `o_setting.tokenKey`**（Phase 1c 会把它彻底移出 DB，spec §6.2）。导出脚本按
- *    白名单只取平台键，本文件末尾还有一条显式断言兜住它。于是"新库里没有 tokenKey"是**预期状态**：
- *    应用侧的 JWT 密钥取自配置（`MIWO_JWT_SECRET`），见 `src/app.ts` 鉴权中间件。
+ *    白名单只取平台键，本文件 o_setting 段末尾还有一条显式断言兜住它。于是"**全新库**里没有
+ *    tokenKey"是**预期状态**：应用侧的 JWT 密钥取自配置（`MIWO_JWT_SECRET`），见 `src/app.ts` 鉴权中间件。
+ *
+ * ⚠⚠ **【Phase 1c 裁定 1c-26】旧库里的 `tokenKey` 行不再让本迁移炸，而是被改名成 `jwtSecret`。**
+ *    改前的行为是"只要 `o_setting` 里出现 `tokenKey` 就抛错"，而 `005_accounts` 才删它 —
+ *    于是**真实升级路径在 002 就断了**（002 在 005 之前跑，鸡生蛋问题）：
+ *    老库/用户真实库里本来就有 `o_setting.tokenKey`（`lib/initDB.ts` 时代的 JWT 密钥行）。
+ *    改动依据：**用户真实库从未跑过任何迁移（没有 `knex_migrations` 表）⇒ 002 对该库尚未"发布"**
+ *    （knex 按**文件名**记账，改内容不会让已迁移的库重跑）⇒ 现在改它是安全的窗口期。
+ *    改法：`INSERT ... SELECT` 式的"改名"（旧键值搬进新键 `jwtSecret`，再删旧键）——
+ *      · 语义不变：`src/auth/secret.ts` 的解析顺序本来就认 `jwtSecret` → `tokenKey` → 配置，
+ *        改名后**同一把密钥**仍在库里，老令牌继续有效（不会因为一次升级把所有人踢下线）；
+ *      · 仍然**只插不改**：目标键已存在时**跳过**（先喊一声），绝不覆盖运维显式设过的 `jwtSecret`；
+ *      · 幂等：跑第二遍时 `tokenKey` 已不存在 ⇒ 什么都不做；
+ *      · 全新库：没有 `tokenKey` ⇒ 不产生 `jwtSecret` 行 ⇒
+ *        `verify-phase0.cjs` 的"o_setting 键集合恰好 = 种子键 + Task 1 两个开关"逐字不变。
+ *    ⚠ 别把这条"搬"回 `005_accounts`：005 只能删 `tokenKey`，它管不到 002 之前的库状态。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -198,9 +213,28 @@ export default {
       const rows = seedRows.setting.map((r) => pickColumns(r, cols));
       const n = await seedTable(knex, "o_setting", rows, (r) => ({ key: r.key }));
       console.log(`[seed] o_setting: 插入 ${n} / 共 ${rows.length}`);
-      // 显式断言：tokenKey 绝不进新库（Phase 1c 会把它彻底移出 DB，spec §6.2）
+
+      // ---- 【裁定 1c-26】旧库里的 `tokenKey` 行：**改名**成 `jwtSecret`（而不是抛错）----
+      // 判据与理由见文件头「裁定 1c-26」一节。三条不变式：
+      //   ① 目标键已存在 ⇒ **不覆盖**（运维/更早的迁移设过的值优先），只报告；
+      //   ② 旧键不存在 ⇒ 完全不动（全新库 = 本条的常态，键集合不因此多一行）；
+      //   ③ 幂等：第二遍时旧键已经没了。
+      const legacy = (await knex("o_setting").where("key", "tokenKey").select("value").first()) as { value: string | null } | undefined;
+      if (legacy) {
+        const already = await knex("o_setting").where("key", "jwtSecret").first();
+        if (already) {
+          console.log("[seed] o_setting.tokenKey 存在，但 jwtSecret 已存在 → **不覆盖**，仅删除旧键（裁定 1c-26）");
+          await knex("o_setting").where("key", "tokenKey").delete();
+        } else {
+          await knex("o_setting").insert({ key: "jwtSecret", value: legacy.value });
+          await knex("o_setting").where("key", "tokenKey").delete();
+          console.log("[seed] o_setting.tokenKey → jwtSecret（旧库升级：同一把密钥换到新键，老令牌继续有效；裁定 1c-26）");
+        }
+      }
+      // 显式断言：**种子文件**不得把 tokenKey 种进来（"旧库里有它"是唯一允许的来源，
+      // 且上面那一段一定会把它改名走）。所以迁移结束时库里**不应再有** tokenKey。
       const hasTokenKey = await knex("o_setting").where("key", "tokenKey").first();
-      if (hasTokenKey) throw new Error("[seed] o_setting 里出现了 tokenKey：本阶段不允许把 JWT 密钥放进数据库");
+      if (hasTokenKey) throw new Error("[seed] o_setting 里出现了 tokenKey：本阶段不允许把 JWT 密钥留在旧键上");
     }
 
     // ---- o_vendorConfig（8 个空模板行；带凭据的源库行绝不导出）----
@@ -213,6 +247,13 @@ export default {
   },
 
   async down(knex: Knex): Promise<void> {
+    // ⚠ 【裁定 1c-26】`up` 把旧的 `o_setting.tokenKey` 改名成了 `jwtSecret`，`down` **不回改**：
+    //    它不是本迁移"种进去的一行"（不满足下面那套"种子行逐列精确相等"的判据），
+    //    而把它改回旧键等于把"JWT 密钥留在旧键上"这个状态又造出来 —— 与 `005_accounts` 的
+    //    删除方向相反。**如实登记的取舍**：`001 → 002 → down` 之后库里会留下一行 `jwtSecret`，
+    //    这是"升级过的库不会真正回到未升级形状"的一部分（up/down 的往返一致性由
+    //    `tests/migrations.test.ts` 与 `tests/accounts-migration.test.ts` 分别覆盖，二者都以
+    //    "全新库（本来就没有 tokenKey）"为起点，所以那条路径不受影响）。
     // 只删**本迁移插进去的那些行**：判据是"种子那一行的全部列都精确相等"（collation 无关，见 `whereExact`），
     // 而不是"身份键相同"。
     // ⚠ 详见 pickColumns() 上方的说明 —— 按身份键删会把 Task 6 导入的同键老数据一起删掉。

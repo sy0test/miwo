@@ -63,9 +63,15 @@ async function indexesOf(db: Knex, table: string): Promise<string[]> {
 }
 
 /**
- * 造"老库升级"的起点：跑到 `002_platform_seed` 为止（它自带"库里不得有 tokenKey"的断言，
- * 所以旧行的注入必须在它**之后** —— ⚠ 002 是已发布迁移，不许为了测试去改它），
- * 再塞进旧 `o_user` 明文行 + 老 `tokenKey` + 一个用户级键。
+ * 造"老库升级"的起点：跑到 `002_platform_seed` 为止，再塞进旧 `o_user` 明文行 + 老 `tokenKey`
+ * + 一个用户级键。
+ *
+ * ⚠【Phase 1c 裁定 1c-26 更正】这里原来写"002 自带『库里不得有 tokenKey』的断言，所以旧行的注入
+ *   必须在它**之后**"。那条断言已被替换成"**改名成 `jwtSecret`**"（真实升级路径在 002 就断的
+ *   鸡生蛋问题），所以 `tokenKey` 现在**可以**在 002 之前存在 —— 那条路径由下面
+ *   `002_platform_seed` 的 `describe` 里「旧库 tokenKey → jwtSecret」用例单独覆盖。
+ *   本夹具刻意**保持原样**（在 002 之后注入）：它服务的是 005 的"拆键"判别力，注入点越靠后，
+ *   断言就越难被 002 的行为变化连带影响。
  */
 async function dbAt002WithLegacyRows(db: Knex): Promise<void> {
   await db.migrate.latest({
@@ -314,6 +320,46 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
         const info = (await db.raw("PRAGMA table_info(o_account)")) as Array<{ name: string; type: string }>;
         expect(String(info.find((c) => c.name === col)?.type).toLowerCase()).toBe("bigint");
       }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  /**
+   * 【Phase 1c 裁定 1c-26】真实升级路径的红端就在这条用例里。
+   *
+   * 改前：`o_setting` 里有 `tokenKey` 时 002 **抛错**，而 `tokenKey` 是 `005_accounts` 才删的
+   * ⇒ 002 跑在 005 之前 ⇒ **老库/用户真实库永远升不上去**（鸡生蛋）。判据必须落在源头上：
+   * 用**源码**断言"002 里不再有那条无条件抛错的断言"（红端原文见 task-12 报告），
+   * 再用**行为**断言"旧键被改名成 jwtSecret、密钥值不变、旧键消失"。
+   */
+  it("★ 002 容忍旧库的 tokenKey：改名为 jwtSecret（值不变、旧键消失、不覆盖已有 jwtSecret）", async () => {
+    const db = freshDb();
+    try {
+      await db.migrate.latest({ migrationSource: makeMigrationSource(MIGRATIONS.filter((m) => m.name === "001_schema")) });
+      await db("o_setting").insert({ key: "tokenKey", value: "legacy-jwt-secret-value" });
+      await db.migrate.latest({ migrationSource: makeMigrationSource(MIGRATIONS.filter((m) => ["001_schema", "002_platform_seed"].includes(m.name))) });
+
+      expect(await db("o_setting").where("key", "tokenKey").first()).toBeUndefined();
+      expect(((await db("o_setting").where("key", "jwtSecret").first()) as any)?.value).toBe("legacy-jwt-secret-value");
+
+      // ② 不覆盖：运维已经显式设过 jwtSecret 时，旧 tokenKey 只被删掉，目标值保持运维那份
+      await db("o_setting").where("key", "jwtSecret").del();
+      await db("o_setting").insert([
+        { key: "tokenKey", value: "stale-old" },
+        { key: "jwtSecret", value: "ops-rotated" },
+      ]);
+      const mod = (await import("@/db/migrations/002_platform_seed")).default;
+      await mod.up(db);
+      expect(await db("o_setting").where("key", "tokenKey").first()).toBeUndefined();
+      expect(((await db("o_setting").where("key", "jwtSecret").first()) as any)?.value).toBe("ops-rotated");
+
+      // ③ 幂等：再跑一遍不动任何行、也不新增键（键集合逐项相等）
+      const before = ((await db("o_setting").select("key")) as Array<{ key: string }>).map((r) => r.key).sort();
+      await mod.up(db);
+      const after = ((await db("o_setting").select("key")) as Array<{ key: string }>).map((r) => r.key).sort();
+      expect(after).toEqual(before);
+      expect(after).not.toContain("tokenKey");
     } finally {
       await db.destroy();
     }
