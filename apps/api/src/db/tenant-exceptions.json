@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-14T21:17:58.752Z",
+  "generatedAt": "2026-10-14T21:23:43.824Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -23,13 +23,13 @@
     "apps/api/src/jobs/handlers/imageProductionAssets.ts": {
       "count": 1,
       "lines": [
-        47
+        48
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[47 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/assets/batchGenerateAssetsImage.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[48 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/assets/batchGenerateAssetsImage.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）；行号 47→48 是 Task 9 在文件头补了一行 `withVendorSlot` 导入所致（处数与 SQL 文本未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
@@ -39,17 +39,17 @@
     "apps/api/src/jobs/handlers/promptBatch.ts": {
       "count": 1,
       "lines": [
-        123
+        124
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[123 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/workbench/batchGeneratePrompt.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[124 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/workbench/batchGeneratePrompt.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）；行号 123→124 是 Task 9 在文件头补了一行 `withVendorSlot` 导入所致（处数与 SQL 文本未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：payload 里的 payload.trackData[].info[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集。⚠ 该代码块原属路由、Task 7 起由 worker 在 `withJobTenant()`（role=user）里执行，守卫照常生效。"
+        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 where/andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：payload 里的 trackData[].info[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集。⚠ 该代码块原属路由、Task 7 起由 worker 在 `withJobTenant()`（role=user）里执行，守卫照常生效。"
       }
     },
     "apps/api/src/routes/assets/getAssetsApi.ts": {
@@ -257,17 +257,17 @@
     "apps/api/src/routes/production/workbench/generateVideoPrompt.ts": {
       "count": 1,
       "lines": [
-        60
+        61
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[60 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id).first()，id 前端传入未校验归属。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[61 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id).first()，id 前端传入未校验归属；行号 60→61 是 Task 9 在文件头补了一行 `withVendorSlot` 导入所致（处数与 SQL 文本未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 trackId/items[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
       }
     },
     "apps/api/src/routes/production/workbench/getAudioBindAssetsList.ts": {
