@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T20:53:44.360Z",
+  "generatedAt": "2026-10-14T10:55:25.763Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -329,17 +329,17 @@
     "apps/api/src/routes/setting/agentDeploy/getAgentDeploy.ts": {
       "count": 1,
       "lines": [
-        7
+        8
       ],
       "tables": [
         "o_vendorConfig"
       ],
       "confirmed": true,
-      "note": "[7 leftJoin o_vendorConfig] 被 join 表 o_vendorConfig 策略=platform（附录 A：管理员专用）。现状：**无任何鉴权**，任意登录用户即可读到全表 o_agentDeploy 与 o_vendorConfig 列（供应商 key 明文存储，见附录 C「密钥回传」）。Phase 1b：整个 /api/setting/agentDeploy/* 加 requireAdmin，o_vendorConfig 的 key 加密存储且不回传；不加租户条件（platform 表对所有租户相同），但要防越权读取。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[7 leftJoin o_vendorConfig] 被 join 表 o_vendorConfig 策略=platform（附录 A：管理员专用）。**已修（Phase 1b 收尾轮）**：整个 /api/setting/agentDeploy/* 家族 6 个端点都挂上 requireAdmin（含写供应商 key 的 agentSetKey），对抗用例见 tests/ops-endpoints-auth.test.ts（无 token 401 / 普通 token 403 / admin 200 / 普通 token 打完**直读数据未被改**）。判别力：拿掉**读**端点的 requireAdmin ⇒ 普通 token 直接 200 并吐出供应商模型配置（写端点另有守卫的 platform 写规则兜底）。仍留给 Phase 1c：o_vendorConfig 的 key **加密存储且不回传**（现在是明文存储）。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto+code",
         "evidence": "tenant-guard.test.ts#没有 ctx → 租户表抛 TenantContextError；平台表读仍然放行（登录前要取 tokenKey）",
-        "note": "join 目标 o_vendorConfig 是 **platform** 表 ⇒ 守卫不加租户条件（语义正确：供应商配置对所有租户相同）。⚠ **仍欠账（Phase 1c）**：本路由**尚未挂 `requireAdmin`** ⇒ 「任意登录用户可读供应商配置（key 明文）」 仍成立；Task 7 只处置了 6 个运维接口。已登记进 §Phase 1c。"
+        "note": "join 目标 o_vendorConfig 是 **platform** 表 ⇒ 守卫不加租户条件（语义正确：供应商配置对所有租户相同）。**本轮已修**：整族 6 个端点补 requireAdmin + 对抗用例（红端：拿掉读端点的 requireAdmin ⇒ 200 泄漏）。剩余欠账（Phase 1c）：key 加密存储 + 不回传。"
       }
     },
     "apps/api/src/routes/task/getTaskApi.ts": {
