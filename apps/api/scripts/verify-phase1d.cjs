@@ -138,11 +138,20 @@ function groupB() {
       r.status === 3 ? fail("B", "B1 claim 候选查询（mysql 方言）", `观测不到：${out.slice(0, 200)}`) : fail("B", "B1 claim 候选查询（mysql 方言）", out.slice(0, 200));
     } else {
       const sql = m[1].trim();
-      // ⚠ `state = 'queued'` 是**参数化**的（SQL 文本里是 `state` = ?），所以只断言方言专属部分与两条租约条件
-      const ok = sql.includes("for update skip locked") && sql.includes("`leaseUntil`") && sql.includes("`nextAttemptAt`");
+      // ⚠【review-D F-3 修正·文案不再说谎】旧文案写"含 state 条件"，但断言**根本没查** state
+      //   （复核轮实测：把 claim() 的条件 UPDATE 的 state 条件去掉后，B1/C1/C2 **仍绿**）。
+      //   现在三条都真查：
+      //     · `state` = ?  —— `state` 是**参数化**的，所以断言的是**参数位**的存在（不是字面量 'queued'）；
+      //     · `nextAttemptAt` / `leaseUntil` —— 两条租约条件；
+      //     · `for update skip locked` —— mysql 专属方言。
+      //   ⚠ 边界（必须说清，不许再含糊）：B1 覆盖的是**候选 SELECT**（`buildClaimQuery`）。
+      //     "两个 worker 同抢一条"真正靠的是 claim() 里的**条件 UPDATE**（`.andWhere("state","queued")`），
+      //     它由 **B3 的源码级机械守卫** + `tests/job-store.test.ts` 的**两条独立连接**行为用例守着。
+      const hasStateParam = sql.includes("`state` = ?");
+      const ok = sql.includes("for update skip locked") && hasStateParam && sql.includes("`leaseUntil`") && sql.includes("`nextAttemptAt`");
       ok
-        ? pass("B", "B1 claim 候选查询（mysql 方言）", "含 `for update skip locked` + state 条件（**未连真机**）")
-        : fail("B", "B1 claim 候选查询（mysql 方言）", sql.slice(0, 200));
+        ? pass("B", "B1 claim 候选查询（mysql 方言）", "含 for update skip locked + `state` = ? 参数位 + leaseUntil/nextAttemptAt（**未连真机**）")
+        : fail("B", "B1 claim 候选查询（mysql 方言）", `缺项 stateParam=${hasStateParam} sql=${sql.slice(0, 200)}`);
     }
   } finally {
     fs.rmSync(probe, { force: true });
@@ -160,6 +169,20 @@ function groupB() {
   msCount >= 15
     ? pass("B", "B2 毫秒列（t.ms）清单", `${msCount} 列，来自 ${files.join(" ")}（**MySQL 列类型未实测**）`)
     : fail("B", "B2 毫秒列（t.ms）清单", `只数到 ${msCount} 列（下界 15）`);
+
+  // B3：【review-D F-3 补】claim 的**条件 UPDATE** 必须带 `state` 条件（源码级机械守卫）。
+  //   —— 为什么单开一条：B1 查的是候选 SELECT，而"两个 worker 不会抢同一条任务"靠的是 claim() 里
+  //      `UPDATE … WHERE id=? AND state='queued'` 这条**条件写**。复核轮实测：删掉那个条件后
+  //      B1/C1/C2 仍绿（C 组是单 worker 顺序路径）。行为层的判别力在
+  //      `tests/job-store.test.ts:182`（两条**独立连接**并发 claim，只有一条赢）—— 那条一直在跑；
+  //      这里补一条源码级守卫，让"删掉那行"在本验收里也**立刻红**（不是靠人去记得跑单测）。
+  {
+    const storeSrc = fs.readFileSync(path.join(API_DIR, "src", "jobs", "store.ts"), "utf8");
+    const hasStateCond = /\.andWhere\("state",\s*"queued"\)/.test(storeSrc);
+    hasStateCond
+      ? pass("B", "B3 claim 条件 UPDATE 带 state（源码级守卫）", 'store.ts 含 .andWhere("state", "queued")；行为判别力见 tests/job-store.test.ts 的两连接用例')
+      : fail("B", "B3 claim 条件 UPDATE 带 state（源码级守卫）", 'store.ts 里找不到 .andWhere("state", "queued")：两个 worker 会抢同一条任务');
+  }
 }
 
 // ───────────────────────── C. sqlite 端到端 ─────────────────────────
@@ -268,13 +291,24 @@ function groupE() {
   }
 
   const vitest = path.join(API_DIR, "node_modules", "vitest", "vitest.mjs");
-  const t = run(process.execPath, [vitest, "run"], { cwd: API_DIR, timeout: 1_800_000 });
+  // ⚠【review-D F-4】E3 必须用**一次性 dataDir**：旧口径与"另一次并发运行的全量测试"共享
+  //   `vitest.config.ts` 里的同一个库（`D:\tmp\miwo-test-data`）⇒ 互相污染（复核轮实测：
+  //   并发跑两次各出现 1 failed，独占跑即 584|14，会被误当成真回归）。
+  //   现在给 E3 一个 `%TEMP%` 下的唯一目录，跑完**按绝对路径**删（`vitest.config.ts` 允许
+  //   `MIWO_DATA_DIR` 覆盖，且**只接受仓库外**的路径 —— 免得有人把测试指到仓库 dev 库）。
+  const e3Dir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-verify1d-e3-"));
+  let t;
+  try {
+    t = run(process.execPath, [vitest, "run"], { cwd: API_DIR, timeout: 1_800_000, env: { MIWO_DATA_DIR: e3Dir } });
+  } finally {
+    fs.rmSync(e3Dir, { recursive: true, force: true });
+  }
   const out = `${t.stdout || ""}`;
   const m = /Tests\s+(\d+) passed(?:\s*\|\s*(\d+) skipped)?/.exec(out);
   const failedM = /(\d+) failed/.exec(out);
   const failed = failedM ? Number(failedM[1]) : 0;
   t.status === 0 && m && failed === 0
-    ? pass("E", "E3 单测全绿", `${m[1]} passed${m[2] ? ` | ${m[2]} skipped` : ""}，0 failed`)
+    ? pass("E", "E3 单测全绿", `${m[1]} passed${m[2] ? ` | ${m[2]} skipped` : ""}，0 failed（一次性 dataDir=${e3Dir}）`)
     : fail("E", "E3 单测全绿", `exit=${t.status} failed=${failed}${m ? ` passed=${m[1]}` : "（计数观测不到）"}`);
 
   // ⚠ 必须**直跑 `node <脚本>`**，不要 `spawnSync("pnpm.cmd", …)`：Windows 上 `.cmd` 是壳脚本，
