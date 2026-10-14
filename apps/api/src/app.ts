@@ -14,7 +14,7 @@ import fs from "fs";
 import u from "@/utils";
 import { dbReady } from "@/utils/db";
 import { tenantErrorHandler } from "@/middleware/tenant";
-import { authenticate, authErrorHandler } from "@/middleware/auth";
+import { authenticate, authErrorHandler, optionalMediaAuth } from "@/middleware/auth";
 import { apiLimiter } from "@/middleware/rateLimit";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
@@ -135,7 +135,10 @@ export function errorHandler(err: any, req: Request, res: Response, _next: NextF
  * ⚠ 为什么 `/oss` **不能**只要求 Bearer：`<img src>` / `<video src>` 是**浏览器自己**发的请求，
  *   它**不带** `Authorization` 头；只要 Bearer 就等于"页面上的图全裂"。
  *   所以浏览器侧走 query 里的短时签名（`exp`+`sig`，见 `utils/mediaSign.ts`），
- *   服务端/脚本侧仍可直接带 Bearer（`authenticate` 先跑，守卫看到 `req.ctx` 就放行）。
+ *   服务端/脚本侧仍可直接带 Bearer（`/oss`、`/assets` 之前挂着 `optionalMediaAuth`：
+ *   有 `Authorization` 就建 ctx，守卫看到 `req.ctx` 就放行；没有就按签名判）。
+ *   ⚠ Phase 1c Task 10 前这句话是**错的**：`authenticate` 只挂 `/api` ⇒ `req.ctx` 在 `/oss` 上
+ *   永远是 `undefined` ⇒ 带 Bearer 也一律 403。修法见 `middleware/auth.ts` 的 `optionalMediaAuth`。
  *
  * ⚠ **Range**（Tier 0 #8）：`acceptRanges: true` 是视频拖动的必要条件（206 + `Content-Range`）。
  *   旧实现四处都是 `acceptRanges: false` ⇒ 拖动进度条只能整段重下（或干脆不动）。
@@ -215,6 +218,7 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
 
   target.use(
     "/oss",
+    optionalMediaAuth,
     mediaAuthGuard,
     thumbnailBranch,
     express.static(ossDir, { acceptRanges: true, maxAge: "1h", immutable: false }),
@@ -224,7 +228,12 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
   const assetsDir = u.getPath("assets");
   if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
   log(`文件目录: ${assetsDir}`);
-  target.use("/assets", mediaAuthGuard, express.static(assetsDir, { acceptRanges: true, maxAge: "1h", immutable: false }));
+  target.use(
+    "/assets",
+    optionalMediaAuth,
+    mediaAuthGuard,
+    express.static(assetsDir, { acceptRanges: true, maxAge: "1h", immutable: false }),
+  );
 
   // ── /skills：**保持公开**（产品自带的技能图标；前端图标全靠它）──
   const skillsDir = u.getPath("skills");
