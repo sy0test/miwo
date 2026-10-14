@@ -11,14 +11,18 @@
  *     这里按 `src/jobs/index.ts` 的既有写法：`import u from "@/utils"` 拿受守卫的 `u.db`。
  *     **不需要** `systemDb`：队列自身的特权写由 `src/jobs/store.ts` 内部的 `runAsAuth()` 统一代行。
  *  2. brief 的 `hasTable("o_job")` 探针是"Phase 1a 没导出就绪信号"时的兜底。实际有显式信号：
- *     `@/utils/db` 导出 `dbReady`（连接 → 迁移），所以这里 **await dbReady**，再用 hasTable 复核
- *     （探针的坑照 brief 的警告：`hasTable` 返回可 await 的 QueryBuilder，**必须 await**）。
+ *     `@/utils/db` 导出 `dbReady`（连接 → 迁移）。⚠ 它**不是** `@/utils` 的命名导出
+ *     （`src/utils.ts` 只默认导出一个聚合对象，`dbReady` 不在里面）⇒ 只能从 `@/utils/db` 直接
+ *     命名导入（那**不违反**任何门禁：`dbReady` 不是 `systemDb`，也不是裸 `db`）。这里
+ *     **await dbReady**，再用 hasTable 复核（探针的坑照 brief 的警告：`hasTable` 返回可 await 的
+ *     QueryBuilder，**必须 await**）。
  */
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Knex } from "knex";
 import { config } from "@/config";
-import u, { dbReady } from "@/utils";
+import u from "@/utils";
+import { dbReady } from "@/utils/db";
 import { jobRegistry } from "@/jobs/registry";
 import { JOB_POLICY } from "@/jobs/policy";
 import { createJobStore } from "@/jobs/store";
