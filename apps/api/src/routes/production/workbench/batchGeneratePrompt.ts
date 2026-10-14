@@ -7,6 +7,8 @@ import { validateFields } from "@/middleware/middleware";
 import fs from "fs/promises";
 import path from "path";
 import { trackTableForId, updateTrackById, storyboardItemsForShots } from "@/utils/shots/readShots";
+import { enqueueJob } from "@/jobs";
+import { currentUserId } from "@/jobs/context";
 const router = express.Router();
 
 export default router.post(

@@ -1,11 +1,11 @@
 import express from "express";
 import u from "@/utils";
 import { z } from "zod";
-import sharp from "sharp";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { Output } from "ai";
 import type { AssetKind } from "@/utils/feicai";
+import { enqueueJob } from "@/jobs";
+import { currentUserId } from "@/jobs/context";
 const router = express.Router();
 
 export default router.post(
@@ -55,72 +55,17 @@ export default router.post(
       await u.db("o_assets").where("id", item.id).update({ imageId: imageId });
     }
 
-    const imageData: { id: number; state: string; src: string }[] = [];
-    res.status(200).send(success("开始生成资产图片"));
-    const generateSingleAsset = async (item: any) => {
-      const imageId = imageIdMap[item.id!];
-      const systemPrompt = buildSystemPrompt((item.type || "role") as AssetKind, item.parentDescribe);
+    // Phase 1d：入队（生成段搬到 handler），不再进程内分批后台跑。
+    // ⚠ 响应形状不变（`success("开始生成资产图片")`）；jobIds 走新顶层字段。
+    const userId = currentUserId(req);
+    if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
+    const { jobId } = await enqueueJob({
+      type: "image.productionAssets.batch",
+      userId,
+      // ⚠ 只存引用 id；base64 由 handler 按 assetsId 现取
+      payload: { projectId, scriptId, assetIds: assetsDataArr.map((i: any) => i.id) },
+    });
 
-      const { text } = await u.Ai.Text("universalAi").invoke({
-        system: systemPrompt,
-        messages: [
-          {
-            role: "user",
-            content: `
-            父级资产描述: ${item.parentDescribe || "无详细描述"}
-            当前资产描述: ${item.describe || "无详细描述"}`,
-          },
-        ],
-      });
-      // 角色/道具白底资产兜底：即使提示词里没写，也强制带上不透明纯白画布声明（场景不动）
-      const assetPrompt = u.feicai.withOpaqueWhiteCanvas(text, item.type);
-      await u.db("o_assets").where("id", item.id).update({ prompt: assetPrompt });
-
-      const imageBase64 = imageUrlRecord[item.assetsId!] ? await u.oss.getImageBase64(imageUrlRecord[item.assetsId!]) : null;
-      try {
-        const repeloadObj = {
-          prompt: assetPrompt,
-          size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
-          aspectRatio: "16:9" as `${number}:${number}`,
-        };
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
-          {
-            referenceList: imageBase64 ? [{ type: "image", base64: imageBase64 }] : [],
-            ...repeloadObj,
-          },
-          {
-            taskClass: "生成图片",
-            describe: "资产图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
-            projectId: projectId,
-          },
-        );
-        const savePath = `/${projectId}/assets/${scriptId}/${item.type}/${u.uuid()}.jpg`;
-        await imageCls.save(savePath);
-        await u.db("o_image").where({ id: imageId }).update({ state: "已完成", filePath: savePath });
-        return {
-          id: item.id!,
-          state: "已完成",
-          src: await u.oss.getSmallImageUrl(savePath),
-        };
-      } catch (e) {
-        await u
-          .db("o_image")
-          .where({ id: imageId })
-          .update({ state: "生成失败", errorReason: u.error(e).message });
-        return {
-          id: item.id!,
-          state: "生成失败",
-          src: "",
-        };
-      }
-    };
-
-    // 按 concurrentCount 分批并发执行
-    for (let i = 0; i < assetsDataArr.length; i += concurrentCount) {
-      const batch = assetsDataArr.slice(i, i + concurrentCount);
-      const batchResults = await Promise.all(batch.map(generateSingleAsset));
-      imageData.push(...batchResults);
-    }
+    res.status(200).send({ ...success("开始生成资产图片"), jobIds: [jobId] });
   },
 );
