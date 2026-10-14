@@ -39,6 +39,7 @@
     "@ai-sdk/openai-compatible": "^2.0.27",
     "@ai-sdk/xai": "^3.0.47",
     "@huggingface/transformers": "^3.8.1",
+    "@node-rs/argon2": "2.2.2",
     "@rmp135/sql-ts": "^2.2.0",
     "ai": "^6.0.67",
     "axios": "^1.13.2",
