@@ -33,9 +33,21 @@ const KNOWN = [
   "--cancel",
   "--apply",
   "--dry-run",
+  // ⚠ 带值的旗标也必须登记（否则 `--limit=20` 的 bare 部分是 `--limit`，会被判成未知参数）
+  "--state",
+  "--limit",
+  "--reason",
+  "--count",
+  "--users",
+  "--older-than-ms",
 ] as const;
 
-const args = process.argv.slice(2);
+/**
+ * ⚠ pnpm/npm 会把 `--` **原样透传**进 `process.argv`（实测：`pnpm run job:admin -- --stats`
+ * 的 argv 里就是 `["--", "--stats"]`）⇒ 必须先滤掉裸 `--`，否则"未知旗标一律拒绝"会把自己的
+ * 分隔符判成未知参数（实测踩到：`--stats` 反而以 EXIT 2 失败）。
+ */
+const args = process.argv.slice(2).filter((a) => a !== "--");
 const withValue = (p: string): string | undefined => args.find((a) => a.startsWith(`${p}=`))?.slice(p.length + 1);
 const has = (f: string): boolean => args.includes(f);
 
@@ -48,8 +60,25 @@ async function main(): Promise<void> {
       process.exit(2); // ⚠ 2 = "参数错"，与 1（运行失败）区分开，便于脚本断言
     }
   }
+  await runCommand();
+  // ⚠ 必须显式退出：CLI 跑完后 knex 连接池/守卫句柄会把事件循环留住（实测：命令全部正确输出，
+  //    进程却一直不退出 ⇒ `pnpm run job:admin` 永不返回）。先尝试优雅关池，再 exit。
+  try {
+    const u = (await import("@/utils")).default;
+    await (u.db as unknown as { destroy?: () => Promise<void> }).destroy?.();
+  } catch {
+    /* 关不掉也要退：CLI 的工作已经做完了 */
+  }
+  process.exit(0);
+}
 
+async function runCommand(): Promise<void> {
   console.log(`[job-admin] 目标：env=${config.env} driver=${config.db.driver} dataDir=${config.dataDir}`);
+  // ⚠ 必须先等启动序列（连接 → 迁移）完成：本 CLI 会在**全新数据目录**上被调用（实测：
+  //    不等它就直接 `select … from o_job` 报 `no such table: o_job`）。`@/jobs` 已在 import 期
+  //    触发那条链，这里只 await 既有的就绪信号。
+  const { dbReady } = await import("@/utils/db");
+  await dbReady;
   const store = getJobStore();
   const db = u.db as unknown as Knex;
 
