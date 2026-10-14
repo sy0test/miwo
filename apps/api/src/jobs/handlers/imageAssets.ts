@@ -12,6 +12,7 @@
 import crypto from "node:crypto";
 import u from "@/utils";
 import type { JobContext, JobDefinition } from "@/jobs/types";
+import { withVendorSlot } from "@/jobs/gate";
 
 export interface AssetsImageItem {
   assetsId: number;
@@ -90,16 +91,20 @@ export const imageAssetsBatch: JobDefinition<AssetsImagePayload> = {
       const assetPrompt = u.feicai.withOpaqueWhiteCanvas(item.prompt, item.type);
       const userPrompt = buildPrompt(cfg, project?.artStyle ?? "", item.name, assetPrompt);
       try {
-        const aiImage = u.Ai.Image(p.model as `${string}:${string}`);
-        await aiImage.run(
-          { prompt: userPrompt, referenceList: [], size: p.resolution as "1K" | "2K" | "4K", aspectRatio: "16:9" },
-          {
-            taskClass: cfg.taskClass,
-            describe: `生成${cfg.label}图，名称：${item.name}，提示词：${item.prompt}`,
-            projectId: p.projectId,
-            relatedObjects: JSON.stringify({ id: item.assetsId, projectId: p.projectId, type: cfg.label }),
-          },
-        );
+        // Phase 1d Task 9：厂商调用前过 `vendor:image` 闸门（spec §9.3）。只包这一次调用。
+        const aiImage = await withVendorSlot("vendor:image", ctx.workerId, async () => {
+          const cls = u.Ai.Image(p.model as `${string}:${string}`);
+          await cls.run(
+            { prompt: userPrompt, referenceList: [], size: p.resolution as "1K" | "2K" | "4K", aspectRatio: "16:9" },
+            {
+              taskClass: cfg.taskClass,
+              describe: `生成${cfg.label}图，名称：${item.name}，提示词：${item.prompt}`,
+              projectId: p.projectId,
+              relatedObjects: JSON.stringify({ id: item.assetsId, projectId: p.projectId, type: cfg.label }),
+            },
+          );
+          return cls;
+        });
         await aiImage.save(imagePath);
         if (ctx.signal.aborted) throw new Error("被中止（租约丢失或停机）");
         await u.db("o_image").where("id", item.imageId).update({ state: "已完成", filePath: imagePath, type: item.type, model: p.model.split(/:(.+)/)[1], resolution: p.resolution });

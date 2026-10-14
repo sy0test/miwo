@@ -13,6 +13,7 @@
 import u from "@/utils";
 import type { AssetKind } from "@/utils/feicai";
 import type { JobContext, JobDefinition } from "@/jobs/types";
+import { withVendorSlot } from "@/jobs/gate";
 
 export interface ProductionAssetsPayload {
   projectId: number;
@@ -68,10 +69,14 @@ export const imageProductionAssetsBatch: JobDefinition<ProductionAssetsPayload> 
       await ctx.progress(Math.round(((index - 1) / assetsDataArr.length) * 100), `生成资产图 ${index}/${assetsDataArr.length}`);
       const systemPrompt = u.feicai.buildAssetPromptSystem({ project: projectSettingData, kind: (item.type || "role") as AssetKind, parentDescribe: item.parentDescribe });
       try {
-        const { text } = await u.Ai.Text("universalAi").invoke({
-          system: systemPrompt,
-          messages: [{ role: "user", content: `\n            父级资产描述: ${item.parentDescribe || "无详细描述"}\n            当前资产描述: ${item.describe || "无详细描述"}` }],
-        });
+        // Phase 1d Task 9：这一次条目里有**两次**厂商调用（先文本润色、再出图）⇒ 各自过一次闸门，
+        // 池子按调用类型分开（`vendor:text` / `vendor:image`）。只包调用，不包整条任务。
+        const { text } = await withVendorSlot("vendor:text", ctx.workerId, () =>
+          u.Ai.Text("universalAi").invoke({
+            system: systemPrompt,
+            messages: [{ role: "user", content: `\n            父级资产描述: ${item.parentDescribe || "无详细描述"}\n            当前资产描述: ${item.describe || "无详细描述"}` }],
+          }),
+        );
         const assetPrompt = u.feicai.withOpaqueWhiteCanvas(text, item.type);
         await u.db("o_assets").where("id", item.id).update({ prompt: assetPrompt });
         const parentPath = item.assetsId ? imageUrlRecord[item.assetsId] : undefined;
@@ -81,14 +86,16 @@ export const imageProductionAssetsBatch: JobDefinition<ProductionAssetsPayload> 
           size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
           aspectRatio: "16:9" as `${number}:${number}`,
         };
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
-          { referenceList: imageBase64 ? [{ type: "image", base64: imageBase64 }] : [], ...repeloadObj },
-          {
-            taskClass: "生成图片",
-            describe: "资产图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
-            projectId: p.projectId,
-          },
+        const imageCls = await withVendorSlot("vendor:image", ctx.workerId, () =>
+          u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
+            { referenceList: imageBase64 ? [{ type: "image", base64: imageBase64 }] : [], ...repeloadObj },
+            {
+              taskClass: "生成图片",
+              describe: "资产图片生成",
+              relatedObjects: JSON.stringify(repeloadObj),
+              projectId: p.projectId,
+            },
+          ),
         );
         const savePath = `/${p.projectId}/assets/${p.scriptId}/${item.type}/${u.uuid()}.jpg`;
         await imageCls.save(savePath);

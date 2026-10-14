@@ -16,6 +16,7 @@ import u from "@/utils";
 import { mediaKindOf } from "@/utils/oss";
 import type { ReferenceList } from "@/utils/ai";
 import type { JobContext, JobDefinition } from "@/jobs/types";
+import { withVendorSlot } from "@/jobs/gate";
 
 export interface VideoRef {
   path: string;
@@ -100,24 +101,30 @@ async function runItems(ctx: JobContext, p: VideoBatchPayload): Promise<unknown>
     }
 
     try {
-      const aiVideo = u.Ai.Video(p.model as `${string}:${string}`);
-      await aiVideo.run(
-        {
-          prompt: item.prompt,
-          referenceList,
-          mode: (p.mode ?? []) as never,
-          duration: item.duration,
-          aspectRatio: p.aspectRatio,
-          resolution: p.resolution,
-          audio: p.audio,
-        },
-        {
-          projectId: p.projectId,
-          taskClass: "视频生成",
-          describe: "根据提示词生成视频",
-          relatedObjects: JSON.stringify({ projectId: p.projectId, videoId: item.videoId, scriptId: p.scriptId, type: "视频" }),
-        },
-      );
+      // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。⚠ 只包**这一次厂商调用**，
+      // 不包整条任务（一条视频任务可能跑 15 分钟，包整条会让 globalMaxRunning 退化成 1）。
+      // 超时（gateWaitMs，默认 120s）⇒ 抛错 ⇒ 下面 catch 把它写成"生成失败"（可诊断、可重跑）。
+      const aiVideo = await withVendorSlot("vendor:video", ctx.workerId, async () => {
+        const cls = u.Ai.Video(p.model as `${string}:${string}`);
+        await cls.run(
+          {
+            prompt: item.prompt,
+            referenceList,
+            mode: (p.mode ?? []) as never,
+            duration: item.duration,
+            aspectRatio: p.aspectRatio,
+            resolution: p.resolution,
+            audio: p.audio,
+          },
+          {
+            projectId: p.projectId,
+            taskClass: "视频生成",
+            describe: "根据提示词生成视频",
+            relatedObjects: JSON.stringify({ projectId: p.projectId, videoId: item.videoId, scriptId: p.scriptId, type: "视频" }),
+          },
+        );
+        return cls;
+      });
       await aiVideo.save(item.videoPath);
       // ⚠ 写终态前复查 abort（协作式 abort：厂商调用可能刚被中止）
       if (ctx.signal.aborted) throw new Error("被中止（租约丢失或停机）");

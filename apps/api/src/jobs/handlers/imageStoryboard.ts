@@ -14,6 +14,7 @@
  */
 import u from "@/utils";
 import type { JobContext, JobDefinition } from "@/jobs/types";
+import { withVendorSlot } from "@/jobs/gate";
 
 export interface StoryboardImagePayload {
   projectId: number;
@@ -99,14 +100,17 @@ export const imageStoryboardBatch: JobDefinition<StoryboardImagePayload> = {
         aspectRatio: projectSettingData?.videoRatio as `${number}:${number}`,
       };
       try {
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
-          { referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []), ...repeloadObj },
-          {
-            taskClass: "生成分镜图片",
-            describe: "分镜图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
-            projectId: p.projectId,
-          },
+        // Phase 1d Task 9：厂商调用前过 `vendor:image` 闸门（spec §9.3）。只包这一次调用。
+        const imageCls = await withVendorSlot("vendor:image", ctx.workerId, async () =>
+          u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
+            { referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []), ...repeloadObj },
+            {
+              taskClass: "生成分镜图片",
+              describe: "分镜图片生成",
+              relatedObjects: JSON.stringify(repeloadObj),
+              projectId: p.projectId,
+            },
+          ),
         );
         const savePath = `/${p.projectId}/assets/${p.scriptId}/${u.uuid()}.jpg`;
         await imageCls.save(savePath);

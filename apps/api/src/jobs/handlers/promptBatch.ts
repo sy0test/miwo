@@ -16,6 +16,7 @@ import path from "path";
 import u from "@/utils";
 import { storyboardItemsForShots, trackTableForId, updateTrackById } from "@/utils/shots/readShots";
 import type { JobContext, JobDefinition } from "@/jobs/types";
+import { withVendorSlot } from "@/jobs/gate";
 
 export interface PromptTrackData {
   trackId: number;
@@ -154,13 +155,16 @@ export const promptBatch: JobDefinition<PromptBatchPayload> = {
           `;
 
       try {
-        const { text } = await u.Ai.Text("universalAi").invoke({
-          system: videoPromptGeneration,
-          messages: [
-            { role: "assistant", content: `${styleGuide}` },
-            { role: "user", content },
-          ],
-        });
+        // Phase 1d Task 9：厂商调用前过 `vendor:text` 闸门（spec §9.3）。只包这一次调用。
+        const { text } = await withVendorSlot("vendor:text", ctx.workerId, () =>
+          u.Ai.Text("universalAi").invoke({
+            system: videoPromptGeneration,
+            messages: [
+              { role: "assistant", content: `${styleGuide}` },
+              { role: "user", content },
+            ],
+          }),
+        );
         if (ctx.signal.aborted) throw new Error("被中止（租约丢失或停机）");
         await updateTrackById(u.db, track.trackId, { prompt: text, state: "已完成" });
       } catch (e) {

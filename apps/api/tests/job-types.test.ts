@@ -59,11 +59,24 @@ describe("任务类型契约（spec §9.2 / §9.3）", () => {
   });
 
   it("★ 全局注册表的登记集合是显式的（写 handler 忘注册 ⇒ 这条红）", () => {
-    // Task 7 追加 6 个业务类型、Task 9 追加 `selftest.sleep` 时，**这一行必须一起改**。
+    // Task 7 追加 6 个业务类型 + `selftest.sleep` 时，**这一行必须一起改**（本行已随 Task 7 更新）。
     // 故意的：注册表与实现一一对应，不允许"偷偷多/少一个类型"。
-    expect([...JOB_DEFINITIONS].map((d) => d.type).sort()).toEqual([]);
-    expect(jobRegistry.all().map((d) => d.type).sort()).toEqual([]);
-    expect(jobRegistry.get("selftest.sleep")).toBeNull();
+    // ⚠ 类型集合的**权威**断言在 `tests/job-registry.test.ts`（还带"handler 文件 ↔ registry import"机械守卫）；
+    //   本条只做"这里也必须显式写出来"的冗余守卫，两个文件必须同时改。
+    const TYPES = [
+      "video.generate",
+      "video.batchGenerate",
+      "image.assets.batch",
+      "image.storyboard.batch",
+      "image.productionAssets.batch",
+      "prompt.batch",
+      "selftest.sleep",
+    ].sort();
+    expect([...JOB_DEFINITIONS].map((d) => d.type).sort()).toEqual(TYPES);
+    expect(jobRegistry.all().map((d) => d.type).sort()).toEqual(TYPES);
+    expect(jobRegistry.get("selftest.sleep")).not.toBeNull();
+    // 未登记的类型仍然**不抛**、返回 null（worker 要把脏 job 判失败而不是崩）
+    expect(jobRegistry.get("no.such.type")).toBeNull();
   });
 });
 
