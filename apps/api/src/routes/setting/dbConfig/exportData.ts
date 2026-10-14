@@ -3,6 +3,7 @@ import { error } from "@/lib/responseFormat";
 import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
 import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
 import { opsEnabled, opsDisabledMessage } from "@/utils/opsSwitch";
+import { listTables } from "@/lib/dbOps";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
 
 const router = express.Router();
@@ -66,7 +67,10 @@ function columnsOf(rows: any[]): string[] {
 
 // ⚠ Phase 1b Task 7：挂 `requireAdmin`（收权前任意登录用户 GET 一次就下载整库，含上面那条密钥）。
 // ⚠ Phase 1c Task 4：再加 `opsEnabled("allowDbAdminOps")` 闸 + `?redact=1` 脱敏模式 + 审计。
-// ⚠ 第 `sqlite_master` 是 **sqlite 方言**，MySQL 下无效（Phase 1c 未重写这一层，如实登记）。
+// ⚠ **Phase 1c Task 5+6（裁定 §2.5）已修掉"sqlite 专属"**：表清单改走 `@/lib/dbOps`
+//   （mysql → `information_schema.tables`），逐表取行改用 knex 的 `.select("*")`（表名由 knex 转义，
+//   不再是手写 `SELECT * FROM "${t}"` 插值）。旧写法在 MySQL 上 `ER_NO_SUCH_TABLE` ⇒ **导不出备份**。
+//   ⚠ mysql 分支**未实测**（本机不起 MySQL），只有 `toSQL()` 形态证明。
 export default router.get("/", requireAdmin, async (req, res) => {
   try {
     // 闸二：运维接口**默认关闭**（spec §7.3）。关闭时连"能不能导出"都不该被探测到内容 ⇒ 只回文案。
@@ -76,25 +80,21 @@ export default router.get("/", requireAdmin, async (req, res) => {
 
     const redact = String(req.query?.redact ?? "") === "1";
 
-    const tables: { name: string }[] = await db.raw(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'knex_%'`,
-    );
+    const tables = await listTables(db);
 
     const data: Record<string, any[]> = {};
     const redactedSummary: Record<string, string[]> = {};
     for (const table of tables) {
-      const rows: any[] = await db.raw(`SELECT * FROM "${table.name}"`);
+      const rows = (await db(table).select("*")) as any[];
       // 逐行剔除（表名/列名/值都来自本文件的常量，不含用户输入 ⇒ 无注入面）
-      const kept = rows.filter(
-        (row) => !EXCLUDED_EXPORT_ROWS.some((x) => x.table === table.name && row?.[x.column] === x.value),
-      );
+      const kept = rows.filter((row) => !EXCLUDED_EXPORT_ROWS.some((x) => x.table === table && row?.[x.column] === x.value));
       if (!redact) {
-        data[table.name] = kept;
+        data[table] = kept;
         continue;
       }
-      const cols = redactColumnsFor(table.name, columnsOf(kept));
-      if (cols.length) redactedSummary[table.name] = cols;
-      data[table.name] = kept.map((row) => redactRow(row, cols));
+      const cols = redactColumnsFor(table, columnsOf(kept));
+      if (cols.length) redactedSummary[table] = cols;
+      data[table] = kept.map((row) => redactRow(row, cols));
     }
 
     const exportData = {

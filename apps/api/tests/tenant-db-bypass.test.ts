@@ -31,6 +31,10 @@ const SRC = path.join(API_ROOT, "src");
  *   并删掉了它的 `initDB`/`systemDb` 依赖 ⇒ 它**不再持有任何 DB 访问面**，也就不是绕过口使用者了。
  *   本清单必须跟着**收窄**（这正是这条用例的设计意图：绕过面变大变小都要有人看见）；
  *   文件与路由挂载都**保留**，只是不再走 DB。
+ *
+ * ⚠ **Phase 1c Task 5 收窄：6 → 5。** `lib/fixDB.ts` 随死代码清理被**删除**
+ *   （它只被 `check-copy.cjs` 的"必须存在"断言钉住，那条断言也一并删了）。
+ *   `lib/initDB.ts` 从来不在本清单里（它拿的是**传入的** Knex 参数，不 import `systemDb`）。
  */
 const SYSTEM_DB_USERS = [
   "routes/setting/dbConfig/clearData.ts",
@@ -38,7 +42,6 @@ const SYSTEM_DB_USERS = [
   "routes/setting/dbConfig/dbInfo.ts",
   "routes/setting/dbConfig/exportData.ts",
   "routes/setting/dbConfig/importData.ts",
-  "lib/fixDB.ts",
 ];
 
 /** 行首的 `import { … systemDb … } from "@/utils/db"`（别名写法 `systemDb as db` 同样命中）。 */
@@ -76,7 +79,7 @@ const rel = (abs: string) => path.relative(API_ROOT, abs).split(path.sep).join("
 const read = (apiRelPath: string) => fs.readFileSync(path.join(API_ROOT, apiRelPath), "utf8");
 
 describe("唯一绕过口 systemDb 的登记清单（Task 3）", () => {
-  it("6 个豁免文件**各自**显式导入 systemDb（逐个断言，不依赖门禁正则的巧合）", () => {
+  it("5 个豁免文件**各自**显式导入 systemDb（逐个断言，不依赖门禁正则的巧合）", () => {
     for (const r of SYSTEM_DB_USERS) {
       const abs = path.join(API_ROOT, "src", r);
       expect(fs.existsSync(abs), `${r} 必须存在`).toBe(true);

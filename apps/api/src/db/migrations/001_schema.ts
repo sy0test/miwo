@@ -6,7 +6,13 @@
  *
  * 与 `apps/api/src/lib/initDB.ts`（1176 行）的关系：后者是**旧真相**，Phase 1a 起
  * **不再被启动路径调用**（Task 4 摘除，守它的门禁是 `tools/check-dead-ddl.cjs`），本文件是它的替代。
- * 两者会短暂并存（1c 才删旧文件，因为 `apps/api/scripts/verify-phase0.cjs` 的构件清单还断言它存在）。
+ * ⚠ **【Phase 1c Task 5 更新】两个旧文件（`lib/initDB.ts` 与 `lib/fixDB.ts`）已被删除**，
+ *   本文件是**唯一**的结构真相。删掉它们之前钉住它们存在的**不是**
+ *   `apps/api/scripts/verify-phase0.cjs`（该脚本 `checkArtifacts()` 早就只断言
+ *   `src/db/migrations/index.ts`），而是 **`tools/check-copy.cjs` 的 `mustExist` 清单**里
+ *   那条 `apps/api/src/lib/initDB.ts` —— Task 5 就是删这一条 + 下调 `.ts` 下限（235 → 267）。
+ *   原文写"1c 才删旧文件，因为 verify-phase0 的构件清单还断言它存在"是**陈旧陈述**，
+ *   会误导下一个来删断言的人（Phase 0 ledger 反复警告过这一点），故在此按实测事实改正。
  *
  * 与现状库的差异（全部是**有意**的，spec 有据；逐表差集见 Task 3 报告与
  * `apps/api/scripts/gen-schema-migration.cjs` 的机械输出）：

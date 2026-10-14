@@ -84,10 +84,10 @@ const SYSTEM_DB_FORMS = [
   new RegExp(String.raw`\{\s*systemDb\b[^}]*\}\s*=\s*require\s*\(\s*["']${DB_MODULE}["']`),
 ];
 
-/** 已知的"内部用裸 db 但不是特例"的文件（判据见文件头）。多一个就红，少一个也红。 */
+/** 已知的"内部用裸 db 但不是特例"的文件（判据见文件头）。多一个就红，少一个也红。
+ *  ⚠ Phase 1c Task 5 删除了 `lib/fixDB.ts` / `lib/initDB.ts` ⇒ 这两条随之删除
+ *    （清单与代码必须逐项相等，删文件后留条目会红 —— 那是设计意图，不是放宽）。 */
 const KNOWN_DIRECT_DB = [
-  "apps/api/src/lib/fixDB.ts",
-  "apps/api/src/lib/initDB.ts",
   "apps/api/src/utils.ts",
   "apps/api/src/utils/agent/embedding.ts",
   "apps/api/src/utils/db.ts",
@@ -261,7 +261,7 @@ if (RECORD) {
       knexImports: "直接 import ... from \"knex\"（只允许 src/db/** 与 src/lib/**）",
       excludedKnownDirectDbImports: KNOWN_DIRECT_DB,
       excludedReason:
-        "包装层自身（utils.ts / utils/db.ts）、启动期改库（lib/fixDB.ts、lib/initDB.ts 的 Knex 只是类型）、非请求上下文（utils/taskRecord.ts、utils/agent/embedding.ts）用的是默认导出的 dbClient，不受请求上下文隔离约束；它们是内部层，不记为特例。",
+        "包装层自身（utils.ts / utils/db.ts）、非请求上下文（utils/taskRecord.ts、utils/agent/embedding.ts）用的是默认导出的 dbClient，不受请求上下文隔离约束；它们是内部层，不记为特例。⚠ Phase 1c Task 5 起 `lib/fixDB.ts` / `lib/initDB.ts` 已删除（原条目见本条的历史说明）。",
     },
     joins: inherit(found.joins, prev.joins),
     raws: inherit(found.raws, prev.raws),

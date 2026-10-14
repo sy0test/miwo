@@ -46,6 +46,12 @@ Repository: https://github.com/huggingface/transformers.js
 
 -----------------------------
 
+Name: @node-rs/argon2
+License: MIT
+Repository: https://github.com/napi-rs/node-rs
+
+-----------------------------
+
 Name: @rmp135/sql-ts
 License: MIT
 Repository: https://github.com/rmp135/sql-ts
@@ -148,27 +154,9 @@ Repository: https://github.com/motdotla/dotenv
 
 -----------------------------
 
-Name: electron-builder
+Name: esbuild
 License: MIT
-Repository: https://github.com/electron-userland/electron-builder
-
------------------------------
-
-Name: electron-rebuild
-License: MIT
-Repository: https://github.com/electron/electron-rebuild
-
------------------------------
-
-Name: electron
-License: MIT
-Repository: https://github.com/electron/electron
-
------------------------------
-
-Name: electronmon
-License: ISC
-Repository: https://github.com/catdad/electronmon
+Repository: https://github.com/evanw/esbuild
 
 -----------------------------
 
@@ -244,6 +232,12 @@ Repository: https://github.com/expressjs/morgan
 
 -----------------------------
 
+Name: mysql2
+License: MIT
+Repository: https://github.com/sidorares/node-mysql2
+
+-----------------------------
+
 Name: nodemon
 License: MIT
 Repository: https://github.com/remy/nodemon
@@ -304,6 +298,12 @@ Repository: https://github.com/microsoft/TypeScript
 
 -----------------------------
 
+Name: undici
+License: MIT
+Repository: https://github.com/nodejs/undici
+
+-----------------------------
+
 Name: uuid
 License: MIT
 Repository: https://github.com/uuidjs/uuid
@@ -313,6 +313,12 @@ Repository: https://github.com/uuidjs/uuid
 Name: vercel-minimax-ai-provider
 License: Apache-2.0
 Repository: https://github.com/MiniMax-AI/vercel-minimax-ai-provider
+
+-----------------------------
+
+Name: vitest
+License: MIT
+Repository: https://github.com/vitest-dev/vitest
 
 -----------------------------
 

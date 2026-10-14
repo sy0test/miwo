@@ -63,11 +63,14 @@ describe("启动路径（spec §3.3 启动竞态）", () => {
     expect(code).toMatch(/已应用迁移/);
   });
 
-  it("fixDB.ts 与 initDB.ts 顶部都标了已停用", () => {
+  it("两个退役的启动期 DDL 模块**已从仓库删除**（Phase 1c Task 5）", () => {
+    // ⚠ 这条断言在 Task 5 之前是反向的（"两个文件顶部都标了已停用"）。删文件之后，
+    //   真正要钉住的不变式变成"它们不许回来"：一旦有人把任一文件恢复（哪怕只是留着不 import），
+    //   本用例立刻红 —— 而"有没有被 import"由 `tools/check-dead-ddl.cjs` 从 app.ts 走 import 图负责。
     for (const f of ["initDB.ts", "fixDB.ts"]) {
-      const src = readSrc("src", "lib", f);
-      expect(src.slice(0, 1600), f).toMatch(/已停用/);
+      expect(fs.existsSync(path.join(API_ROOT, "src", "lib", f)), `src/lib/${f} 应已在 Phase 1c Task 5 删除`).toBe(false);
     }
+    expect(fs.existsSync(path.join(API_ROOT, "src", "core.ts")), "src/core.ts 应已在 Phase 1c Task 5 删除").toBe(false);
   });
 
   it("connect() 在连不上时给出可操作的报错（不是裸的 tarn 超时）", async () => {

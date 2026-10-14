@@ -4,14 +4,15 @@
  * 覆盖五件事：
  *   1. `up` **只报告不写盘**（内容与 mtime 都不变）；
  *   2. `down` 是 no-op；
- *   3. **启动链**（`src/db/**`、`src/lib/{initDB,fixDB}.ts`、`src/utils/db.ts`、`src/app.ts`）
+ *   3. **启动链**（`src/db/**`、`src/utils/db.ts`、`src/app.ts`；Phase 1c Task 5 起
+ *      `src/lib/{initDB,fixDB}.ts` 已删除、不再在链上）
  *      里不再有任何"写 vendor 文件"的代码形态 —— 这是"构造性消除 `\r\n` 假红灯"的守卫，
- *      **有判别力**：把 `writeCode(...)` 临时加回 `fixDB.ts` 必须让本用例变红（见 report 的红绿证据）；
+ *      **有判别力**：把 `writeCode(...)` 临时加回 `src/db/**` 下的任一文件必须让本用例变红；
  *   4. `src/**` 全树里**只有** `utils/vendor.ts` 写 `data/vendor/*.ts`（其余调用方都是**请求期**的
  *      供应商配置页接口，不在启动路径上，brief Step 2 的 `git grep` 期望值就是它们）；
  *   5. 真仓库的 `data/vendor/*.ts` 当前不含 CR 字节。
  *
- * ⚠ 本文件**不得** import `@/utils` / `@/lib/fixDB`：那会把 knex/连接链拖进来
+ * ⚠ 本文件**不得** import `@/utils` / `@/utils/db`：那会把 knex/连接链拖进来
  *   （`db-boot-order.test.ts` 文件头记录了同一个坑）。这里只读源码文本 + 只跑迁移本体。
  */
 import fs from "node:fs";
@@ -31,7 +32,9 @@ function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
-/** 启动链上的文件（按目录/文件枚举，避免"以后新增的文件悄悄绕过守卫"）。 */
+/** 启动链上的文件（按目录/文件枚举，避免"以后新增的文件悄悄绕过守卫"）。
+ *  ⚠ Phase 1c Task 5：`lib/initDB.ts` / `lib/fixDB.ts` 已**删除**，不再进这份清单
+ *    （它们曾经是启动链上"会写 vendor 文件"的地方，现在连文件都没有了）。 */
 function startupFiles(): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
@@ -42,7 +45,7 @@ function startupFiles(): string[] {
     }
   };
   walk(path.join(SRC, "db"));
-  for (const rel of ["lib/initDB.ts", "lib/fixDB.ts", "utils/db.ts", "app.ts"]) out.push(path.join(SRC, ...rel.split("/")));
+  for (const rel of ["utils/db.ts", "app.ts"]) out.push(path.join(SRC, ...rel.split("/")));
   return out;
 }
 
@@ -142,7 +145,7 @@ describe("003_vendor_asset_sync（Phase 0 deferred：vendor.json 与 data/vendor
     }
   });
 
-  it("启动链（db/**、lib/{initDB,fixDB}.ts、utils/db.ts、app.ts）没有任何写 vendor 文件的代码", () => {
+  it("启动链（db/**、utils/db.ts、app.ts）没有任何写 vendor 文件的代码", () => {
     const hits: string[] = [];
     for (const p of startupFiles()) {
       const code = stripComments(fs.readFileSync(p, "utf8"));
@@ -167,25 +170,28 @@ describe("003_vendor_asset_sync（Phase 0 deferred：vendor.json 与 data/vendor
     for (const a of ALLOW) expect(hits.some((h) => h.startsWith(a + " → ")), `${a} 不再是写盘点，请从允许清单里删掉`).toBe(true);
   });
 
-  it("fixDB.ts 里三处危险代码的**字面形态**都不在了（`code ?? \"\"` / tempOnsert / writeCode / vendor.json）", () => {
-    const src = stripComments(fs.readFileSync(path.join(API_ROOT, "src", "lib", "fixDB.ts"), "utf8"));
-    expect(src, "fixDB.ts 不应再 import vendor.json").not.toMatch(/vendor\.json/);
-    expect(src, "fixDB.ts 不应再有 `code ?? \"\"` 空文件兜底").not.toMatch(/code\s*\?\?\s*["']["']/);
-    expect(src, "fixDB.ts 不应再调用 tempOnsert").not.toMatch(/tempOnsert\s*\(/);
-    expect(src, "fixDB.ts 不应再调用 writeCode").not.toMatch(/writeCode\s*\(/);
-    expect(src, "fixDB.ts 不应再 import sucrase").not.toMatch(/from\s+["']sucrase["']/);
+  it("两个会写 vendor 文件的旧模块**已删除**（Phase 1c Task 5；比「字面形态不在」更强的不变式）", () => {
+    // Task 5 之前这条用例读 `src/lib/fixDB.ts` 断言"`code ?? \"\"` / tempOnsert / writeCode / vendor.json
+    // 的字面形态都不在了"。文件被删之后，更强的说法是"它们根本不存在" —— 写盘面**构造性消失**。
+    for (const f of ["fixDB.ts", "initDB.ts"]) {
+      expect(fs.existsSync(path.join(API_ROOT, "src", "lib", f)), `src/lib/${f} 应已在 Phase 1c Task 5 删除`).toBe(false);
+    }
   });
 
   it("真仓库的 data/vendor/*.ts 当前不含 CR 字节（否则 check-eol 会假红灯）", () => {
     const dir = path.join(API_ROOT, "data", "vendor");
-    if (!fs.existsSync(dir)) return;
+    // ⚠ 原来是 `if (!fs.existsSync(dir)) return;`（**静默早退**）——本文件的改动把这两条用例推到
+    //    了 `tools/check-test-early-return.cjs` 的判据里，于是它被如实报红。这里**不是**为了让门禁
+    //    变绿而放宽：`data/vendor` 是**仓库内**的受控资产（`check-copy.cjs` 断言它有 13 个 .ts），
+    //    它不在磁盘上本身就是**应失败**的状态，不是"该跳过"。改成显式失败（含可执行的修复提示）。
+    expect(fs.existsSync(dir), `缺少受控资产目录 ${dir}（它应由 git 跟踪带下来，缺了说明 checkout 不完整）`).toBe(true);
     const withCr = fs.readdirSync(dir).filter((f) => f.endsWith(".ts") && fs.readFileSync(path.join(dir, f)).includes(0x0d));
     expect(withCr, `这些适配器文件含 CR，跑 tools/normalize-eol.cjs --apply 修复：${withCr.join(", ")}`).toEqual([]);
   });
 
   it("真仓库 13 个适配器都是合法 UTF-8 且无 NUL（对账读的是 utf8；也有别的工具会读它们）", () => {
     const dir = path.join(API_ROOT, "data", "vendor");
-    if (!fs.existsSync(dir)) return;
+    expect(fs.existsSync(dir), `缺少受控资产目录 ${dir}（同上：受控资产不在磁盘上 = 应失败，不是该跳过）`).toBe(true);
     const bad: string[] = [];
     for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".ts"))) {
       const buf = fs.readFileSync(path.join(dir, f));

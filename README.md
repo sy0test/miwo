@@ -64,7 +64,7 @@ pnpm.cmd dev
 ### 数据层（Phase 1a 起）
 
 - **驱动**：knex + `mysql2`（MySQL）/ `better-sqlite3`（SQLite，回归网与 `verify-phase0` 用）；由 `MIWO_DB_DRIVER` 决定（缺省 `sqlite`）。
-- **表结构**：唯一真相是 `apps/api/src/db/migrations/`（版本化迁移），**不再**由启动期的 `lib/initDB.ts` / `lib/fixDB.ts` 建/改（那两个文件是死代码，见「迁移纪律」末条与 `tools/check-dead-ddl.cjs`）。
+- **表结构**：唯一真相是 `apps/api/src/db/migrations/`（版本化迁移），**不再**由启动期的 `lib/initDB.ts` / `lib/fixDB.ts` 建/改（**这两个文件已在 Phase 1c Task 5 删除**；守它的门禁是 `tools/check-dead-ddl.cjs`）。
 - **启动序列**：连接 → `migrate.latest()` → 监听端口；迁移失败即退出（见下面 §0 的图）。
 - **手册**：本文件（`README.md`）的「数据层手册（Phase 1a）」一节（新增迁移 / 回滚 / 本机 MySQL / 老库搬迁 / 降级口径）。
 - **验收**：`pnpm.cmd run verify:phase1a`；当前 baseline 见 §5（**60/60**，sqlite 与 MySQL 双口径）。
@@ -594,14 +594,14 @@ node tools/tenant-redend.cjs   # 11 项红端可复现（隔离副本 + VCS 还�
   ⚠ `--down` / `--redo` **会重建所有表、破坏数据**：先在一次性库上试（把 `MIWO_DATA_DIR` 指到 `%TEMP%` 下的空目录）。
 - **启动路径（Phase 1a / Task 4 起）**：应用启动时先 **连接 → 跑迁移**，**迁移完成才监听端口**
   （`src/db/connect.ts` 的 `connect()` ← `src/utils/db.ts` 导出的 `dbReady` ← `src/app.ts` 在 `server.listen` 之前
-  `await dbReady`）。旧实现的"未被 await 的 IIFE 里跑 `initDB` + `fixDB`"已删除；`initDB.ts` / `fixDB.ts`
-  两个文件**仍在仓库里但已不在启动链上**（**只为 `tools/check-copy.cjs:94` 的构件断言存在**，删除归 Phase 1c），
-  ⚠ **【L1 更正】原写"只为 `verify-phase0.cjs` 的构件断言存在"—— 过期了**：`verify-phase0.cjs:179`
-  已把那条换成 `apps/api/src/db/migrations/index.ts`（Phase 1a / Task 11）。现在钉住这两个文件的
-  只有 `check-copy.cjs` 的"必须存在"清单。同样的更正适用于 `deferred #7` 与
-  `src/lib/{initDB,fixDB}.ts`、`src/utils/db.ts` 三处文件头注释。
+  `await dbReady`）。旧实现的"未被 await 的 IIFE 里跑 `initDB` + `fixDB`"已删除；
+  ⚠ **【Phase 1c Task 5 更新】`initDB.ts` / `fixDB.ts` / `core.ts` 已从仓库删除。**
+  原文写"两个文件仍在仓库里，只为 `tools/check-copy.cjs:94` 的构件断言存在" —— 那两个文件与
+  那条"必须存在"断言在同一个 Task 里一起删掉了（`check-copy` 的 `.ts` 下限同步 235 → 267）。
+  ⚠ **【L1 更正】更早的原文写"只为 `verify-phase0.cjs` 的构件断言存在"—— 那也是过期的**：
+  `verify-phase0.cjs:179` 早在 Phase 1a / Task 11 就换成了 `apps/api/src/db/migrations/index.ts`。
   这条不变式由门禁 **`node tools/check-dead-ddl.cjs`**（`pnpm.cmd run verify:dead-ddl`）守住：它从 `src/app.ts`
-  出发走 import 图，链上出现 `initDB`/`fixDB` 的**代码级**引用就报红（4 个用户触发的运维路由逐条豁免、附理由）。
+  出发走 import 图，链上出现 `initDB`/`fixDB` 的**代码级**引用就报红（Task 5 起豁免清单为**空**）。
 
 ### ⚠ 不支持"在老库上原地跑迁移"（症状 → 原因 → 怎么做）
 
@@ -815,7 +815,8 @@ pnpm.cmd run db:compare -- --manifest=$out                                  # �
 | 1 | 把 6 类 `state='生成中'` 的行**无条件**改判失败（`o_novel.eventState=0`、`o_script.extractState=0`、`o_assets.promptState`、`o_image.state`、`o_storyboard.state`、`o_video.state`） | **不再自动改判** | 重启后残留的"生成中"会**一直留在那里**（这正是删除的收益：多实例不再互踩、不再误杀正在跑的任务）。正式替代是 **Phase 1d 的队列租约超时**（spec §9.2）；在 1d 落地前，人工清除用 **`pnpm.cmd run db:repair-stuck`**（下节） |
 | 2 | **无条件覆写** `o_prompt.data` 全文 | **不再覆写** | **收益**：运营改过的提示词不再每次重启被冲掉。新库的提示词由 `002_platform_seed`（Task 5）**只插不改** |
 
-> 登记落点：本表 + `apps/api/src/db/migrations/001_schema.ts` 的 `up` 开头 + `apps/api/src/lib/fixDB.ts` 顶部"已停用"横幅
+> 登记落点：本表 + `apps/api/src/db/migrations/001_schema.ts` 的 `up` 开头（`lib/fixDB.ts` 的
+> "已停用"横幅已随该文件在 Phase 1c Task 5 删除，此处不再作为登记落点）
 > + `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-4-report.md`。
 
 ### `db:repair-stuck`（人工清除"卡在生成中"的残留行）
@@ -915,7 +916,7 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
 | 4 | `knex_migrations` / `knex_migrations_lock` 的策略声明 | Phase 1b | 本阶段实测这两张表会被 knex 创建（Task 7 Step 4）；`policies.ts` 是 fail-closed 的，**必须显式声明**否则将来碰它们就报错 |
 | 5 | `o_project.id` 去掉 `Date.now()` | Phase 1b | spec §5.3（同批改 `addProject.ts:29`） |
 | 6 | 35 处 `insert` 的 `insertId` 语义复核 | Phase 1b | spec §5.3；本阶段已在 Task 3 Step 9 与 Task 7 Step 6 把差异钉成断言 |
-| 7 | 删除 `lib/initDB.ts` / `lib/fixDB.ts`（+ 把 `check-copy` 的 `.ts` 下限再降） | Phase 1c | 本阶段已摘除启动路径 + 删掉危险分支；删文件会撞 **`tools/check-copy.cjs:94`** 的"必须存在"清单与 `check-copy` 下限。⚠ **【L1 更正】原写"撞 `verify-phase0` 的构件清单"—— 过期了**：`verify-phase0.cjs:179` 已换成 `db/migrations/index.ts`，它不再断言这两个文件 |
+| 7 | 删除 `lib/initDB.ts` / `lib/fixDB.ts`（+ 把 `check-copy` 的 `.ts` 下限再降） | **Phase 1c Task 5 已完成** | 本阶段已摘除启动路径 + 删掉危险分支；删文件撞的是 **`tools/check-copy.cjs`** 的"必须存在"清单与 `.ts` 下限（**已一并处理**：清单条目删除、下限 235 → 实测 267；`check-brand` 的 `idRefFiles` 改锚 `db/legacy/vendor-merge.ts`，`check-tenant-exceptions` 的 `KNOWN_DIRECT_DB` 与清单同时收敛，`check-dead-ddl` 豁免清空）。⚠ **【L1 更正】更早原文写"撞 `verify-phase0` 的构件清单"—— 过期了**：`verify-phase0.cjs:179` 在 Phase 1a / Task 11 就已换成 `db/migrations/index.ts` |
 | 8 | `o_user` 重建（argon2id / role / tokenVersion / 删 `admin/admin123`） | Phase 1c | spec §7.1；本阶段按现状建表（`bigint unsigned` 无自增） |
 | 9 | `o_setting` 的 `tokenKey` 彻底移出 DB + 7 个用户级键迁 `o_userSetting` | Phase 1c | spec §6.2；本阶段的 `002_platform_seed` **不 seed** `tokenKey` 与用户级键（且有断言禁止 `tokenKey` 入新库） |
 | 10 | 重启后"生成中"不再自动改判失败 | **Phase 1d** | spec §5.2 ② 要求删除那 6 条 UPDATE；替代机制是队列租约超时（§9.2）。**中间窗口的语义变化已在 Task 4 Step 6 盖章** |

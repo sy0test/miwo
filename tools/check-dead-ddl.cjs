@@ -5,11 +5,11 @@
  *
  * WHY a dedicated gate instead of an assertion inside check-copy.cjs:
  *   check-copy.cjs is the "copy completeness" gate (file counts / tracked-vs-disk floors).
- *   It deliberately asserts that `src/lib/initDB.ts` EXISTS (line ~94) because
- *   `scripts/verify-phase0.cjs` needs it. Folding a "must not be referenced" rule into the
- *   same file would put two contradictory duties in one script and would tempt a future
- *   reader to relax a floor to make it pass. This gate is narrow, has its own script name,
- *   its own npm script (`verify:dead-ddl`) and its own exit code.
+ *   ⚠ **Phase 1c Task 5** deleted the two retired modules and, with them, check-copy's
+ *   "must exist `apps/api/src/lib/initDB.ts`" entry (it was the only thing keeping them in
+ *   the repo). The two duties stay in separate scripts anyway: "this file must exist" and
+ *   "the boot chain must not name it" are contradictory in one file and would tempt a future
+ *   reader to relax a floor to make it pass.
  *
  * WHAT it checks: start at `apps/api/src/app.ts` (= the non-Electron entry; it calls
  *   `startServe()` at module level) and walk the **static import graph** via `@/...` and
@@ -84,39 +84,16 @@ const EXTS = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".d.ts"];
  * less (see the header). A `count` that is too high = stale exemption; too low = the
  * exemption would silently hide an extra occurrence.
  *
- * NOTE (honest scope): the four route modules below are *reachable* from app.ts because
- * `src/router.ts` statically imports every route (it is a generated file). Task 4 removed
- * the **unconditional, every-boot** invocations in `src/utils/db.ts`; these four are
- * user-triggered admin/ops endpoints whose handler bodies call `initDB` on request.
- * Removing/rewriting those endpoints is Phase 1b (see src/db/tenant-exceptions.json).
- * Phase 1a must not change route/业务 code, so they are exempted here - individually, so
- * that when Phase 1b deletes them this gate turns red and the list gets cleaned up.
+ * ── EMPTY since Phase 1c Task 5, and that is the point ──
+ * Task 4 recorded four request-triggered route modules here (count 2/2/1 + a 1b-removed
+ * `deleteAllData.ts`). Task 5 rewrote/deleted all of them (`clearData` / `importData` now
+ * take their dialect branch from `src/lib/dbOps.ts` instead of `initDB`, and
+ * `getSwitchAiDevTool.ts` dropped its dead import), so every declared count fell to 0 and
+ * the gate went red - **by design**: the header's rule is "when those routes are reworked,
+ * the list gets cleaned up", so the entries were DELETED, not relaxed. The two retired
+ * modules themselves are gone from the repo, so there is nothing left to exempt.
  */
-const EXEMPTIONS = [
-  // ⚠ `apps/api/src/routes/other/deleteAllData.ts` 曾在此登记（count: 2：`import initDB` + `initDB(db, true)`）。
-  //   **Phase 1b Task 7 已按本 gate 的设计把它清掉**：该路由改为**无条件 501 停用**，不再 import `initDB`、
-  //   也不再持有 `systemDb` ⇒ 命中数 2 → 0。gate 头的规矩是"路线被改写/删除时清单必须清掉"
-  //   （count 不符即红），所以这里删条目而**不是**放宽判据；路由文件本身与 `router.ts` 的挂载都保留
-  //   （删了会让 check-copy 的构件断言与依赖图一起漂）。
-  {
-    file: "apps/api/src/routes/setting/dbConfig/clearData.ts",
-    count: 2,
-    reason:
-      "GET /setting/dbConfig/clearData drops all tables then calls initDB(db) to rebuild them - request-triggered, not boot-triggered. Phase 1b 只做了收权（requireAdmin），接口仍可用；Phase 1c 才决定它是改是删。",
-  },
-  {
-    file: "apps/api/src/routes/setting/dbConfig/importData.ts",
-    count: 2,
-    reason:
-      "POST /setting/dbConfig/importData drops all tables, calls initDB(db) and then imports rows - request-triggered, not boot-triggered. Phase 1b reworks it; Phase 1a must not touch route code.",
-  },
-  {
-    file: "apps/api/src/routes/setting/dev/getSwitchAiDevTool.ts",
-    count: 1,
-    reason:
-      "GET /setting/dev/getSwitchAiDevTool imports initDB but NEVER calls it (dead import). Recorded here so the gate is honest about the current state; removing the dead import is a 1-line cleanup that belongs with the Phase 1b route work.",
-  },
-];
+const EXEMPTIONS = [];
 
 const failures = [];
 const warnings = [];
@@ -325,7 +302,7 @@ for (const w of warnings) console.warn("[check-dead-ddl] warning: " + w);
 if (failures.length) {
   console.error("check-dead-ddl FAILED: the boot chain (from apps/api/src/app.ts) must not use initDB/fixDB.");
   console.error("  The every-boot DDL/DML side effects were replaced by src/db/connect.ts connect() + src/db/migrations/.");
-  console.error("  Two routines stay in the repo only for verify-phase0.cjs's artifact assertion (deleted in Phase 1c).");
+  console.error("  Both retired modules were DELETED in Phase 1c Task 5 - naming them anywhere on the boot chain fails here.");
   console.error("  Both the bare identifier and any specifier resolving to lib/initDB.ts / lib/fixDB.ts count as coupling.");
   for (const f of failures) console.error("  - " + f);
   console.error(`  scanned: ${reachable.length} reachable module(s) from apps/api/src/app.ts`);

@@ -496,7 +496,9 @@ if (protocolTotal === 0) failures.push(`toonflow:// 共 0 处：Phase 0 不应�
 const ID_CANDIDATES = ["toonflow", "miwo"];
 const idRefFiles = [
   "apps/api/src/routes/setting/agentDeploy/agentSetKey.ts",
-  "apps/api/src/lib/fixDB.ts",
+  // ⚠ 原来是 apps/api/src/lib/fixDB.ts（Phase 1c Task 5 已删）。供应商 id 的"迁移侧引用"改锚到
+  //   merge 迁移模块：它同样必须含 `miwo` 字面量（`mergeVendorId` 的 `newId` 缺省值）才能执行合并语义。
+  "apps/api/src/db/legacy/vendor-merge.ts",
   "apps/api/src/routes/setting/vendorConfig/getVendorList.ts",
 ];
 const foundIds = new Set();

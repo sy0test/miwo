@@ -96,7 +96,6 @@ for (const p of [
   "apps/api/src/app.ts",
   "apps/api/src/config.ts",
   "apps/api/src/router.ts",
-  "apps/api/src/lib/initDB.ts",
   "apps/api/src/utils/db.ts",
   "apps/api/scripts",
   "apps/api/data/skills",
@@ -154,17 +153,17 @@ for (const p of UNCOMMITTABLE) mustNotBeTracked(p);
 // 上游 src 有 236 个 .ts；本 Task 删掉死文件 src/socket/resTool copy.ts 后为 235。
 // Task 7 新增 src/config.ts 后回到 236。用 git 跟踪计数（clone 不变异性）。
 //
-// ⚠⚠ 【Ruling 12·必做】**235 是当前下限；下调必须随"真正删 `.ts`"的 Task 一并做，
-//     禁止单独为"好看"下调。**
+// ⚠⚠ 【Ruling 12·必做】**235 是当前下限**；下调必须随"真正删 `.ts`"的 Task 一并做，
+//     禁止单独为"好看"下调。
 //   为什么把这句话写在这里（而不是留在账本里）：计划 Task 1 Step 2 的 Expected 写的是 **234**，
 //   而控制器裁定保留 **235** ⇒ brief / 实现 / 裁定三处口径不一致，Task 4/10 回看会困惑。
-//   同时实测窗口已从 3 放宽到 **9**：当前 `apps/api/src` 下 git 跟踪的 `.ts` 是 **244**，
-//   而下限 235 ⇒ "连删 9 个 `.ts` 都不会红"。窗口偏宽本身不构成削弱（`mustAtLeast` 是防批量
-//   误删的下限，新增永不触发），但**再往下调就是在放宽判别力** —— 所以：
-//     · 只有"真的删掉了 `.ts` 文件"的 Task 才允许把它调到「新实测值」；
-//     · 调的时候必须把新数字与**删了哪几个文件**一起写进该 Task 的报告；
-//     · 禁止为了让某次改动"看起来干净"而单独下调（那会把这条门禁变成装饰）。
-mustAtLeast("apps/api/src 下 .ts 文件数（git 跟踪）", countTrackedFiles("apps/api/src", (p) => p.endsWith(".ts")), 235);
+//   历史轨迹（每一步都对应一次**真实删除**，不是"调整阈值"）：
+//     · 235（Phase 0 起点）→ 实测一度是 244，窗口宽到"连删 9 个 `.ts` 都不会红"；
+//     · **Phase 1c Task 5 删除 3 个死文件**（`src/lib/initDB.ts`、`src/lib/fixDB.ts`、`src/core.ts`）
+//       ⇒ 本次把下限从 235 调到**实测值 267**（`git ls-files -- apps/api/src` 里 `.ts` 计数：
+//       删前 270 → 删后 267）。窗口由 9 收到 **0**：再删任何一个 `.ts` 都会当场红，这是**收紧**。
+//     · 这是本文件里**唯一**允许被"删文件的 Task"改动的数字；新增 `.ts` 永远不会触发它。
+mustAtLeast("apps/api/src 下 .ts 文件数（git 跟踪）", countTrackedFiles("apps/api/src", (p) => p.endsWith(".ts")), 267);
 // ⚠ 必须用 git 跟踪计数：磁盘上是 434，但那 2 个多出来的是 vite 插件生成、被 .gitignore 忽略的
 //    src/types/{auto-imports,components}.d.ts，全新克隆只有 432 个 → 用磁盘计数会在 CI 上假失败。
 mustAtLeast("apps/web/src 下文件数（git 跟踪）", countTrackedFiles("apps/web/src"), 432);

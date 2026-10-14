@@ -1035,21 +1035,25 @@ const G_RULINGS = "G 裁定落地核对";
     );
   }
 
-  // ---- Ruling 12 ↔ "`check-copy.cjs` 含该注释"（235 下限 + 禁止单独下调）----
+  // ---- Ruling 12 ↔ "`check-copy.cjs` 含该注释"（下限 + 禁止单独下调）----
   {
     const ccPath = path.join(MIWO_ROOT, "tools", "check-copy.cjs");
     const ccSrc = fs.existsSync(ccPath) ? fs.readFileSync(ccPath, "utf8") : "";
+    // ⚠ **Phase 1c Task 5 起阈值是 267**（删了 initDB/fixDB/core 三个 `.ts`，下限随实测值下调 ——
+    //    这正是 Brief 5 Step 4 与 Ruling 12 要求的"下调必须随真正删文件的 Task 一起做"）。
+    //    这句话「235 是当前下限」在注释里**保留**：它是 Ruling 12 的原话与历史起点，
+    //    真正的判据是下面那条"当前生效值 = 267"的调用行断言（它会挡住"悄悄改回 235"或"随手再降"）。
     pass(
       G_RULINGS,
-      "Ruling12（必做）：tools/check-copy.cjs 在阈值处含「235 是当前下限；下调必须随真正删 .ts 的 Task」注释",
-      // ⚠ 三个判据分别锚在：注释的两句关键话 + **真正生效的那次 `mustAtLeast(..., 235)` 调用**。
-      //    最后一个不能用 `/mustAtLeast\([\s\S]{0,80}?,\s*235\)/`：那个正则会被**函数定义行**
+      "Ruling12（必做）：tools/check-copy.cjs 在阈值处含「235 是当前下限；下调必须随真正删 .ts 的 Task」注释，且生效阈值 = Phase 1c Task 5 实测值 267",
+      // ⚠ 三个判据分别锚在：注释的两句关键话 + **真正生效的那次 `mustAtLeast(..., 267)` 调用**。
+      //    最后一个不能用 `/mustAtLeast\([\s\S]{0,80}?,\s*267\)/`：那个正则会被**函数定义行**
       //    （`function mustAtLeast(label, actual, min) {`）之后的正文抢先命中（实测恒真/恒假都不对）。
-      //    改成逐行找"以 `mustAtLeast(` 开头的调用行、且该行以 `, 235);` 结尾"。
+      //    改成逐行找"以 `mustAtLeast(` 开头的调用行、且该行以 `, 267);` 结尾"。
       /235 是当前下限/.test(ccSrc) &&
         /禁止单独为/.test(ccSrc) &&
-        ccSrc.split(/\r?\n/).some((l) => /^\s*mustAtLeast\(/.test(l) && /,\s*235\);\s*$/.test(l)),
-      ccSrc ? "注释或 235 阈值缺失" : "check-copy.cjs 不存在",
+        ccSrc.split(/\r?\n/).some((l) => /^\s*mustAtLeast\(/.test(l) && /,\s*267\);\s*$/.test(l)),
+      ccSrc ? "注释或 267 阈值缺失（Phase 1c Task 5 把下限随「删除 3 个 .ts」下调到实测值 267）" : "check-copy.cjs 不存在",
     );
     // 计划文件里的就地标注（本机路径；CI 上没有该文件 → 记信息行，不算判据）
     const planPath = "D:\\sy_workspace\\docs\\superpowers\\plans\\2026-10-12-miwo-phase1a-mysql-migrations.md";

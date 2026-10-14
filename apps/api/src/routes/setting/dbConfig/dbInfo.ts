@@ -2,6 +2,7 @@ import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { systemDb as db } from "@/utils/db"; // 实例级运维（整库/动态表名）：租户条件无法限定 ⇒ 显式走唯一绕过口
 import { requireAdmin } from "@/middleware/tenant"; // Phase 1b Task 7：运维接口收权（无 ctx 401 / 非 admin 403）
+import { listTables, tableRowCount } from "@/lib/dbOps";
 import { AUDIT_ACTIONS, actorFromCtx, audit } from "@/utils/audit";
 
 const router = express.Router();
@@ -16,22 +17,19 @@ const router = express.Router();
  *     （代价大于收益）。这条取舍写进报告。
  *   ⚠ 本接口**未做脱敏**（本来就只回表名与行数）；但行数本身能反映租户规模 ⇒ 仍收权到 admin。
  *
- * ⚠ 已知未修（如实登记）：`sqlite_master` 是 **sqlite 方言**，MySQL 下无效（Phase 2 的跨方言运维工具）。
+ * ⚠ **Phase 1c Task 5+6（裁定 §2.5）已修掉"sqlite 专属"**：表清单与行数改走 `@/lib/dbOps`
+ *   （sqlite → `sqlite_master`；mysql → `information_schema.tables`，两边都用 `count({n:"*"})`）。
+ *   旧写法 `SELECT name FROM sqlite_master` 在 MySQL 上 `ER_NO_SUCH_TABLE` ⇒ 运维在出事时
+ *   **看不到任何结构信息**。⚠ mysql 分支**未实测**（本机不起 MySQL），只有 `toSQL()` 形态证明。
  */
 export default router.get("/", requireAdmin, async (req, res) => {
   const ctx = actorFromCtx(req.ip);
   try {
-    const tables: { name: string }[] = await db.raw(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'knex_%'`,
-    );
+    const tables = await listTables(db);
 
     const tableInfo = [];
     for (const table of tables) {
-      const countResult = await db.raw(`SELECT COUNT(*) as count FROM "${table.name}"`);
-      tableInfo.push({
-        name: table.name,
-        rowCount: countResult[0]?.count ?? 0,
-      });
+      tableInfo.push({ name: table, rowCount: await tableRowCount(db, table) });
     }
 
     await audit(ctx, AUDIT_ACTIONS.DB_INFO, "all-tables", { tables: tableInfo.length });

@@ -178,9 +178,22 @@ node --import=tsx scripts/check-migration-import-graph.ts     # exit 0 = 干净
     不是安全修复。
   - 正确做法（Phase 1c）：另加"**脱敏导出**"模式（显式参数，导出给审计/排查用），
     **不是把默认备份改残**。导出前请确认接收方与存放位置。
-- `clearData` / `clearTable` / `importData` 在收权后**仍是活的** admin 接口；它们里面的
-  `sqlite_master` / `PRAGMA foreign_keys` / 表名插值都是 **sqlite 方言**，MySQL 下不可用；
-  `clearTable` 只校验"表存在"、没有"允许被清"的白名单 ⇒ 一并归 **Phase 1c**。
+- `clearData` / `clearTable` / `importData` 在收权后**仍是活的** admin 接口。
+
+### 8.1 Phase 1c Task 5+6：运维面的两处收口（本节替代上面那条"归 Phase 1c"）
+
+- **跨方言（裁定 §2.5）**：表清单 / 关开外键 / 表存在性 / 列清单改走 `src/lib/dbOps.ts`
+  （sqlite → `sqlite_master` + `PRAGMA`；mysql → `information_schema.tables` + `SET FOREIGN_KEY_CHECKS`），
+  重建表结构改走**迁移**（`runMigrations`，原来的 `initDB` 已随死代码删除）。
+  旧实现的 `sqlite_master` / `PRAGMA foreign_keys` / 手写 `SELECT * FROM "${t}"` 在 MySQL 上
+  **整片不可用**（表不存在 / 语法错）⇒ 运维在出事时导不出备份、看不到结构。
+  ⚠ **mysql 分支未实测**（本机不起 MySQL），只有 `createKnex({client:"mysql2"})` + `toSQL()` 的形态证明。
+- **`importData` 收窄（凭据面）**：`o_user` / `o_vendorConfig` / `o_setting` **拒绝导入**（HTTP 400），
+  不再 drop 全库，只对文件里出现过的白名单表做 `delete + insert`（一个事务，失败整体回滚）。
+  **其余 platform 表（`o_artStyle` / `o_agentDeploy` / `o_prompt` / `o_modelPrompt`）仍可导入** —— 它们是运营资产。
+  整库恢复（含凭据表）请走**停机窗口的运维脚本**，不要经 HTTP。
+- **`clearData` 只重建、不重新种子**：`knex_migrations` 不在被删清单里 ⇒ 已执行过的迁移（含
+  `002_platform_seed`）会被跳过。这是**有意**的：重跑种子会把运维改过的 `o_setting` / `o_agentDeploy` 改回去。
 
 ## 9. 未验证项
 

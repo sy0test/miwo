@@ -50,9 +50,9 @@ const GENERATE_DB_TYPES = config.env === "dev" && process.env.MIWO_GEN_DB_TYPES 
  * ⚠ 这修的是 spec §3.3 点名的**启动竞态**：原实现是"**未被 await** 的 IIFE 里跑 initDB + fixDB"
  *    —— 建表没完成就开始接请求（表现为冷启动第一批请求偶发 `no such table`）。
  *
- * ⚠ 这里**不再**调用 `@/lib/initDB` / `@/lib/fixDB`（Task 4 Step 3 摘除）。两个文件仍留在仓库里，
- *    但只是**死代码**：它们的存在只为 **`tools/check-copy.cjs:94`** 的构件断言（"必须存在"清单里
- *    有 `apps/api/src/lib/initDB.ts`），删除归 Phase 1c。
+ * ⚠ 这里**不再**调用 `@/lib/initDB` / `@/lib/fixDB`（Task 4 Step 3 摘除；**Phase 1c Task 5 已把
+ *    两个文件整体删除** —— 它们此前只被 `tools/check-copy.cjs` 的"必须存在"断言钉住，那条断言
+ *    已随删除动作一起移除）。
  *    ⚠ **【L1 更正】原写"只为 `apps/api/scripts/verify-phase0.cjs` 的构件清单断言"—— 过期了**：
  *      `verify-phase0.cjs:179` 已把那条换成 `apps/api/src/db/migrations/index.ts`（Task 11）。
  *    守这条不变式的门禁是 `tools/check-dead-ddl.cjs`（从 `src/app.ts` 出发的 import 图上不得再出现它们）。
@@ -131,9 +131,11 @@ export default dbClient;
 /**
  * **裸 knex（唯一合法的显式绕过口）**。只给三类调用者：
  *   1. 实例级运维接口（`routes/setting/dbConfig/*`、`routes/other/deleteAllData.ts`）——
- *      它们要读 `sqlite_master`、`PRAGMA`、按动态表名整库遍历，**根本无法**被租户条件限定；
+ *      它们要按动态表名整库遍历（表清单走 `src/lib/dbOps.ts` 的**跨方言**查询），
+ *      **根本无法**被租户条件限定；
  *   2. 启动期 / CLI / 迁移（`db/connect.ts`、`db/migrations/*`）——显然不属于任何租户；
- *   3. 死代码里的"启动期改库"（`lib/fixDB.ts`，Phase 1c 删除）。
+ *   3. ~~死代码里的"启动期改库"（`lib/fixDB.ts`）~~ —— **Phase 1c Task 5 该文件已删除**，
+ *      这一类调用者不再存在（这正是"出口数量收敛"的期望方向）。
  *
  * ⚠ **请求路径禁止使用**：它不经 `makeTenantAware`，没有任何租户条件注入。
  *   使用者必须登记在 `src/db/tenant-exceptions.json` 的 `bypassFiles` 里，
