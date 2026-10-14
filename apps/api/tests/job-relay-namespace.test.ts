@@ -151,4 +151,64 @@ describe("relay → 真 socket 客户端（review-C F3）", () => {
       await db.destroy();
     }
   }, 60_000);
+
+  /**
+   * ★ C 组复核轮 **N2**：`scriptAgent` 的 room join 曾是**死订阅**（同一用户只连它 ⇒ 0 事件）。
+   * 现在 resolver 对**每个订阅方 namespace** 各投一次 ⇒ 两个 namespace 的客户端都收到自己的事件。
+   */
+  it("★ N2：scriptAgent 订阅方也能收到（不再有死订阅），且仍不广播", async () => {
+    const db = createKnex(cfg(path.join(TMP, "relay2.sqlite")));
+    await runMigrations(db);
+    await insertJob(db, 4101, 1);
+    await insertJob(db, 4102, 2);
+
+    const server = http.createServer();
+    const io = new Server(server);
+    for (const p of [PRODUCTION_AGENT_NAMESPACE, "/api/socket/scriptAgent"]) {
+      io.of(p).on("connection", (socket) => {
+        const uid = Number((socket.handshake.auth as { userId?: number })?.userId ?? 0);
+        void socket.join(`user:${uid}`);
+      });
+    }
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as AddressInfo).port;
+    const mk = (nsp: string, userId: number) =>
+      ioClient(`http://127.0.0.1:${port}${nsp}`, { auth: { userId }, transports: ["polling"], reconnection: false, forceNew: true });
+
+    const prod = mk(PRODUCTION_AGENT_NAMESPACE, 4101);
+    const script = mk("/api/socket/scriptAgent", 4102);
+    const stranger = mk(PRODUCTION_AGENT_NAMESPACE, 4103); // 第三方（别的房间）
+    try {
+      await Promise.all([
+        new Promise<void>((r) => prod.on("connect", () => r())),
+        new Promise<void>((r) => script.on("connect", () => r())),
+        new Promise<void>((r) => stranger.on("connect", () => r())),
+      ]);
+      await sleep(150);
+      const seenProd = collect(prod);
+      const seenScript = collect(script);
+      const seenStranger = collect(stranger);
+
+      const relay = startProgressRelay({ db, io, targetOf: makeRelayTargetResolver(io), pollMs: 10_000 });
+      const sent = await relay.tick();
+      relay.stop();
+      await sleep(300);
+      // eslint-disable-next-line no-console
+      console.log(`[N2] sent=${sent} PROD=${seenProd.length} SCRIPT=${seenScript.length} STRANGER=${seenStranger.length}`);
+      expect(sent).toBe(2);
+      expect(seenProd.length, "productionAgent 订阅方必须收到自己的").toBe(1);
+      expect(seenScript.length, "scriptAgent 订阅方也必须收到自己的（改前这里是 0 = 死订阅）").toBe(1);
+      // 两条**不同**的 job 分别落进两个 namespace 的对应房间（job id 是 o_job.id，不是 userId）
+      const ids = [Number(seenProd[0].id), Number(seenScript[0].id)].sort((a, b) => a - b);
+      expect(ids, "两个 namespace 各收到一条、且是两条不同的任务").toEqual([1, 2]);
+      expect(seenStranger.length, "别的人（房间外）一条都收不到").toBe(0);
+    } finally {
+      prod.close();
+      script.close();
+      stranger.close();
+      io.close();
+      await new Promise<void>((r) => server.close(() => r()));
+      await db.destroy();
+    }
+  }, 60_000);
 });

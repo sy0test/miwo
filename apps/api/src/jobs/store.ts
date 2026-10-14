@@ -58,7 +58,8 @@ export function isDuplicateKeyError(e: unknown): boolean {
   return /UNIQUE constraint failed|Duplicate entry/i.test(msg);
 }
 
-export interface JobStoreDeps {  /**
+export interface JobStoreDeps {
+  /**
    * knex 实例。**生产传的是受守卫的 `u.db`**（`src/jobs/index.ts`）—— 传裸 knex 也不会错，
    * 因为本模块只用 `o_job` / `o_gate` 两张 platform 表，但那样就丢掉了"未声明表 fail-closed"的护栏。
    */
@@ -80,7 +81,11 @@ export interface JobStore {
   cancel(id: number, reason?: string): Promise<boolean>;
   reclaimExpired(): Promise<{ requeued: number; dead: number }>;
   activeCounts(): Promise<{ global: number; perUser: Record<string, number> }>;
-  get(id: number): Promise<JobRow | null>;
+  /**
+   * 读单个任务。**作用域必填**（N3）：`get(id, { scope: { userId } })` 或 `{ scope: { all: true } }`。
+   * 缺 scope ⇒ tsc 红；运行时形状不对 ⇒ 抛。
+   */
+  get(id: number, scope: JobScope): Promise<JobRow | null>;
   /**
    * 列举任务。**作用域是必填的**（review-C F5）：`{scope:{userId}}` = 用户可见读取；
    * `{scope:{all:true}}` = 显式系统/全量。两个分支都不可省 —— 见实现处的长注释（1d-3）。
@@ -94,10 +99,29 @@ export interface JobStore {
  * `list()` 的过滤条件。`scope` 是**必填的判别联合**（不是可选字段）：
  * 这样"忘写作用域"在 **tsc 阶段**就红，而不是等到生产上跨租户泄漏。
  */
-export type JobListFilter = { state?: JobState; type?: string; limit?: number } & (
-  | { scope: { userId: number } }
-  | { scope: { all: true } }
-);
+export type JobListFilter = { state?: JobState; type?: string; limit?: number } & { scope: JobScope };
+
+/**
+ * 读取 `o_job` 的作用域（**必填**，C 组复核轮 F5 + N3）。
+ *   · `{ userId: number }` —— 用户可见读取（路由层必须传 `ctx.userId`）；
+ *   · `{ all: true }`     —— **显式**声明"系统/全量"（运维 CLI、对账、测试）。
+ */
+export type JobScope = { userId: number } | { all: true };
+
+/**
+ * 运行时的作用域校验：返回"要按哪个 userId 过滤"（`undefined` = 显式全量）。
+ * ⚠ 类型层已经强制必填；这一层是给**绕过类型**的 JS 调用方（`as never`、CLI 动态调用）兜底 ——
+ *   形状不对一律**抛**，绝不允许"默认全量"。
+ */
+export function requireUserScope(scope: unknown, who: string): number | undefined {
+  const s = scope as { userId?: unknown; all?: unknown } | undefined;
+  if (s && typeof s.userId === "number") return s.userId;
+  if (s && s.all === true) return undefined;
+  throw new Error(
+    `[job] ${who}() 必须显式选择作用域：{ scope: { userId } } 或 { scope: { all: true } }` +
+      `（1d-3：o_job 是 platform 表，守卫不注入 userId）`,
+  );
+}
 
 /**
  * 候选查询（**导出供静态断言**，不执行）。
@@ -416,8 +440,20 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
     return affected === 1;
   }
 
-  async function get(id: number): Promise<JobRow | null> {
-    const row = (await db("o_job").where("id", id).first()) as JobRow | undefined;
+  /**
+   * 读单个任务 —— ⚠⚠ **调用方同样必须显式选择作用域**（C 组复核轮 **N3**：F5 只上了 `list()`）。
+   *
+   * 为什么：与 `list()` 同源 —— `o_job` 是 **platform** 表，守卫不注入 `userId`，而本方法跑在
+   * `asSystem()` 里 ⇒ 不加条件时**任何人都能按 id 读到任何人的任务**（reviewer2 实测：
+   * `ctx.userId=1001` 读 `id=12` 拿到了 `userId=1002` 的那一行，含 `payload` 原文）。
+   * ⇒ `scope` 必填：`{userId}`（用户可见读取，路由层传 `ctx.userId`）或 `{all:true}`（显式系统读）。
+   * 运行时不满足形状 ⇒ **抛**（防 JS 调用方绕过类型）。
+   */
+  async function get(id: number, scope: JobScope): Promise<JobRow | null> {
+    const userId = requireUserScope(scope, "get");
+    const q = db("o_job").where("id", id);
+    if (typeof userId === "number") q.andWhere("userId", userId);
+    const row = (await q.first()) as JobRow | undefined;
     return row ?? null;
   }
 
@@ -435,17 +471,23 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
    * 运行时再兜一层：`scope` 形状不对 ⇒ 抛错（防止 JS 调用方绕过类型）。
    */
   async function list(filter: JobListFilter): Promise<JobRow[]> {
-    const scope = filter?.scope as { userId?: number; all?: boolean } | undefined;
-    if (!scope || (typeof scope.userId !== "number" && scope.all !== true)) {
-      throw new Error("[job] list() 必须显式选择作用域：{ scope: { userId } } 或 { scope: { all: true } }（1d-3：o_job 是 platform 表，守卫不注入 userId）");
-    }
+    const userId = requireUserScope(filter?.scope, "list");
     const q = db("o_job").select("*").orderBy("id", "desc").limit(Math.max(1, Math.min(filter.limit ?? 50, 500)));
-    if (typeof scope.userId === "number") q.andWhere("userId", scope.userId);
+    if (typeof userId === "number") q.andWhere("userId", userId);
     if (filter.state) q.andWhere("state", filter.state);
     if (filter.type) q.andWhere("type", filter.type);
     return (await q) as JobRow[];
   }
 
+  /**
+   * **系统级**统计（按 state 计数，**跨全部租户**）。
+   *
+   * ⚠ 命名/文档上显式标注"系统级"（C 组复核轮 **N3**）：它没有、也**不该有** `scope` 参数 ——
+   *   它的用途是运维看板（"队列里各状态多少条"）与 chaos/verify 断言，本身就是全量口径。
+   *   ⚠⚠ **用户可见的读取绝不许用它**（返回的是别人的量）：那种场景必须 `list({scope:{userId}})`。
+   *   若将来要按用户展示统计，必须新增一个带 `scope` 的方法，**不要**给这个方法加可选参数
+   *   （可选参数 = 又一条"忘了传就全量"的地雷）。
+   */
   async function stats(): Promise<Record<string, number>> {
     const rows = (await db("o_job").select("state").count({ n: "*" }).groupBy("state")) as Array<{ state: string; n: number | string }>;
     const out: Record<string, number> = {};
@@ -495,7 +537,7 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
     cancel: (id, reason) => asSystem(() => cancel(id, reason)),
     reclaimExpired: () => asSystem(() => reclaimExpired()),
     activeCounts: () => asSystem(() => activeCounts()),
-    get: (id) => asSystem(() => get(id)),
+    get: (id, scope) => asSystem(() => get(id, scope)),
     list: (filter) => asSystem(() => list(filter)),
     stats: () => asSystem(() => stats()),
     requeueDead: (id) => asSystem(() => requeueDead(id)),

@@ -111,7 +111,7 @@ export function startWorkerLoop(deps: RunnerDeps): Runner {
    * 返回 `false` = 这条租约已经不属于本次执行（被别人回收/取消/抢走，或已过期）。
    */
   async function verifyLease(jobId: number): Promise<boolean> {
-    const row = await store.get(jobId);
+    const row = await store.get(jobId, { all: true }); // worker 是系统身份调度 ⇒ 显式声明全量作用域（C 组复核轮 N3）
     if (!row) return false;
     if (row.state !== "running" || row.workerId !== workerId) return false;
     // ⚠ 已过期 ⇒ **不续租**（续租会把回收方已经/即将拿走的任务拉回来 → 双执行，见文件头偏离①）

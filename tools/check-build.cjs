@@ -140,17 +140,22 @@ const bundleKB = (after.size / 1024).toFixed(1);
 const workerKB = (workerAfter.size / 1024).toFixed(1);
 
 /**
- * ⑤ 【C 组修复轮 F2】闸门初始化必须**在两条启动链的产物里都观测到**。
+ * ⑤ 【C 组复核轮 N1 修正】闸门初始化必须**在两条启动链的产物里都观测到**。
  *
  * review-C 实测：`__setGateFactory()` 原先只写在 `@/jobs`（桶文件）里，而 API 侧才 import 它
  * ⇒ 构建出的 `worker.js` 里**连这个符号都没有**，worker 进程里六个 handler 的第一次
  * `withVendorSlot()` 直接抛 `[gate] 闸门未初始化`（厂商调用一次都发不出去）。
- * 这条断言把"接线丢失"变成产物级可见的失败：**任一产物观测不到 ⇒ exit 3，不是绿**。
  *
- * ⚠ 只断言符号出现（不依赖构建器是否 tree-shake 得漂亮）：`bootstrapJobInfra()` 内部是
- *   直接调用 `__setGateFactory(...)`，只要该模块被 import 进产物，符号就在。
+ * ⚠⚠ **判据必须是"调用形态"，不能是裸子串**（reviewer2 复核轮 N1：门禁会说谎）：
+ *   裸子串 `__setGateFactory(` **也出现在 `gate.ts` 的错误文案里**
+ *   （`"[gate] 闸门未初始化：启动路径应调用 __setGateFactory()…"`）⇒ 注释掉 bootstrap 之后，
+ *   那个字符串仍留在产物里，门禁**照样 EXIT 0 并打印"闸门初始化 ✓"**（同刻真实调用数 = 0）。
+ *   这正是 Ruling 243 家族"**空转/说谎的检查 = 没有检查**"。
+ *   ⇒ 改成判**箭头函数调用** `__setGateFactory(() =>`（`bootstrap.ts` 的真实调用形态）。
+ *   实测（当前产物）：`call=1 / bare=3`（app 与 worker 同形）—— 两者**可区分**，判据才有判别力。
  */
-const GATE_INIT_TRACE = "__setGateFactory(";
+const GATE_INIT_TRACE = "__setGateFactory(() =>";
+const GATE_INIT_BARE = "__setGateFactory(";
 const appBody = fs.readFileSync(artifact, "utf8");
 const workerBody = fs.readFileSync(workerArtifact, "utf8");
 for (const [name, file, gateBody] of [
@@ -158,9 +163,12 @@ for (const [name, file, gateBody] of [
   ["worker.js", workerArtifact, workerBody],
 ]) {
   if (!gateBody.includes(GATE_INIT_TRACE)) {
+    const bareCount = gateBody.split(GATE_INIT_BARE).length - 1;
     fail3(
-      `${name} 里观测不到 \`${GATE_INIT_TRACE}\`：该启动链**没有注册闸门工厂** ` +
+      `${name} 里观测不到**调用形态** \`${GATE_INIT_TRACE}\`：该启动链**没有注册闸门工厂** ` +
         `⇒ 它的 withVendorSlot() 会抛"[gate] 闸门未初始化"（review-C F2）。\n` +
+        `  ⚠ 裸子串 \`${GATE_INIT_BARE}\` 在本次产物里出现 ${bareCount} 次 —— 但那**不算数**：` +
+        `它可能只来自 gate.ts 的错误文案（N1：裸子串判据会说谎）。\n` +
         `  ⇒ 修法：让该入口 import \`@/jobs/bootstrap\` 并调用 \`bootstrapJobInfra()\` —— **不要**删这条断言。\n` +
         `  （对照：${file}）`,
     );
@@ -171,4 +179,4 @@ console.log(`check-build 通过（构建 EXIT 0）`);
 console.log(`  · 产物：apps/api/data/serve/app.js = ${after.size} 字节 (${bundleKB} KB)`);
 console.log(`  · 产物：apps/api/data/serve/worker.js = ${workerAfter.size} 字节 (${workerKB} KB)`);
 console.log(`  · 自证：字节数已打印；app 含 \`${TRACE}\` require ✓；worker 体积下界 ✓ 且非陈旧 ✓；seed 4 个 .ndjson ✓；构建前后 app 体积${changed ? "有变化" : "一致（同源同参数打包，属预期）"}`);
-console.log(`  · 闸门初始化：app.js 与 worker.js 均含 \`${GATE_INIT_TRACE}\` ✓（review-C F2 的产物级守卫，缺一即 exit 3）`);
+console.log(`  · 闸门初始化：app.js 与 worker.js 均含**调用形态** \`${GATE_INIT_TRACE}\` ✓（N1 修正后的产物级守卫，缺一即 exit 3）`);

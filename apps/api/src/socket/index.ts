@@ -12,6 +12,18 @@ import scriptAgent from "./routes/scriptAgent";
  */
 export const PRODUCTION_AGENT_NAMESPACE = "/api/socket/productionAgent";
 
+/**
+ * 进度事件的**订阅方命名空间清单**（C 组复核轮 **N2**）。
+ *
+ * ⚠ 复核轮实测：只有 `productionAgent` 被 relay 覆盖，而 **`scriptAgent` 也 join 了同名 room** ——
+ *   同一用户只连 `scriptAgent` 时 **0 事件**，是**死订阅**（看起来接了、实际收不到）。
+ *   修法（最小且不留假接线）：resolver 对**每个已注册的订阅方 namespace** 各投一次。
+ *   `scriptAgent` 在前端真正消费 `job:update` 之前**保留订阅**：它收到的是同一份事件，
+ *   且事件只进 `user:{自己的 userId}` 房间 ⇒ 无泄漏风险。
+ *   ⇒ 若 1e 决定只保留一个订阅方，删掉这里的条目即可（判断入口唯一，不会散落）。
+ */
+export const JOB_EVENT_NAMESPACES: readonly string[] = [PRODUCTION_AGENT_NAMESPACE, "/api/socket/scriptAgent"];
+
 export default (io: Server) => {
   const routes: Record<string, (nsp: ReturnType<Server["of"]>) => void> = {
     productionAgent,
@@ -29,13 +41,33 @@ export default (io: Server) => {
  * 给 progress relay 用的**发送目标解析器**：把"房间名"解析成"该房间真正被 join 的那个 namespace"。
  *
  * 取值方式：socket.io 4.x 的 `Server._nsps` 是 `Map<path, Namespace>`（实测 4.8.4 是 Map，根为 `/`）。
- * 目标 namespace 未注册时回退根 `io`（测试/精简装配下不至于抛错；此时也无订阅者，语义等同现状）。
+ *
+ * ⚠ **N2：绝不静默回退根 io**。旧实现"resolver 未注册 ⇒ 打根 io"会让接线错误**看起来是接好的**
+ *   （事件进了没人订阅的根房间，客户端 0 事件却毫无报错）。现在：
+ *   · 逐个订阅方 namespace 各投一次（`JOB_EVENT_NAMESPACES`）；
+ *   · **一个都没注册** ⇒ 仍然打根 `io`，但**同时打一条警告**（可观测，不是静默），
+ *     且调用点唯一（`app.ts`），保证不会散落成"看不出来"的假接线。
  * ⚠ 刻意**不**用 `io.of(path)` 兜底：那会**凭空创建** namespace（含路由表与内存），是副作用。
  */
-export function makeRelayTargetResolver(io: Server, nspPath: string = PRODUCTION_AGENT_NAMESPACE) {
+export function makeRelayTargetResolver(io: Server, nspPaths: readonly string[] = JOB_EVENT_NAMESPACES) {
+  const nsps = (io as unknown as { _nsps?: Map<string, unknown> })._nsps;
+  const registered = nspPaths.filter((p) => nsps?.has(p));
+  if (registered.length === 0) {
+    console.warn(
+      `[relay] 没有任何进度订阅方 namespace 已注册（期望其一：${nspPaths.join(" / ")}）——` +
+        ` 事件将打进**根命名空间**（无人订阅）。这是接线错误，不是正常运行状态。`,
+    );
+  }
+  const targets = (registered.length ? registered : ["/"]).map(
+    (p) => (nsps?.get(p) ?? io) as { to(r: string): { emit(event: string, payload: unknown): void } },
+  );
   return (room: string): { emit(event: string, payload: unknown): void } => {
-    const nsps = (io as unknown as { _nsps?: Map<string, unknown> })._nsps;
-    const target = (nsps?.get(nspPath) ?? io) as { to(r: string): { emit(event: string, payload: unknown): void } };
-    return target.to(room);
+    // 多订阅方：每个 namespace 各投一次（同一条事件不会重复到达同一个客户端 —— 它们在不同 namespace）
+    const emitters = targets.map((t) => t.to(room));
+    return {
+      emit: (event: string, payload: unknown) => {
+        for (const e of emitters) e.emit(event, payload);
+      },
+    };
   };
 }

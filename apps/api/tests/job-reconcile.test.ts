@@ -387,8 +387,8 @@ describe("产物对账·复核轮遗留（F8 TOCTOU / F9 报告失真）", () =>
     let verifyLeasePassed = false;
     const wrapped: JobStore = {
       ...store,
-      get: async (id) => {
-        const row = await store.get(id);
+      get: async (id, scope) => {
+        const row = await store.get(id, scope);
         if (row && row.state === "running" && (row.leaseUntil ?? 0) > Date.now()) verifyLeasePassed = true;
         return row;
       },

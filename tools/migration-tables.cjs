@@ -40,8 +40,18 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const MIGRATIONS_DIR = path.join(ROOT, "apps", "api", "src", "db", "migrations");
 
-/** 迁移文件名的口径（与 `tests/migrations.test.ts` 的 `^\d{3}_.+\.ts$` 一致）。 */
-const MIGRATION_FILE_RE = /^(\d{3})_[A-Za-z0-9_]+\.ts$/;
+/**
+ * 迁移文件名的口径。
+ *
+ * ⚠⚠ **必须允许连字符**（账本 1d-4ⓐ / D 组修复轮）：项目**自己的生成器**（`pnpm run db:generate`
+ * → `apps/api/scripts/db-generate.ts`）按 `^\d{3}_.+\.ts$` 产出 **kebab-case** 文件名
+ * （如 `007_job-queue.ts`）。旧口径 `[A-Za-z0-9_]+` **不允许连字符** ⇒ 照项目生成器走的迁移
+ * 会被本解析器**静默漏掉**：它对 `check-tenant-policies` **隐形**（而且报错文案会误导成
+ * "策略表里的表不在建表清单里"）。这是"门禁的**收录能力**"缺陷，不是判据放宽 ——
+ * 收录之后该迁移**仍必须真的登记策略**，否则 `check-tenant-policies` 照样红。
+ * ⚠ 与 `apps/api/scripts/db-generate.ts` / `tests/migrations.test.ts` 的 `^\d{3}_.+\.ts$` 对齐。
+ */
+const MIGRATION_FILE_RE = /^(\d{3})_[A-Za-z0-9_-]+\.ts$/;
 
 /** `createTable("x"` —— 表名必须是紧跟左括号的双引号字面量（见文件头的已知边界）。 */
 const CREATE_RE = /createTable\(\s*"([A-Za-z0-9_]+)"/g;

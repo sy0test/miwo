@@ -51,7 +51,8 @@ export interface RelayDeps {
 
 export function startProgressRelay(deps: RelayDeps): { stop(): void; tick(): Promise<number> } {
   const db = deps.db;
-  const targetOf = deps.targetOf ?? ((room: string) => deps.io.to(room));  const pollMs = deps.pollMs ?? JOB_POLICY.relayPollMs;
+  const targetOf = deps.targetOf ?? ((room: string) => deps.io.to(room));
+  const pollMs = deps.pollMs ?? JOB_POLICY.relayPollMs;
   const batch = deps.batch ?? JOB_POLICY.relayBatch;
   const log = deps.log ?? (() => {});
   let cursorTs = 0;
@@ -65,15 +66,15 @@ export function startProgressRelay(deps: RelayDeps): { stop(): void; tick(): Pro
       .where((w) => w.where("updatedAt", ">", cursorTs).orWhere((w2) => w2.where("updatedAt", cursorTs).andWhere("id", ">", cursorId)))
       .orderBy([{ column: "updatedAt" }, { column: "id" }])
       .limit(batch)) as Array<{
-      id: number;
-      userId: number | null;
-      type: string;
-      state: string;
-      progress: number;
-      stage: string | null;
-      updatedAt: number;
-      lastError: string | null;
-    }>;
+        id: number;
+        userId: number | null;
+        type: string;
+        state: string;
+        progress: number;
+        stage: string | null;
+        updatedAt: number;
+        lastError: string | null;
+      }>;
 
     let sent = 0;
     for (const r of rows) {

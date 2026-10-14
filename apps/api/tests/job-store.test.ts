@@ -79,7 +79,7 @@ describe("A. 入队与幂等（spec §9.2）", () => {
     const { db, store, clock } = await setup();
     const { jobId, deduped } = await store.enqueue({ type: "test.sleep", userId: 7, payload: { ms: 1 } });
     expect(deduped).toBe(false);
-    const row = await store.get(jobId);
+    const row = await store.get(jobId, { all: true });
     expect(row && row.state).toBe("queued");
     expect(row && row.attempts).toBe(0);
     expect(row && row.maxAttempts).toBe(sleepDef.maxAttempts);
@@ -139,7 +139,7 @@ describe("A. 入队与幂等（spec §9.2）", () => {
     const { db, store } = await setup();
     const late = await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1 } });
     const soon = await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1 }, priority: 1 });
-    expect((await store.get(late.jobId))!.priority).toBe(100);
+    expect((await store.get(late.jobId, { all: true }))!.priority).toBe(100);
     const claimed = await store.claim({ workerId: "w1", limit: 5 });
     expect(claimed.map((j) => j.id)).toEqual([soon.jobId, late.jobId]); // priority 小者先，同值按 id
     await db.destroy();
@@ -153,7 +153,7 @@ describe("B. 领取的原子性与额度（spec §9.2 I1）", () => {
     const [a, b] = await Promise.all([store.claim({ workerId: "wA", limit: 1 }), store.claim({ workerId: "wB", limit: 1 })]);
     const got = [...a, ...b];
     expect(got.length).toBe(1);
-    const row = await store.get(got[0].id);
+    const row = await store.get(got[0].id, { all: true });
     expect(row && row.state).toBe("running");
     expect(row && row.attempts).toBe(1); // 领取即 +1
     expect(row && row.leaseUntil).toBe(got[0].leaseUntil);
@@ -173,7 +173,7 @@ describe("B. 领取的原子性与额度（spec §9.2 I1）", () => {
     expect(winners.map((j) => j.id)).toEqual([jobId]); // 恰好一条、恰好一个赢家
     expect(results.filter((r) => r.length === 1).length).toBe(1);
     expect(results.filter((r) => r.length === 0).length).toBe(19);
-    const row = (await store.get(jobId))!;
+    const row = (await store.get(jobId, { all: true }))!;
     expect(row.state).toBe("running");
     expect(row.attempts).toBe(1); // 只被领取了一次（不是被 20 个各 +1）
     await db.destroy();
@@ -189,7 +189,7 @@ describe("B. 领取的原子性与额度（spec §9.2 I1）", () => {
       ...Array.from({ length: 5 }, () => store2.claim({ workerId: "procB", limit: 1 })),
     ]);
     expect(results.flat().map((j) => j.id)).toEqual([jobId]);
-    expect((await store.get(jobId))!.attempts).toBe(1);
+    expect((await store.get(jobId, { all: true }))!.attempts).toBe(1);
     await db2.destroy();
     await db.destroy();
   });
@@ -216,7 +216,7 @@ describe("B. 领取的原子性与额度（spec §9.2 I1）", () => {
     const { db, store } = await setup();
     await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1 } });
     expect(await store.claim({ workerId: "w1", limit: 0 })).toEqual([]);
-    expect((await store.get(1))!.state).toBe("queued");
+    expect((await store.get(1, { all: true }))!.state).toBe("queued");
     await db.destroy();
   });
 
@@ -242,10 +242,10 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     expect(before).toBe(clock.now() + JOB_POLICY.leaseMs);
     clock.advance(5_000);
     expect(await store.heartbeat(jobId, "w1")).toBe(true);
-    const after = (await store.get(jobId))!.leaseUntil as number;
+    const after = (await store.get(jobId, { all: true }))!.leaseUntil as number;
     expect(after).toBe(before + 5_000); // 租约被原样推后了 5000ms
     expect(after).toBeGreaterThan(before);
-    expect((await store.get(jobId))!.heartbeatAt).toBe(clock.now());
+    expect((await store.get(jobId, { all: true }))!.heartbeatAt).toBe(clock.now());
     await db.destroy();
   });
 
@@ -261,12 +261,12 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
 
     const r = await store.reclaimExpired();
     expect(r).toEqual({ requeued: 1, dead: 0 });
-    const freshRow = (await store.get(fresh.jobId))!;
+    const freshRow = (await store.get(fresh.jobId, { all: true }))!;
     expect(freshRow.state).toBe("running"); // 新鲜的**没被动**
     expect(freshRow.workerId).toBe("w1");
     expect(freshRow.leaseUntil).toBe(base + JOB_POLICY.leaseMs);
     expect(freshRow.lastError).toBeNull();
-    const staleRow = (await store.get(stale.jobId))!;
+    const staleRow = (await store.get(stale.jobId, { all: true }))!;
     expect(staleRow.state).toBe("queued");
     expect(staleRow.workerId).toBeNull();
     expect(staleRow.lastError).toMatch(/租约到期/);
@@ -274,7 +274,7 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     // 反例自证：把 fresh 的租约也推过期 ⇒ 这次它必须被回收（证明上一个断言不是因为"什么都没扫到"）
     await db("o_job").where("id", fresh.jobId).update({ leaseUntil: base - 2 });
     expect(await store.reclaimExpired()).toEqual({ requeued: 1, dead: 0 });
-    expect((await store.get(fresh.jobId))!.state).toBe("queued");
+    expect((await store.get(fresh.jobId, { all: true }))!.state).toBe("queued");
     await db.destroy();
   });
 
@@ -285,15 +285,15 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     clock.advance(JOB_POLICY.leaseMs + 1);
     const r = await store.reclaimExpired();
     expect(r).toEqual({ requeued: 1, dead: 0 });
-    const row = await store.get(jobId);
+    const row = await store.get(jobId, { all: true });
     expect(row && row.state).toBe("queued");
     expect(row && row.attempts).toBe(1); // 保留（"已经试过几次"的账）
     expect(row && row.workerId).toBeNull();
     expect(row && row.lastError).toMatch(/租约到期/);
     // 回收后**同一个时钟点**即可被再次领取（nextAttemptAt = 回收时刻，无退避）
     expect((await store.claim({ workerId: "w2", limit: 1 })).map((j) => j.id)).toEqual([jobId]);
-    expect((await store.get(jobId))!.attempts).toBe(2);
-    expect((await store.get(jobId))!.workerId).toBe("w2");
+    expect((await store.get(jobId, { all: true }))!.attempts).toBe(2);
+    expect((await store.get(jobId, { all: true }))!.workerId).toBe("w2");
     await db.destroy();
   });
 
@@ -305,7 +305,7 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     clock.advance(JOB_POLICY.retryMaxMs + 1);
     await store.claim({ workerId: "w1", limit: 1 }); // attempts = 2
     expect(await store.fail(jobId, "w1", "boom again")).toBe("dead");
-    const row = await store.get(jobId);
+    const row = await store.get(jobId, { all: true });
     expect(row && row.state).toBe("dead");
     expect(row && row.dedupeActive).toBeNull();
     expect(row && row.dedupeKey).toBe("1:test.sleep:dead"); // 原始键保留（审计）
@@ -313,9 +313,9 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     expect(row && row.finishedAt).toBe(clock.now());
     // 死信可被运维重投
     expect(await store.requeueDead(jobId)).toBe(true);
-    expect((await store.get(jobId))!.state).toBe("queued");
-    expect((await store.get(jobId))!.dedupeActive).toBe("1:test.sleep:dead"); // 重新占住同一把锁
-    expect((await store.get(jobId))!.attempts).toBe(0);
+    expect((await store.get(jobId, { all: true }))!.state).toBe("queued");
+    expect((await store.get(jobId, { all: true }))!.dedupeActive).toBe("1:test.sleep:dead"); // 重新占住同一把锁
+    expect((await store.get(jobId, { all: true }))!.attempts).toBe(0);
     await db.destroy();
   });
 
@@ -327,7 +327,7 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     await store.claim({ workerId: "w2", limit: 1 }); // attempts = 2 = maxAttempts
     clock.advance(JOB_POLICY.leaseMs + 1);
     expect(await store.reclaimExpired()).toEqual({ requeued: 0, dead: 1 });
-    const row = (await store.get(jobId))!;
+    const row = (await store.get(jobId, { all: true }))!;
     expect(row.state).toBe("dead");
     expect(row.dedupeActive).toBeNull();
     expect(row.lastError).toMatch(/用尽重试/);
@@ -354,10 +354,10 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     clock.advance(JOB_POLICY.leaseMs + 1);
     await store.reclaimExpired();
     expect(await store.succeed(jobId, "w1", {})).toBe(false);
-    expect((await store.get(jobId))!.state).toBe("queued");
+    expect((await store.get(jobId, { all: true }))!.state).toBe("queued");
     // fail 同样不许把"别人的/已回收的"行改写；返回值是它**现在**的真实状态
     expect(await store.fail(jobId, "w1", "late failure")).toBe("queued");
-    expect((await store.get(jobId))!.lastError).toMatch(/租约到期/); // 没被 late failure 覆盖
+    expect((await store.get(jobId, { all: true }))!.lastError).toMatch(/租约到期/); // 没被 late failure 覆盖
     await db.destroy();
   });
 
@@ -367,14 +367,14 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     const [claimed] = await store.claim({ workerId: "w1", limit: 1 });
     clock.advance(1_000);
     expect(await store.progress(jobId, "w1", 42.4, "s".repeat(100))).toBe(true);
-    const row = (await store.get(jobId))!;
+    const row = (await store.get(jobId, { all: true }))!;
     expect(row.progress).toBe(42);
     expect(row.stage).toHaveLength(64);
     expect(row.leaseUntil).toBe((claimed.leaseUntil as number) + 1_000); // 进度更新 = 续租
     expect(await store.progress(jobId, "w1", 999)).toBe(true);
-    expect((await store.get(jobId))!.progress).toBe(100);
+    expect((await store.get(jobId, { all: true }))!.progress).toBe(100);
     expect(await store.progress(jobId, "w1", -5)).toBe(true);
-    expect((await store.get(jobId))!.progress).toBe(0);
+    expect((await store.get(jobId, { all: true }))!.progress).toBe(0);
     await db.destroy();
   });
 
@@ -383,15 +383,15 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     const a = await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1, tag: "c1" } });
     expect(await store.cancel(a.jobId, "用户点了停止")).toBe(true);
     expect(await store.cancel(a.jobId, "再来一次")).toBe(false);
-    expect((await store.get(a.jobId))!.state).toBe("canceled");
-    expect((await store.get(a.jobId))!.dedupeActive).toBeNull();
+    expect((await store.get(a.jobId, { all: true }))!.state).toBe("canceled");
+    expect((await store.get(a.jobId, { all: true }))!.dedupeActive).toBeNull();
     // 取消后不许再被领取
     expect(await store.claim({ workerId: "w1", limit: 5 })).toEqual([]);
     // running 也可取消
     const b = await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1, tag: "c2" } });
     await store.claim({ workerId: "w1", limit: 1 });
     expect(await store.cancel(b.jobId)).toBe(true);
-    expect((await store.get(b.jobId))!.workerId).toBeNull();
+    expect((await store.get(b.jobId, { all: true }))!.workerId).toBeNull();
     await db.destroy();
   });
 
@@ -400,7 +400,7 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     const { jobId } = await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1, tag: "rq" } });
     expect(await store.requeueDead(jobId)).toBe(false);
     expect(await store.requeueDead(999_999)).toBe(false);
-    expect((await store.get(jobId))!.state).toBe("queued");
+    expect((await store.get(jobId, { all: true }))!.state).toBe("queued");
     await db.destroy();
   });
 
@@ -415,7 +415,7 @@ describe("C. 租约、回收、终态（spec §9.2 I3/I4）", () => {
     const again = await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1, tag: "dup" } });
     expect(again.deduped).toBe(false);
     expect(await store.requeueDead(jobId)).toBe(false); // 锁已被占用 ⇒ 拒绝，不抢
-    expect((await store.get(jobId))!.state).toBe("dead");
+    expect((await store.get(jobId, { all: true }))!.state).toBe("dead");
     await db.destroy();
   });
 });
@@ -495,6 +495,29 @@ describe("D. 统计、方言形态与错误识别", () => {
     await db.destroy();
   });
 
+  /**
+   * ★ C 组复核轮 **N3** 的判别力用例：`get()` 也必须**显式作用域**（F5 只上了 `list()`）。
+   * reviewer2 实测：旧签名 `get(id)` 在 `ctx.userId=1001` 下读到了 `userId=1002` 的那一行。
+   */
+  it("★ get 的作用域：缺 scope ⇒ 抛错；带他人 userId ⇒ 读不到（N3）", async () => {
+    const { db, store } = await setup();
+    const mine = await store.enqueue({ type: "test.sleep", userId: 1001, payload: { ms: 1, tag: "g1" } });
+    const other = await store.enqueue({ type: "test.sleep", userId: 1002, payload: { ms: 1, tag: "g2" } });
+
+    // ① 缺 scope（绕过类型）⇒ 必须抛，不许"默认全量"
+    await expect(store.get(mine.jobId, undefined as never)).rejects.toThrow(/必须显式选择作用域/);
+
+    // ② 显式系统/全量 ⇒ 读得到（允许，但必须**显式**声明）
+    expect((await store.get(other.jobId, { all: true }))?.userId).toBe(1002);
+
+    // ③ 用户可见读取：A 读别人的 id ⇒ null（**这一条就是跨租户泄漏的判别力**）
+    expect(await store.get(other.jobId, { userId: 1001 })).toBeNull();
+    expect((await store.get(mine.jobId, { userId: 1001 }))?.userId).toBe(1001);
+    // ④ 反向：B 也读不到 A 的
+    expect(await store.get(mine.jobId, { userId: 1002 })).toBeNull();
+    await db.destroy();
+  });
+
   it("isDuplicateKeyError 认 sqlite 与 mysql2 两种形状（不靠 message 猜测）", () => {
     expect(isDuplicateKeyError({ code: "SQLITE_CONSTRAINT_UNIQUE" })).toBe(true);
     expect(isDuplicateKeyError({ code: "ER_DUP_ENTRY", errno: 1062 })).toBe(true);
@@ -566,7 +589,7 @@ describe("E. 生产接线：受守卫的 u.db + 特权系统身份（o_job/o_gat
       const [claimed] = await store.claim({ workerId: "w1", limit: 1 });
       expect(claimed.id).toBe(jobId);
       expect(await store.succeed(jobId, "w1", { ok: true })).toBe(true);
-      expect((await store.get(jobId))!.state).toBe("succeeded");
+      expect((await store.get(jobId, { all: true }))!.state).toBe("succeeded");
       // ⚠ `enqueueJob()` 走的是**默认注册表**（现在是空的：Task 7/9 才登记类型）⇒ 现在必须抛"未注册"。
       //   这是**显式**断言，不是"没测到"：Task 7/9 登记 selftest.sleep 之后，这一行要改成真入队。
       await expect(facade.enqueueJob({ type: "test.sleep", userId: 7, payload: { ms: 1 } })).rejects.toThrow(/未注册/);
@@ -648,7 +671,7 @@ describe("F. 队列状态机的收尾不变式", () => {
       [c.jobId, "canceled"],
     ];
     for (const [id, want] of states) {
-      const row = (await store.get(id))!;
+      const row = (await store.get(id, { all: true }))!;
       expect(row.state).toBe(want);
       expect(row.dedupeActive).toBeNull();
       expect(row.leaseUntil).toBeNull();
