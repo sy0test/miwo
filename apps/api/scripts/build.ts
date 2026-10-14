@@ -122,6 +122,15 @@ const appBuildConfig: esbuild.BuildOptions = {
   },
 };
 
+// worker 产物（spec §4.1：api 与 worker 共用镜像、不同启动命令）。
+// 与 api 用**同一份** external/alias/target，只换 entry 与 outfile —— 避免"两份构建配置漂移"。
+// ⚠ 不要动 `external` 里的 `"electron"`（Global Constraints）。
+const workerBuildConfig: esbuild.BuildOptions = {
+  ...appBuildConfig,
+  entryPoints: ["src/worker.ts"],
+  outfile: `data/serve/worker.js`,
+};
+
 (async () => {
   try {
     console.log("🔨 开始构建...\n");
@@ -130,8 +139,10 @@ const appBuildConfig: esbuild.BuildOptions = {
     const seedFiles = requireSeedFiles();
 
     await esbuild.build(appBuildConfig);
+    await esbuild.build(workerBuildConfig);
 
     console.log("✅ 后端服务构建完成: data/serve/app.js");
+    console.log("✅ worker 构建完成: data/serve/worker.js");
 
     const seedCount = copySeedDir(seedFiles);
     for (const dest of SEED_DESTS) {

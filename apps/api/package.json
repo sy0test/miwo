@@ -11,6 +11,8 @@
     "dev": "nodemon --inspect src/app.ts",
     "predev": "node --import=tsx scripts/generate-router.ts",
     "start": "cross-env NODE_ENV=prod node data/serve/app.js",
+    "worker": "node --env-file-if-exists=.env --import=tsx src/worker.ts",
+    "worker:dev": "nodemon --inspect src/worker.ts",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
