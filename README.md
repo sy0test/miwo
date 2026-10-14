@@ -442,6 +442,83 @@ Task 12 给 `tests/db-driver.test.ts` 加了 2 条 `u.db` 白名单用例，套�
 | **`utf8mb4_0900_ai_ci` 下 SQL `=` 大小写不敏感**（合并审查修复 1 实测） | 服务端 collation 是 `utf8mb4_0900_ai_ci`（`ai`=accent-insensitive、`ci`=**case**-insensitive）。实测：`'EVENTEXTRACTION' = 'eventExtraction'` → **1**；`BINARY 'EVENTEXTRACTION' = 'eventExtraction'` → **0**。在真表上更能说明后果：`t` 为 `utf8mb4_0900_ai_ci` 的列里放 `'a'`/`'A'`/`'a '`，`WHERE t = 'a'` 命中 **2 行**（`'a'` 与 `'A'`）。→ **任何"用 SQL `=` 判两条记录是否同一形态"的代码都必须显式用 `BINARY`**（`002_platform_seed.down` 原来就是这样误删"只改了大小写"的种子行，现已加固）。附带事实：`WHERE t = 'a'` **不**匹配 `'a '`（0900 系列是 NO PAD，尾随空格在**列 vs 值**比较里是有意义的 —— 所以那条尾随空格的行在旧判据下**本来就会存活**）；但两个**字面量**相比（`'a ' = 'a'`）在本机 mysql CLI 上返回 1，因为那走**连接** collation `gbk_chinese_ci`（PAD SPACE）—— 别拿字面量实验当结论 |
 | **`information_schema` 的 `AUTO_INCREMENT` 是缓存值**（合并审查修复 3 实测） | `@@information_schema_stats_expiry = 86400`（秒）。实测（本机 8.4.11）：`INSERT 3 行 → ALTER TABLE ai AUTO_INCREMENT = 4` 后查 `information_schema.tables` = **4**；再 `DELETE FROM ai; ALTER TABLE ai AUTO_INCREMENT = 1;` 后**仍然报 4**，而**真实**下一条插入的 `id` 是 **1**；`ANALYZE TABLE ai` 之后才刷新成 2。→ **断言不许读可能被缓存的元数据**：`tests/mysql-integration.test.ts` 原来用 `information_schema.tables.AUTO_INCREMENT >= 4` 断言"计数器被钉高"，近乎恒真；现在改成**读真实插入行为**（非空 + `ALTER=1` → 下一条 `id=4`；`del` + `ALTER=1` → `id=1`） |
 
+## 租户隔离（Phase 1b 起）
+
+### 1. 唯一入口：`u.db` 是守卫
+
+- 拿不到 ctx 访问租户表 → **`TenantContextError`**（fail-closed：不返回空集、不静默放行）；表没在
+  `apps/api/src/db/policies.ts` 声明策略 → **`PolicyNotFoundError`**。
+- **自动注入**：主表的 `userId` 条件、join 的 ON 子句条件、`insert` 的 `userId`；显式写**别人的** `userId` → 抛
+  （越权 `insert` 的抛错发生在**执行期**，不是构造期 —— 用例里要 `await expect(...).rejects`）。
+- **会绕过注入的写法在租户查询上一律抛**：`orWhere*` 前缀 + `apps/api/src/db/tenant-guard.ts` 的
+  `WIDENING_METHODS`（`with*/union*/having*/whereRaw/joinRaw/crossJoin` 等）。`raw` 只在"语句里**不含租户表名**"时放行
+  （纯表达式，如 `GROUP_CONCAT(n.chapterIndex)`）；一旦语句提及租户表就抛。
+- **表策略**（`node tools/check-tenant-policies.cjs` 会比对三方）：`tenant` **20 张**、`platform` **9 张**
+  （读放行、写仅 admin）、`global`（读放行、写一律拒；本阶段没有表使用）；另有退役 2 张 + `knex_migrations*` 2 张
+  显式声明为 platform（fail-closed 的必需项）。
+- 平台写权限目前靠**临时桥接**：`userId === 1` 视为 admin（`o_user` 还没有 role 列；Phase 1c 换成 `o_user.role`）。
+
+### 2. 唯一绕过口：`systemDb`
+
+- `apps/api/src/utils/db.ts` 的**命名导出** `systemDb` 是裸 knex。使用者必须登记进
+  `apps/api/src/db/tenant-exceptions.json` 的 `systemDbUsers`，否则 `pnpm verify:exceptions` 会红；判据与
+  **specifier 形态解耦**（命名 / 别名 `as x` / 命名空间 `import * as m` + `m.systemDb` / 相对路径 / 动态
+  `await import()` / `require()`）。
+- 旧的裸 `import { db } from "@/utils/db"` 已删除，**出现即红**（`bareDbImports` 必须为空）。
+
+### 3. `userId` / `memories` 键回填（`004_backfill_userid` + CLI）
+
+```powershell
+cd apps/api
+New-Item -ItemType Directory -Force D:\tmp\miwo-backfill | Out-Null   # 目录必须先存在（sqlite 不会替你建目录）
+$env:MIWO_DATA_DIR = "D:\tmp\miwo-backfill"          # ⚠ 仓库内 dev 库会被护栏拒绝；这是正确行为
+node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts                               # 先把库迁到最新
+node --env-file-if-exists=.env --import=tsx scripts/backfill-userid.ts                          # 默认 DRY-RUN（不写库）
+node --env-file-if-exists=.env --import=tsx scripts/backfill-userid.ts --apply                  # 才写库；**幂等**（第二次 0 行）
+node --env-file-if-exists=.env --import=tsx scripts/backfill-userid.ts --apply --assign-to=1    # 把孤儿显式归给 userId=1
+```
+
+> `--env-file-if-exists=.env` 是必需的：`src/config.ts` 是**模块级 fail-fast**（缺 `MIWO_ENV`/`MIWO_PORT`/`MIWO_JWT_SECRET`
+> 等直接抛错）；`$env:MIWO_DATA_DIR` 这类**已存在的环境变量优先于 `.env`**，所以两者可以一起用。
+
+- 20 张表的 `userId` 按归属链回填；`memories.isolationKey` 用**同一份** `buildIsolationKey` 改写成
+  `${userId}:…`（唯一真相 = `apps/api/src/db/isolation-key.ts`，socket 侧也是 re-export 它）。
+- **孤儿**（推不出归属，如项目 `userId` 为 NULL 的子行）默认**留 NULL** ⇒ 对任何租户都不可见；报告会点名，
+  要归属必须显式 `--assign-to`。**多义**行（`o_event` 挂多个项目）不写。
+- 运维步骤（备份 → dry-run → apply → 自检表怎么读）、`down` 为何是 no-op：见
+  **[`apps/api/README-db.md`](apps/api/README-db.md)** §2/§8。
+
+### 4. 门禁与验收（Phase 1b）
+
+```powershell
+pnpm verify:exceptions     # 特例清单 ↔ 代码（systemDb 形态 / 裸 db / 每条 phase1b 处置与证据）
+pnpm verify:policies       # 策略表 ↔ 001_schema ↔ 回填目标/自检 三方一致（复用导出常量，无第三份清单）
+pnpm verify:phase1b        # Phase 1b **唯一验收命令**（真 HTTP；带空转护栏；MySQL 口径显式标"未实测"）
+node tools/tenant-redend.cjs   # 11 项红端可复现（隔离副本 + VCS 还原；观测不到就 exit 3）
+```
+
+- **MySQL 侧一律未实测**（本机 3307 独占、不启动）：`information_schema` 方言、`insertId` 语义、
+  `GROUP_CONCAT` 截断、`afterCreate` 真被调用 —— 只能由 CI 的 mysql job（`MIWO_TEST_MYSQL=1`）作证。
+  已落地的是**连接级** `group_concat_max_len`（`src/db/connect.ts` 的 `mysqlAfterCreate`，走 `conn.promise()`；
+  callback 版 mysql2 直接 `await` 会抛 ⇒ 那曾是"MySQL 全路径不可用"的 P0）。
+- 测试基线：`cd apps/api; pnpm exec vitest run` ⇒ **292 passed | 10 skipped**（10 条 skipped 里 8 条是既有门控、
+  2 条是 MySQL 口径）。
+
+### 5. 本阶段**未处置项**（明确交接，不是"已完成"）
+
+| # | 未处置的事（现状） | 为什么本阶段不做 | 归属 |
+|---|---|---|---|
+| 1 | 运维接口的**"默认关闭 / 表名与列白名单 / 脱敏导出"三件套**：`clearTable` 只校验"表存在"、`importData` 无表名/列白名单、`exportData` 仍是**全量备份**（含 `o_user.password`、`o_vendorConfig.inputValues`） | 本阶段只做"立即 fail-closed 的子集"= **收权**（无 token 401 / 非 admin 403）；脱敏会破坏"恢复备份后登录/供应商配置"，属功能取舍 | Phase 1c |
+| 2 | `routes/setting/agentDeploy/getAgentDeploy.ts` **尚未挂 `requireAdmin`** ⇒ 任意登录用户仍可读供应商配置（key 明文） | 该路由不在 Task 7 处置的 6 个运维接口里；platform 表不需要租户条件，缺的是授权 | Phase 1c |
+| 3 | `POST /api/other/deleteAllData` 已**无条件停用**（501，连 admin 也打不动）；"修好（带审计/双人确认）vs 彻底删除"未定 | 修好 = 让最危险的操作从"坏的"变成"活的"；删除文件/挂载会让三个门禁一起漂 | Phase 1c/2 决策 |
+| 4 | `check-tenant-exceptions` 的 `phase1b.evidence` **只校验测试文件存在**，不校验用例名（改名/删用例不会红） | 要校验用例名需解析测试文件；属门禁增强 | Phase 1c |
+| 5 | `requireAdmin` 的**"无 ctx → 401"分支没有独立用例**（真实链路里无 token 先被鉴权 401 拦下） | 该分支只在"有 token 但没建 ctx"时可达；本阶段用中间件单测覆盖语义 | Phase 1c 补 |
+| 6 | **没有真正的账号体系 / 审计**：`o_user` 无 `role`（admin 靠 `userId===1` 桥接）；`--assign-to` 与运维接口访问都**不写审计日志** | 需要 schema 变更（`o_user.role`、`o_auditLog`），超出"隔离"范围 | Phase 1c |
+| 7 | 前端仍发送死的 `isolationKey` 字段 | 服务端已**完全忽略**它；清理属前端轮 | 前端轮清理 |
+| 8 | `firstProjectIdInFlowData` 只认 **≥6 位**数字 | **刻意设计**：真实 id 是 13 位 `Date.now()`；放宽会误伤 `oss/300/a.png` 这类相对路径 | 不改（登记） |
+| 9 | `o_vendorConfig.volcengine.enable` **不搬迁** | 预裁定（Phase 1a 账本 Ruling 103） | 已裁定，不做 |
+| 10 | **媒体仍匿名可取**（`/oss` 在鉴权之前） | 本阶段闭合的是"经 API 越权拿到**数据**"，不是"猜到 URL 直接取文件" | Phase 1e |
+
 ## 迁移纪律（spec §5.2）
 
 - 迁移清单是 `apps/api/src/db/migrations/index.ts` 的 `MIGRATIONS`（**顺序即执行顺序**），每条迁移对应同目录下一个
