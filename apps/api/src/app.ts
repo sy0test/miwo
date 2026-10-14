@@ -19,7 +19,7 @@ import { apiLimiter } from "@/middleware/rateLimit";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
-import { mediaAuthGuard } from "@/utils/mediaSign";
+import { mediaAuthGuard, normalizeMediaRelPathInside, redactMediaQueryString, resolveInsideRoot } from "@/utils/mediaSign";
 import isPathInside from "is-path-inside";
 import { config } from "@/config";
 
@@ -155,17 +155,20 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
    * `?size=<WxH|百分比>` 的缩略图分支。**整体在守卫之后**（否则一个没有签名的请求就能：
    * ① 用 `?size=` 让服务端在任意 `..` 路径上生成缩略图；② 直接 `res.sendFile` 拿到盘上任何文件）。
    *
-   * ⚠ 两个 `path.join` 的结果都必须过 `isPathInside`（Tier 0 "补 isPathInside"）：
-   *   `path.join(ossDir, req.path)` —— `req.path` 里可能带 `..`（Express 只对 `express.static`
-   *   做根目录约束，**不会**替 `path.join` 做）；`req.path` 还可能是**绝对路径**形态，
-   *   `path.join` 会把根目录整个丢掉（`path.join("D:\\data\\oss", "\\x")` = `"D:\\data\\oss\\x"` 还好，
-   *   但 `path.join("D:\\a", "D:\\b")` = `"D:\\a\\D:\\b"`，行为随盘符变化）⇒ 统一用 `isPathInside` 判。
-   * ⚠ 这里**不泄漏路径**：越界一律 `403` + 空 body（不告诉我们检查了哪个路径、不 echo 请求路径）。
+   * ⚠ 两个路径都必须过 `resolveInsideRoot`（=剥前导分隔符 + `isPathInside`；Tier 0 "补 isPathInside"）：
+   *   ① `originalPath` —— `req.path` 里可能带 `..`，Express 只对 `express.static` 做根目录约束，
+   *      **不会**替 `path.join` 做；② `smallImagePath` —— 它是**写入目标**，越界就等于把这个服务
+   *      当成"任意路径写入器"（`ensureThumbnail` 会 `mkdir -p` 再落盘）。
+   * ⚠ 这里**不泄漏路径**：越界一律 `403` + 空 body（不回显请求路径、也不说检查了哪个路径）。
    */
   const thumbnailBranch = (req: Request, res: Response, next: NextFunction): void => {
     if (!req.query.size) return next();
     const size = String(req.query.size);
-    const originalPath = path.join(ossDir, req.path);
+    // ⚠ 越界（含 `..` 逃逸）在**任何 path.join / mkdir / sendFile 之前**就判掉：
+    //   后面的 `ensureThumbnail` 会 mkdir -p 再落盘，越界等于把服务变成"任意路径写入器"。
+    const rel = normalizeMediaRelPathInside(req.path);
+    if (rel === null) return void res.status(403).end();
+    const originalPath = path.join(ossDir, rel.split("/").join(path.sep));
 
     let sizeSubDir: string;
     let sizeOpts: ThumbnailSize | undefined;
@@ -185,20 +188,19 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
       sizeSubDir = `${percentMatch[1]}p`;
       sizeOpts = { type: "percentage", value: pct };
     } else {
-      // 无效的 size 参数，降级返回原图（⚠ 经根路径校验后再降级）
-      if (!isPathInside(originalPath, ossDir)) return void res.status(403).end();
+      // 无效的 size 参数，降级返回原图
       express.static(ossDir, { acceptRanges: true })(req, res, next);
       return;
     }
 
-    const ext = path.extname(req.path);
-    const base = path.basename(req.path, ext);
-    const dir = path.dirname(req.path);
-    const smallImagePath = path.join(smallImageDir, dir, `${base}_${sizeSubDir}${ext}`);
-
-    // ① 原图必须在 ossDir 之内；② 写缩略图的目标必须在 smallImageDir 之内
-    //    （否则 `?size=20` + `..` 能把这个服务当成"任意路径写入器"）。
-    if (!isPathInside(originalPath, ossDir)) return void res.status(403).end();
+    const ext = path.extname(rel);
+    const base = path.posix.basename(rel, ext);
+    const dir = path.posix.dirname(rel);
+    // 缩略图相对路径：`smallImage/<原目录>/<原名>_<size><ext>`（与旧实现的目录形状逐字一致）
+    const smallImageRel = `smallImage/${dir === "." ? "" : `${dir}/`}${base}_${sizeSubDir}${ext}`;
+    const smallImagePath = resolveInsideRoot(ossDir, smallImageRel);
+    if (!smallImagePath) return void res.status(403).end();
+    // 双保险：写入目标必须在 `oss/smallImage` 之内（不是只要"在 oss 内" —— 否则能写到 `oss/` 根下）
     if (!isPathInside(smallImagePath, smallImageDir)) return void res.status(403).end();
 
     ensureThumbnail(originalPath, smallImagePath, sizeOpts).then((thumbnailPath) => {
@@ -301,27 +303,50 @@ export default async function startServe(randomPort: Boolean = false) {
    *
    * ⚠ 媒体签名（`?exp=&sig=`）是**凭据**：它能换成一次成功的静态资源读取。
    *   Task 4 已经因为"URL 会被访问日志/反代日志/浏览器历史记下来"取消了 `?token=`，
-   *   媒体签名允许出现在 query 串里（`<img src>` 带不了头），但**必须**满足同一口径：
-   *   不进日志。所以把它从 `req.query` 里摘掉 —— morgan 的 `:url` 是**响应完成时**才求值的，
-   *   自然拿到脱敏后的 query（`tests/media-sign.test.ts` 用真 HTTP + 真 morgan 断言两端）。
+   *   媒体签名允许出现在 query 串里（`<img src>` 带不了头），但**必须**满足同一口径：不进日志。
    *
+   * ⚠⚠ **只改 `req.query` 是不够的（实测踩到）**：morgan 的 `:url` 是 `req.originalUrl`，
+   *   **不经过** `req.query` —— 第一版就是这样，签名原样出现在 stdout
+   *   （实测原文 `GET /oss/x.bin?exp=123&sig=SUPERSECRET&size=20 200`）。
+   *   所以两手都要做：
+   *     ① 覆盖 `morgan` 的 `url` token（见下），让它读的是脱敏后的串；
+   *     ② 仍然把 `exp`/`sig` 从 `req.query` 里摘掉 —— 下游任何"顺手把 query 记下来"的代码
+   *        （含我们没预料到的第三方中间件）也拿不到签名。
    * ⚠ 只摘 `exp`/`sig`，其余 query（`size=20` 等）原样保留：`size` 是缩略图分支要读的参数，
    *   而且它对诊断有用（"这一张是不是走了缩略图路径"一眼可见）。
    * ⚠ 不能改成"整条 URL 不记"：那样静态资源的 4xx/5xx 就没法从日志里查了。
    */
   app.use((req, _res, next) => {
+    // ⚠⚠ **先另存**：守卫（`mediaAuthGuard`）要用的那一对原始值必须在 `req.url` 被改写**之前**拿到。
+    //   否则"脱敏"会把守卫的输入也一起吃掉 ⇒ 每一条合法签名都 403（实测踩到，端到端脚本当场全红）。
+    if (typeof req.query?.sig === "string" || typeof req.query?.exp === "string") {
+      (req as any)._mediaSig = { exp: String(req.query.exp ?? ""), sig: String(req.query.sig ?? "") };
+    }
+    const rawUrl = req.originalUrl ?? req.url ?? "";
+    const bare = redactMediaQueryString(rawUrl);
+    if (bare !== rawUrl) {
+      // ⚠ 必须改 `req.url`/`req.originalUrl` 本身，**不能只改 `req.query`**（实测踩到）：
+      //   morgan 的 `:url` 读的是 `req.originalUrl`；只改 `req.query` 的话签名照样进日志。
+      //   实测：改成 `req.url` 之后路由照常（`size` 仍在 query 里），而日志与 `req.originalUrl` 都是脱敏串。
+      req.url = bare;
+      req.originalUrl = bare;
+    }
     if (req.query && (("sig" in req.query) || ("exp" in req.query))) {
       const rest: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(req.query)) {
         if (k === "sig" || k === "exp") continue;
         rest[k] = v;
       }
-      // Express 5 的 `req.query` 是一个 getter；`Object.defineProperty` 用同名自有属性覆盖它
-      // （显式设 getter 而不是直接赋值 —— 直接赋值在 getter-only 属性上会抛）。
+      // 第二手：`req.query` 也摘干净 —— 下游任何"顺手把 query 记下来"的代码（含我们没预料到的
+      // 第三方中间件）都拿不到签名。Express 5 的 `req.query` 是 getter；
+      // `Object.defineProperty` 用同名自有属性覆盖它（直接赋值在 getter-only 属性上会抛）。
       Object.defineProperty(req, "query", { value: rest, writable: true, configurable: true, enumerable: true });
     }
     next();
   });
+  // 第三手（冗余但便宜）：morgan 的自定义 `url` token **覆盖**内置的那个（内置的就是 `req.originalUrl`）。
+  // 前两手已经够用；这一手保证"将来有人把中间件顺序调了"时日志里依然没有签名。
+  logger.token("url", (req: Request) => redactMediaQueryString(req.originalUrl ?? req.url ?? ""));
   app.use(logger("dev"));
   // ⚠ 安全头（helmet）+ CORS 必须在**静态资源之前**（否则 `/oss` 的图片响应不带 CORP 头，
   //   而那条放宽正是为了让 dev 的跨源图片能显示）。见 applySecurityHeaders 的文件注释。

@@ -47,6 +47,8 @@
  *     max-age 必须 **< TTL**，否则缓存里可能留着一把已过期的签名 URL（本实现的 1h < 24h）。
  */
 import crypto from "node:crypto";
+import path from "node:path";
+import isPathInside from "is-path-inside";
 import type { NextFunction, Request, Response } from "express";
 import { config } from "@/config";
 
@@ -110,17 +112,91 @@ export function verifyMediaSig(
 }
 
 /**
+ * 把**URL 路径形态**的相对路径归一（去前导分隔符、`\` → `/`），并**判掉 `..` 逃逸**。
+ *
+ * 越界返回 `null`（调用方一律 `403`）。判据是"归一后的每一段都不能是 `..`"，
+ * 而不是"拼出来的绝对路径恰好还在根目录下"：
+ *   · 后者依赖 `path.join` 的具体行为（Windows 上 `path.join("D:\\a", "\\x")` 与
+ *     `path.join("D:\\a", "D:\\b")` 结果形态不同，随盘符/平台变化）；
+ *   · 我们要防的是**输入里带逃逸**，那就直接在输入上判 —— 这样判据与平台无关，
+ *     而且**可单测**（不需要造一个"根目录外的真实文件"才能证明它在防）。
+ * ⚠ 空路径也返回 `null`：`/oss` 本身不是文件。
+ */
+export function normalizeMediaRelPathInside(relPath: string): string | null {
+  const rel = normalizeMediaRelPath(relPath);
+  if (!rel) return null;
+  const parts = rel.split("/").filter((p) => p !== "" && p !== ".");
+  if (parts.length === 0) return null;
+  if (parts.some((p) => p === "..")) return null;
+  // ⚠ 段里出现 `:` 一律拒（Windows 专属的两个坑，实测确认）：
+  //   · `"/D:/x"` 这种"URL 里塞盘符"的形态在 Windows 上会被 `path.join` 当成**普通相对段**
+  //     而**不是**越界（实测 `path.join("C:\\tmp\\oss", "D:\\other\\f.txt")` 仍在 `oss` 内）
+  //     ⇒ 它绕过了 `isPathInside`，却把"盘符"写进了文件名；
+  //   · NTFS 备用数据流（`file.txt:secret`）同样靠 `:` 打开，属越界读取的另一种形态。
+  if (parts.some((p) => p.includes(":"))) return null;
+  return parts.join("/");
+}
+
+/**
+ * 把 `req.path` 解析成挂载点内的绝对路径；**越界返回 `null`**（调用方一律 `403`）。
+ *
+ * 为什么不能直接 `path.join(rootDir, req.path)`：
+ *   · Express 只对 `express.static` 做根目录约束，**不会**替我们校验 `path.join` 的结果；
+ *     `/oss/a/../../db2.sqlite` 这类 `req.path` 会**恰好**解析到挂载点之外的真实文件，
+ *     而 `/oss` 的缩略图分支最后是 `res.sendFile(...)` —— 那就是"任意文件读取"；
+ *   · 缩略图分支还会把拼出来的路径当**写入目标**（`ensureThumbnail` 会 `mkdir -p` 再落盘），
+ *     越界就等于把这个服务当成"任意路径写入器"。
+ *
+ * @param rootDir 挂载点根（`u.getPath("oss")` 等），必须已是绝对路径
+ * @param reqPath `req.path`（挂载点**之后**的部分，以 `/` 开头）
+ * @returns 绝对路径；越界（含 `..`、空路径）返回 `null`
+ */
+export function resolveInsideRoot(rootDir: string, reqPath: string): string | null {
+  const rel = normalizeMediaRelPathInside(reqPath);
+  if (rel === null) return null;
+  const abs = path.join(rootDir, rel.split("/").join(path.sep));
+  // 双保险：归一已经挡住了 `..`，这里再确认拼出来的绝对路径确实在根内
+  //（防"将来有人改归一逻辑"时静默放行 —— 两条判据任意一条成立都不会越界）。
+  return isPathInside(abs, rootDir) ? abs : null;
+}
+
+/**
+ * 把 URL 的 query 串里的 `exp`/`sig` 摘掉（**只摘这两个参数值**，其余原样保留）。
+ *
+ * 用正则做在**字符串**上，而不是解析 `req.query`：morgan 的 `:url` 是**原始 URL**
+ * （`req.originalUrl`），它不经过 `req.query` —— 只改 `req.query` 的话，签名照样被打进日志
+ * （实测踩到：`GET /oss/x.bin?exp=123&sig=SUPERSECRET&size=20 200` 原样出现在 stdout）。
+ * `exp` 只匹配纯数字（`exp=123`）⇒ 不会误伤 `?size=2000`（`size=` 不是 `exp=`，且数字串边界由 `\d+` 吃满）。
+ */
+export function redactMediaQueryString(url: string): string {
+  // ⚠ 值域用 `[^&#\s]*`（到下一个参数/片段/空白为止）而不是 `[A-Za-z0-9_-]*`：
+  //   后者**吃不掉 `.`**（实测：`sig=AbC-_.xyz&size=20` 只被摘成 `sig=***.xyz&size=20`，
+  //   尾巴留在日志里）。我们要的是"这个参数的值整个消失"，值域必须按**分隔符**划，不按字符集划。
+  return String(url ?? "").replace(/([?&])(exp|sig)=[^&#\s]*/g, "$1$2=***");
+}
+
+/**
  * `/oss` 与 `/assets` 的入口守卫。**顺序是刻意的**：
  *   ① 已有 ctx（`authenticate` 放行过 `Authorization`）⇒ 直接 next —— 服务端/脚本调用不必签名；
- *   ② 否则看 query 里的 `exp`/`sig`；
+ *   ② 否则看签名；
  *   ③ 都不满足 ⇒ **403**（与 401 区分：401 = 缺令牌，403 = 链接无效/过期；不泄漏"这个文件到底存不存在"）。
+ *
+ * ⚠⚠ 签名从 `req._mediaSig`（`app.ts` 的日志脱敏中间件在**改写 `req.url`/`req.query` 之前**
+ *   存下来的那一对原始值）读，**不读 `req.query`**。原因是实测踩到的一个真 bug：
+ *   脱敏中间件"把 `q.exp`/`q.sig` 从 query 里摘掉"与守卫"从 query 里读签名"是**同一份数据**，
+ *   而脱敏必须**先**跑（否则日志里已经有签名了）⇒ 守卫读到的永远是 `"***"` ⇒ **每一条合法签名都 403**。
+ *   修法：脱敏前把原始对**另存一份**给守卫用（`req.query` 那一份继续被脱敏）。
+ *   兜底：没有 `_mediaSig` 时仍读 `req.query` —— 于是本守卫可以**单独挂载**（单测就是这样用的）。
  *
  * ⚠ 本守卫**不读 DB、不读密钥之外的任何状态**：每个 `<img>` 一次调用，热路径不能有查询。
  * ⚠ 它**不解析 body / 不写日志**（query 里的 `sig` 是凭据，见文件头与 Task 4 的"凭据不进日志"口径）。
  */
 export function mediaAuthGuard(req: Request, res: Response, next: NextFunction): void {
   if ((req as any).ctx) return next();
+  const kept = (req as any)._mediaSig as { exp?: string; sig?: string } | undefined;
+  const exp = kept ? kept.exp : String(req.query.exp ?? "");
+  const sig = kept ? kept.sig : String(req.query.sig ?? "");
   const rel = normalizeMediaRelPath(req.path);
-  if (verifyMediaSig(rel, String(req.query.exp ?? ""), String(req.query.sig ?? ""))) return next();
+  if (verifyMediaSig(rel, exp, sig)) return next();
   res.status(403).send({ code: 403, data: null, message: "媒体链接无效或已过期" });
 }
