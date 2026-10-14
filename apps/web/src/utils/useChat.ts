@@ -1,6 +1,7 @@
 // useChat.ts
 import { ref, shallowRef, onMounted, onUnmounted, computed } from "vue";
 import { io, Socket } from "socket.io-client";
+import userStore from "@/stores/user";
 import type { ChatMessagesData, AIMessage, UserMessage, AIMessageContent, ChatMessageStatus } from "@tdesign-vue-next/chat";
 
 // Socket 事件类型定义
@@ -581,7 +582,9 @@ export function useChat(options: UseChatOptions) {
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
         timeout: 10000,
-        auth: { token: localStorage.getItem("token"), ...(typeof auth === "function" ? auth() : auth) },
+        // ⚠【Phase 1c Task 11】令牌从**内存 store** 取（原来读 `localStorage.getItem("token")`）：
+        //   access 已不落盘 ⇒ 读 localStorage 只会拿到 `null`，socket 会被直接拒连。
+        auth: { token: userStore().token || null, ...(typeof auth === "function" ? auth() : auth) },
       });
 
       setupHandlers();

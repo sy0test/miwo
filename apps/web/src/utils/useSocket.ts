@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import { io, Socket } from "socket.io-client";
+import userStore from "@/stores/user";
 
 export interface SocketEventMap {
   //scriptAgent
@@ -38,7 +39,10 @@ export function useSocket<T extends SocketEventMap = SocketEventMap>(url?: strin
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 10000,
-      auth: { token: localStorage.getItem("token"), ...authOptions },
+      // ⚠【Phase 1c Task 11】令牌从**内存 store** 取（原来读 `localStorage.getItem("token")`）：
+      //   access 已不落盘 ⇒ 读 localStorage 会拿到 `null`，socket 连接会被 `decodeSocketToken` 直接拒掉
+      //   （表现为"AI 生成整条链路静默连不上"）。形状与后端一致：`Bearer <jwt>`。
+      auth: { token: userStore().token || null, ...authOptions },
     });
 
     socket.on("connect", () => (connected.value = true));
