@@ -96,6 +96,14 @@ export function signMediaQuery(relPath: string, ttlSec: number = MEDIA_TTL_SEC):
  * ⚠ 先比 exp 再比签名不会泄漏信息：exp 是**明文**（它本来就在 URL 里），签名才是秘密。
  * ⚠ 长度不同必须**先返回 false**：`crypto.timingSafeEqual` 在长度不等时**抛异常**
  *   （抛出去就是 500 + 一条栈，把"签名不对"变成"服务端故障"，还顺带泄内部信息）。
+ * ⚠⚠ **尺子必须是"字节数"而不是 `String.length`**（Phase 1c Task 10 修的真 bug）：
+ *   `timingSafeEqual` 比的是 **Buffer 的字节长度**，而 `String.length` 是 **UTF-16 码元数**。
+ *   实测（本任务）：`"A".repeat(42) + "€"`（43 个字符 / 45 字节）的 `String.length` 恰好也是 43
+ *   ⇒ 长度检查**放行** ⇒ `timingSafeEqual` 抛 `RangeError: Input buffers must have the same byte length`
+ *   ⇒ 冒到错误处理器 ⇒ **HTTP 500**。这是**每张图都走**的热路径，而 `sig` 是攻击者完全可控的
+ *   query 参数 ⇒ **可远程触发 500**（审查者已复现，本任务在真 HTTP 上取到 `HTTP 500` 原文）。
+ *   现在两把尺子都对齐到 UTF-8 字节数，并且整段包在 `try/catch → false` 里：
+ *   将来任何"长度/编码"的意外都只会变成一次**普通的拒绝**（403），不再是 500。
  */
 export function verifyMediaSig(
   relPath: string,
@@ -106,9 +114,20 @@ export function verifyMediaSig(
   if (!exp || !sig) return false;
   if (!/^\d{1,15}$/.test(exp)) return false; // 只接受纯数字毫秒；15 位上限挡住 NaN/Infinity/科学计数法
   if (Number(exp) < now) return false;
-  const want = signMediaSig(relPath, exp);
-  if (want.length !== sig.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(want), Buffer.from(sig));
+  try {
+    const want = Buffer.from(signMediaSig(relPath, exp), "utf8");
+    const got = Buffer.from(sig, "utf8");
+    // ⚠ 比 `Buffer` 的**字节长度**，与 `timingSafeEqual` 的判据一致。
+    //   写成 `sig.length`（UTF-16 码元）就是上面说的那个 500。
+    if (want.length !== got.length) return false;
+    return crypto.timingSafeEqual(want, got);
+  } catch {
+    // 长度不等 / 非法编码等一律当作"签名不对"。
+    // ⚠ 这里**不是**掩盖：调用方（`mediaAuthGuard`）的唯一语义就是"合法 ⇒ 放行，其它 ⇒ 403"，
+    //   而"算不出来"与"算出来不相等"在**安全结论上完全等价**（都不可信）。
+    //   反过来把它们区分开（抛出/500）才是漏洞：它把攻击者可控的输入变成服务端故障。
+    return false;
+  }
 }
 
 /**
@@ -177,9 +196,16 @@ export function redactMediaQueryString(url: string): string {
 
 /**
  * `/oss` 与 `/assets` 的入口守卫。**顺序是刻意的**：
- *   ① 已有 ctx（`authenticate` 放行过 `Authorization`）⇒ 直接 next —— 服务端/脚本调用不必签名；
+ *   ① 已有 ctx（`optionalMediaAuth` 已按 `Authorization` 建好 ctx）⇒ 直接 next —— 服务端/脚本调用不必签名；
  *   ② 否则看签名；
  *   ③ 都不满足 ⇒ **403**（与 401 区分：401 = 缺令牌，403 = 链接无效/过期；不泄漏"这个文件到底存不存在"）。
+ *
+ * ⚠⚠ **"已有 ctx"这条分支曾经永远走不到**（Phase 1c Task 10 修的真 bug）：
+ *   Phase 1c Task 7 把 `authenticate` 从"挂根"改成 `app.use("/api", …)`，于是 `req.ctx` 只在 `/api`
+ *   分支上被建出来 —— 而 `/oss`、`/assets` 根本不在 `/api` 之下 ⇒ **带 Bearer 取媒体一律 403**。
+ *   可那时**四处文档**（`app.ts` 的挂载表、本文件注释、报告、e2e）都宣称"Bearer 可用"。
+ *   修法（控制器裁定）：在 `/oss`、`/assets` **之前**挂 `optionalMediaAuth`（有 `Authorization`
+ *   就验签建 ctx，没有就 `next()`），本条分支于是真的可达。
  *
  * ⚠⚠ 签名从 `req._mediaSig`（`app.ts` 的日志脱敏中间件在**改写 `req.url`/`req.query` 之前**
  *   存下来的那一对原始值）读，**不读 `req.query`**。原因是实测踩到的一个真 bug：

@@ -133,6 +133,35 @@ export async function authenticate(
 }
 
 /**
+ * **可选鉴权**（Phase 1c Task 10；控制器裁定）：给 `/oss`、`/assets` 用。
+ *
+ * ── 它修的是什么（Task 7 留下的"文档与实现不符"）──
+ * Task 7 把静态资源移到鉴权之后，同时把 `app.use(authenticate)` 改成 `app.use("/api", …)`
+ * （理由见 `authenticate` 的 `mountPath` 注释：挂根会让 SPA 壳得到 401，登录页打不开）。
+ * 副作用是 `req.ctx` **只在 `/api` 分支上**被建出来 ⇒ `mediaAuthGuard` 里"已有 ctx 就放行"
+ * 那条分支对 `/oss`、`/assets` **永远走不到** ⇒ **带 Bearer 取媒体一律 403**，
+ * 而 `app.ts` 的挂载表、`utils/mediaSign.ts` 的注释、报告与 e2e **四处都宣称 Bearer 可用**。
+ *
+ * ── 语义（刻意与 `authenticate` 分开，不是它的"软版本"）──
+ *   · **有 `Authorization` 头** ⇒ 完全走 `authenticate` 那条路：合法 ⇒ 建 ctx（下游守卫据此放行、
+ *     并让 `runWithTenant` 生效）；非法/过期 ⇒ `authenticate` 自己的 **401**（不静默降级成匿名 ——
+ *     "令牌坏了"必须区别于"没带令牌"，否则前端永远不知道该去刷新还是该重新登录）。
+ *   · **没有 `Authorization` 头** ⇒ 直接 `next()`（**匿名**）。媒体守卫随后按 query 里的短时签名判，
+ *     都不满足 ⇒ 403。这就是浏览器 `<img src>` 的路径：它本来就不带 `Authorization`。
+ *
+ * ⚠ 为什么不做成"JSON 响应体里带 token"之类：`<img>` 无法带自定义头，媒体只有两条路 ——
+ *   签名（浏览器）或 Bearer（服务端/脚本）。本中间件让**第二条**真的可用，签名那条不变。
+ * ⚠ 它**不读 DB 也不解析 token**（没有头时）：每个没有凭据的 `<img>` 请求只多一次 `req.headers` 查找，
+ *   没有额外查询 —— 这是热路径，不能加成本。
+ */
+export function optionalMediaAuth(req: Request, res: Response, next: NextFunction): unknown {
+  const raw = (req.headers?.authorization as string) || "";
+  if (!String(raw).trim()) return next();
+  // 有头就交给 authenticate（它自己会 401 或建 ctx；不会"未提供token"以外的新行为）
+  return authenticate(req, res, next, "");
+}
+
+/**
  * 平台表写权限 / 运维接口的 403 判别。用法：`router.get("/", requireAdmin, handler)`。
  *
  * ⚠ 用 `currentTenant()` **同步**取（ALS 在 requireAdmin 被调用时仍在同一条 async 链上），

@@ -21,10 +21,12 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
+import jwt from "jsonwebtoken";
 import morgan from "morgan";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { config } from "@/config";
 import { mountStaticAssets } from "@/app";
+import { optionalMediaAuth } from "@/middleware/auth";
 import {
   MEDIA_TTL_SEC,
   mediaAuthGuard,
@@ -206,6 +208,31 @@ describe("ms 1-4. 签名的判别力：路径 / exp / 过期", () => {
       .slice(0, 43);
     expect(wrong).not.toBe(signMediaSig("a/b.jpg", exp));
     expect(verifyMediaSig("a/b.jpg", exp, wrong), "用 JWT 密钥冒充媒体签名必须被拒").toBe(false);
+  });
+
+  it("★★ 非 ASCII 的 sig（43 个非 ASCII 字符）⇒ false 而**不是抛异常**（Phase 1c Task 10 修的远程 500）", () => {
+    // 改前：`want.length !== sig.length` 用的是 **String.length**（UTF-16 码元），而
+    // `crypto.timingSafeEqual` 比的是 **字节数**。43 个 `€` 的 `String.length` 也是 43 ⇒ 长度检查放行
+    // ⇒ `timingSafeEqual` 抛 `RangeError`（inputs must be of the same length）⇒ 守卫外层没有 try/catch
+    // ⇒ **HTTP 500**。`sig` 是攻击者完全可控的 query 参数，且这是每张图都走的热路径 ⇒ 可远程触发。
+    const exp = String(Date.now() + 60_000);
+    const legit = signMediaSig("a/b.jpg", exp);
+    const nonAscii = "€".repeat(legit.length); // 43 个字符 / 129 字节
+    expect(nonAscii.length, "前提：String.length 与合法签名**相同**（这正是旧判据被绕过的地方）").toBe(legit.length);
+    expect(Buffer.byteLength(nonAscii, "utf8"), "前提：字节数与合法签名不同 ⇒ timingSafeEqual 会抛").not.toBe(
+      Buffer.byteLength(legit, "utf8"),
+    );
+    expect(() => verifyMediaSig("a/b.jpg", exp, nonAscii), "必须**不抛**（抛出去就是 500）").not.toThrow();
+    expect(verifyMediaSig("a/b.jpg", exp, nonAscii), "非 ASCII sig ⇒ false（不是 true、也不是异常）").toBe(false);
+
+    // 反向对照：合法的 43 字符 ASCII 签名仍必须通过（否则上面那条只是"整条路径坏了"）
+    expect(verifyMediaSig("a/b.jpg", exp, legit), "反向对照：合法签名仍为 true").toBe(true);
+
+    // 其它"长度看起来对"的形态：汉字（3 字节/字）、混排、以及比合法签名更长的非 ASCII
+    for (const evil of ["汉".repeat(legit.length), "€".repeat(50), "€".repeat(20), legit.slice(0, 42) + "€"]) {
+      expect(() => verifyMediaSig("a/b.jpg", exp, evil), `不得抛：${JSON.stringify(evil.slice(0, 6))}…`).not.toThrow();
+      expect(verifyMediaSig("a/b.jpg", exp, evil), `必须 false：${JSON.stringify(evil.slice(0, 6))}…`).toBe(false);
+    }
   });
 
   it("TTL 常量与缓存口径一致：签名 TTL(24h) 必须 > 静态资源 max-age(1h)", () => {
@@ -494,6 +521,41 @@ describe("ms 9-13. 守卫与静态资源：真 HTTP 两端", () => {
     );
     expect(r.status, "有 ctx ⇒ 不必签名也放行").toBe(200);
     expect(seen, "守卫不许吃掉别的 query（`size` 还要给缩略图分支用）").toEqual({ size: "20" });
+  });
+
+  it("★★ 带 Bearer 取媒体 ⇒ 200；无凭据 ⇒ 403（两端）—— Phase 1c Task 10 修的「文档与实现不符」", async () => {
+    // 改前：`authenticate` 只挂 `/api` ⇒ `req.ctx` 在 `/oss` 上永远是 `undefined` ⇒
+    // "已有 ctx 就放行"那条分支**永远走不到** ⇒ 带 Bearer 也一律 **403**，而四处文档都宣称 Bearer 可用。
+    // 现在 `/oss`、`/assets` 之前挂了 `optionalMediaAuth`（有 Authorization 就建 ctx，没有就 next()）。
+    await withMediaTree(async (dirs) => {
+      const body = mediaBytes("bearer");
+      fs.writeFileSync(path.join(dirs.oss, "bearer.bin"), body);
+      fs.writeFileSync(path.join(dirs.assets, "bearer2.bin"), body);
+      const build = (app: express.Express) => {
+        app.use("/oss", optionalMediaAuth);
+        app.use("/assets", optionalMediaAuth);
+        mountStaticAssets(app, () => undefined);
+      };
+      // 与 1b 的 e2e 同形状的旧 token（`{id,name}`，无 typ）—— `authenticate` 的 legacy 分支认它。
+      const bearer = `Bearer ${jwt.sign({ id: 7, name: "u7" }, config.jwtSecret, { expiresIn: "1h" })}`;
+
+      const ossOk = await serveAndFetch(build, { path: "/oss/bearer.bin", headers: { authorization: bearer } });
+      expect(ossOk.status, "★ 带 Bearer + **无签名** 取 /oss ⇒ 200（这就是 Task 10 修好的那一端）").toBe(200);
+      expect(ossOk.bytes, "内容必须真的回来了（不是空 200）").toBe(body.length);
+
+      const assetsOk = await serveAndFetch(build, { path: "/assets/bearer2.bin", headers: { authorization: bearer } });
+      expect(assetsOk.status, "★ /assets 同一口径：带 Bearer + 无签名 ⇒ 200").toBe(200);
+
+      // 反向对照 ①：同一个请求**去掉** Authorization ⇒ 403（不是 200，也不是 401）
+      const anon = await serveAndFetch(build, { path: "/oss/bearer.bin" });
+      expect(anon.status, "★ 无 Bearer + 无签名 ⇒ 403（反向对照；否则「带 Bearer 200」可能只是「守卫失效了」）").toBe(403);
+      expect(anon.body, "403 的响应体是统一形状").toMatch(/"code"\s*:\s*403/);
+
+      // 反向对照 ②：带**坏** Bearer ⇒ 401（不是静默降级成匿名 403）：
+      //   "令牌坏了"必须区别于"没带令牌"，否则前端不知道是该刷新还是该重新登录。
+      const bad = await serveAndFetch(build, { path: "/oss/bearer.bin", headers: { authorization: "Bearer not-a-jwt" } });
+      expect(bad.status, "坏 Bearer ⇒ 401（不静默降级成匿名）").toBe(401);
+    });
   });
 
   it("★★ 与日志脱敏的**顺序耦合**：脱敏把 exp/sig 改成 `***` 之后，守卫仍必须放行（改前这里 403 —— 每张图都裂）", async () => {

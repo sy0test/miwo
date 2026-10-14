@@ -110,6 +110,24 @@ const query = (rel, ttlSec = DEFAULT_TTL_SEC) => {
   return `exp=${exp}&sig=${sign(rel, exp)}`;
 };
 
+/**
+ * 手搓一个 HS256 的**旧形状** JWT（`{id,name}`，无 `typ`）—— 给 D 组"带 Bearer 取媒体"那条用。
+ *
+ * ⚠ 为什么不用 `jsonwebtoken`：本脚本是 `apps/api/scripts/` 下的 `.cjs`，而 `jsonwebtoken` 在
+ *   `apps/api/node_modules` 里（能解析到），但**少一个依赖就少一处"脚本自己坏了"的可能**；
+ *   而旧形状的载荷就是两个字段，HS256 就是 base64url(header).base64url(payload).base64url(HMAC)。
+ *   ⚠ 载荷**必须没有 `typ`/`tv`**：`verifyLegacyToken` 的判据是"**恰好**是旧形状才认"
+ *   （有 `typ` 就走新路径 ⇒ 新路径要查 DB 复核 tokenVersion ⇒ 这条 e2e 不再是"只测鉴权开关"）。
+ *   `authenticate` 的 legacy 分支会把 userId 经 `roleOfUserId` 桥接成 role，不读 DB 的 tokenVersion。
+ */
+function legacyBearerJwt(userId, name, secret) {
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const head = b64({ alg: "HS256", typ: "JWT" });
+  const body = b64({ id: userId, name, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 });
+  const sig = crypto.createHmac("sha256", secret).update(`${head}.${body}`).digest("base64url");
+  return `${head}.${body}.${sig}`;
+}
+
 // ---------- HTTP ----------
 const request = (port, method, pathName, headers) =>
   new Promise((resolve, reject) => {
@@ -350,6 +368,35 @@ async function main() {
     const bExpired = await request(PORT, "GET", `/oss/u7/own.bin?exp=${past}&sig=${sign("u7/own.bin", past)}`);
     record("B", "★ 过期（exp 在过去，签名按旧 exp 算）⇒ 403", bExpired.status === 403, `HTTP ${bExpired.status}`);
 
+    // ---------- B-⑤ 非 ASCII sig（Phase 1c Task 10 修的**可远程触发 500**）----------
+    // 改前：`verifyMediaSig` 用 `String.length`（UTF-16 码元）比长度，而 `crypto.timingSafeEqual`
+    //   比的是 **Buffer 字节长度** ⇒ 43 个字符 / 45 字节的 sig **绕过**长度检查 ⇒ `timingSafeEqual`
+    //   抛 `RangeError: Input buffers must have the same byte length` ⇒ 守卫里没有 try/catch
+    //   ⇒ 冒到错误处理器 ⇒ **HTTP 500**。`sig` 是攻击者完全可控的 query 参数，且这是每张图都走的热路径。
+    // 改后：两把尺子都对齐到 UTF-8 字节数 + 整段 try/catch ⇒ **403**。
+    // ⚠ 本组用 `encodeURIComponent` 把非 ASCII 送出去（否则请求行里的裸非 ASCII 字节会被 Node 拒绝）。
+    const nonAsciiSig = "A".repeat(42) + "€"; // 43 个字符 / 45 字节 —— 改前正是这个形状抛 RangeError
+    const nonAsciiExp = String(Date.now() + 3600_000);
+    const bNonAscii = await request(
+      PORT,
+      "GET",
+      `/oss/u7/own.bin?exp=${nonAsciiExp}&sig=${encodeURIComponent(nonAsciiSig)}`,
+    );
+    record(
+      "B",
+      "★★ 非 ASCII sig（43 字符 / 45 字节）⇒ **403**（改前是 **500**：timingSafeEqual 抛 RangeError 冒到错误处理器）",
+      bNonAscii.status === 403,
+      `HTTP ${bNonAscii.status}${bNonAscii.status === 500 ? " ← 500 = 改前的症状，必须修掉" : ""}`,
+    );
+    // 反向对照：同一路径的**合法 ASCII** 签名仍必须 200（否则上面那条只是"整条守卫坏了/永远 403"）
+    const asciiControl = await request(PORT, "GET", `/oss/u7/own.bin?${query("u7/own.bin")}`);
+    record(
+      "B",
+      "★ 反向对照：同一路径的合法 ASCII 签名 ⇒ 200（证明上面那条不是「守卫整个失效」）",
+      asciiControl.status === 200,
+      `HTTP ${asciiControl.status}`,
+    );
+
     // 短 TTL 的"真过期"：签一个 3 秒有效的链接，先 200，等它过期再打 ⇒ 必须 403
     const shortLived = query("u7/own.bin", TTL_SEC);
     const before = await request(PORT, "GET", `/oss/u7/own.bin?${shortLived}`);
@@ -446,6 +493,52 @@ async function main() {
       asText(api, ["content-type"]),
       asText(assetsSigned, ["content-length"]),
       asText(assetsUnsigned, ["content-type"]),
+    ]);
+
+    // ---------- D-② 带 Bearer 取媒体（Phase 1c Task 10 修的"文档与实现不符"）----------
+    // 改前：`authenticate` 只挂 `/api` ⇒ `req.ctx` 在 `/oss` 上永远 undefined ⇒
+    //   守卫里"已有 ctx 就放行"那条分支**永远走不到** ⇒ **带 Bearer 取媒体一律 403**，
+    //   而 `app.ts` 的挂载表、`mediaSign.ts` 注释、报告、本脚本**四处都宣称 Bearer 可用**。
+    // 现在：`/oss`、`/assets` 之前挂了 `optionalMediaAuth`（有 Authorization 就建 ctx，没有就 next()）。
+    // ⚠ 两端都必须有：带 Bearer **无签名** ⇒ 200；无 Bearer **无签名** ⇒ 403。
+    //   只测 200 的话，"守卫整个失效"也会绿；只测 403 的话，这条修复本身测不到。
+    const bearer = `Bearer ${legacyBearerJwt(7, "u7", SECRET)}`;
+    const ossBearer = await request(PORT, "GET", "/oss/u7/own.bin", { Authorization: bearer });
+    const assetsBearer = await request(PORT, "GET", "/assets/ending.bin", { Authorization: bearer });
+    record(
+      "D",
+      "★★ 带 Bearer 取媒体（**无签名**）⇒ 200：`/oss` 与 `/assets` 两端都可达（Task 10 修的分支曾永远走不到）",
+      ossBearer.status === 200 && ossBearer.bytes === OWN_BYTES.length && assetsBearer.status === 200,
+      `/oss HTTP ${ossBearer.status} (${ossBearer.bytes}B)、/assets HTTP ${assetsBearer.status}`,
+    );
+    const ossNoCred = await request(PORT, "GET", "/oss/u7/own.bin");
+    record(
+      "D",
+      "★ 反向对照：同一个请求**不带** Bearer、也不带签名 ⇒ 403（否则上面那条可能只是『守卫失效了』）",
+      ossNoCred.status === 403,
+      `HTTP ${ossNoCred.status}`,
+    );
+    const ossBadBearer = await request(PORT, "GET", "/oss/u7/own.bin", { Authorization: "Bearer not-a-jwt" });
+    record(
+      "D",
+      "★ 坏 Bearer ⇒ 401（**不静默降级成匿名**）：『令牌坏了』必须区别于『没带令牌』，否则前端不知道该刷新还是该重登",
+      ossBadBearer.status === 401,
+      `HTTP ${ossBadBearer.status}`,
+    );
+    // 自证观测（Ruling 243）：Bearer 那一条必须**真的带着 Authorization 头**打出去过 ——
+    // 否则"200"可能只是"守卫没在跑"。进程日志里 morgan 不打印头，所以这里用"三态齐备"作自证：
+    // 200 / 403 / 401 三种结果**互不相同**，只有"分支真的按凭据分流"才可能同时出现。
+    record(
+      "D",
+      "★ 自证观测：Bearer 有/无/坏 三种输入得到**三个不同**的状态码（200 / 403 / 401）—— 观测不到就是没分流",
+      new Set([ossBearer.status, ossNoCred.status, ossBadBearer.status]).size === 3,
+      `bearer=${ossBearer.status} 无凭据=${ossNoCred.status} 坏 bearer=${ossBadBearer.status}`,
+    );
+    rawBlock("D-② 带 Bearer 取媒体两端原文", [
+      `带 Bearer（无签名）GET /oss/u7/own.bin ⇒ ` + asText(ossBearer, ["content-length", "cache-control"]).split("\n")[0],
+      `带 Bearer（无签名）GET /assets/ending.bin ⇒ ` + asText(assetsBearer, ["content-length"]).split("\n")[0],
+      `无 Bearer 无签名 GET /oss/u7/own.bin ⇒ ` + asText(ossNoCred, ["content-type"]).split("\n")[0],
+      `坏 Bearer GET /oss/u7/own.bin ⇒ ` + asText(ossBadBearer, ["content-type"]).split("\n")[0],
     ]);
 
     // ================= E. 错误脱敏 + 签名不进日志 =================
