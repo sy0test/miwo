@@ -272,13 +272,10 @@ const EXEMPTIONS = [
     min: 2,
     reason: "上游仓库 URL ×2（第三方/上游地址）。",
   },
-  {
-    scope: "apps/web/src/components/setting/components/dbConfig.vue",
-    match: "toonflow-backup-",
-    min: 1,
-    reason:
-      "前端下载用的旧备份文件名前缀（`a.download` 的默认名）。后端已在 Phase 1c Task 4 改成 `miwo-backup-`（⇒ 后端那条豁免按本门禁的规矩**删除**，不是放宽：该文件已不再含任何品牌 token）；前端这一行归 **Task 11**（本任务硬约束禁改 apps/web/**，故在此显式登记）。",
-  },
+  // ⚠【Phase 1c Task 11】这里原来有一条 `apps/web/src/components/setting/components/dbConfig.vue`
+  //   的 `toonflow-backup-` 豁免（Task 4 把后端前缀改成 `miwo-backup-` 时登记下来的"前端那半归 Task 11"）。
+  //   Task 11 已把前端的 `a.download` 一起改成 `miwo-backup-` ⇒ 按本门禁的护栏 B（"豁免必须真实命中"），
+  //   该条目**必须删除**而不是修改：改了前缀还留着豁免，豁免就会以"实际覆盖 0 处，低于 min=1"报红。
   {
     scope: "apps/api/src/routes/assets/getMaterialData.ts",
     match: { re: "Toonflow\u7247\u5c3e" },

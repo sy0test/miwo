@@ -196,7 +196,9 @@ async function exportData() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `toonflow-backup-${Date.now()}.json`;
+    // ⚠ Phase 1c Task 11：前缀与后端 `exportData.ts` 的 `Content-Disposition` **必须一致**
+    //   （后端已在 Task 4 改成 `miwo-backup-`；前端这行一起改，见 `git grep -n "miwo-backup-"`）。
+    a.download = `miwo-backup-${Date.now()}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

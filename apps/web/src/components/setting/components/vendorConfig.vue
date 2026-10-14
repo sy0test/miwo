@@ -1,13 +1,17 @@
 <template>
   <div class="modelServe">
     <!-- 左侧供应商列表 -->
+    <!--
+      ⚠【Phase 1c Task 11】**"添加供应商"入口整体下线**：
+      后端在 Task 9 已**整体删除** `vendorConfig/{addVendor,updateCode,getCodeByLink}`（spec Tier 0 #2/#10
+      —— "把用户提供的 TS 代码加载并执行"）。而这个弹窗的三条路径（通过文件导入 / 通过链接添加 /
+      通过代码添加）**最终都要打 `addVendor`** ⇒ 留着就是三个必然 404 的按钮。
+      保留的是"填入 KEY / 启用 / 自定义模型追加 / 删除供应商"这些**不涉及上传代码**的能力。
+      改前的前端清单（`git show <改前提交>:apps/web/src/components/setting/components/vendorConfig.vue`）：
+      `handleAddVendor` / `handleConfirmVendor`（addVendor + updateCode）/ `handleEditVendorCode`（updateCode）/
+      `linkRead`（getCodeByLink → addVendor）/ `handleBeforeUpload`（addVendor）。
+    -->
     <div class="modelList">
-      <div class="listFooter">
-        <t-button block theme="primary" @click="handleAddVendor">
-          <template #icon><t-icon name="add" /></template>
-          {{ $t("settings.vendor.addVendor") }}
-        </t-button>
-      </div>
       <div class="listContent" v-loading="loading">
         <t-menu v-model="activeVendorId" theme="light" v-if="vendorList.length > 0">
           <t-menu-item v-for="(item, index) in vendorList" :key="index" :value="item.id" @click="activeVendorId = item.id" style="position: relative">
@@ -120,8 +124,8 @@
         </t-form>
         <div class="updateAction">
           <t-button theme="danger" :loading="updating" @click="handleDeleteVendor">{{ $t("settings.vendor.deleteVendor") }}</t-button>
-          <t-button theme="default" :loading="updating" @click="handleEditVendorCode">{{ $t("settings.vendor.editCode") }}</t-button>
-          <!-- <t-button theme="primary" :loading="updating" @click="handleUpdateVendor">{{ $t("settings.vendor.updateConfig") }}</t-button> -->
+          <!-- ⚠ Phase 1c Task 11：原"编辑代码"按钮（`handleEditVendorCode` → 代码编辑器 → `updateCode`）
+               已随 Task 9 删除的后端接口一起下线。 -->
         </div>
       </div>
     </div>
@@ -259,93 +263,14 @@
       :modelName="testingModel.modelName"
       :rawModes="(testingModel as any).mode || []" />
 
-    <!-- 添加供应商弹窗 -->
-    <t-dialog
-      width="30vw"
-      placement="center"
-      top="10vh"
-      :footer="false"
-      v-model:visible="vendorDialogVisible"
-      :header="$t('settings.vendor.addVendorDialog')"
-      :maskClosable="false">
-      <div class="data">
-        <t-radio-group variant="default-filled" v-model="addMode">
-          <t-radio-button value="importAdd">通过文件导入</t-radio-button>
-          <t-radio-button value="linkAdd">通过链接添加</t-radio-button>
-          <t-radio-button value="codeAdd">通过代码添加</t-radio-button>
-        </t-radio-group>
-        <div class="linkAdd" v-if="addMode == 'linkAdd'">
-          <t-alert theme="warning" style="margin-bottom: 20px">
-            请填写 TypeScript 代码文件的链接（.ts 文件），不要填 API 地址或其他无关链接。 确认后 MirrorWorld 会自动加载该代码，请确保链接来源可信。
-          </t-alert>
-          <t-input v-model="link" :placeholder="$t('settings.vendor.linkAddPlaceholder')"></t-input>
-          <div style="margin-top: 10px; text-align: right; width: 100%">
-            <t-button :loading="linkReading" :disabled="!link.trim()" @click="linkRead">{{ $t("settings.vendor.linkAdd") }}</t-button>
-          </div>
-        </div>
-        <div class="importAdd" v-if="addMode == 'importAdd'">
-          <div class="uploadArea" @click="triggerUpload" @dragover.prevent @drop.prevent="handleDrop">
-            <t-upload
-              ref="uploadRef"
-              v-model="fileList"
-              theme="file"
-              :multiple="false"
-              :max="1"
-              accept=".ts"
-              :before-upload="handleBeforeUpload"
-              :request-method="requestMethod"
-              style="display: none" />
-            <div class="dragIcon">
-              <i-upload-one theme="outline" size="32" fill="var(--td-brand-color)" />
-            </div>
-            <p class="uploadText">{{ $t("workbench.novel.import.importAdd") }}</p>
-            <p class="uploadHint">{{ $t("workbench.novel.import.limit") }}</p>
-          </div>
-        </div>
-        <div class="codeAdd" v-if="addMode == 'codeAdd'"></div>
-      </div>
-    </t-dialog>
-    <t-dialog
-      width="70vw"
-      placement="center"
-      top="10vh"
-      v-model:visible="codeDialogVisible"
-      :header="$t('settings.vendor.code')"
-      :maskClosable="false"
-      @confirm="handleConfirmVendor">
-      <div class="editorToolbar">
-        <div class="editorInfo">
-          <t-icon name="info-circle" size="16px" />
-          <span>{{ $t("settings.vendor.codeEditorInfo") }}</span>
-        </div>
-        <div class="editorActions">
-          <t-button variant="text" size="small" @click="vendorCode = VENDOR_CODE_TEMPLATE">
-            <template #icon><t-icon name="rollback" /></template>
-            {{ $t("settings.vendor.reset") }}
-          </t-button>
-          <t-button variant="outline" size="small" @click="fileInputRef?.click()">
-            <template #icon><t-icon name="upload" /></template>
-            {{ $t("settings.vendor.importFile") }}
-          </t-button>
-          <input ref="fileInputRef" type="file" accept=".ts,.js,.txt,.json" style="display: none" @change="handleFileChange" />
-        </div>
-      </div>
-      <div class="editorWrapper">
-        <CodeEditor v-model:value="vendorCode" language="typescript" theme="vs-dark" :height="600" :options="editorOptions" />
-      </div>
-    </t-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { MdPreview } from "md-editor-v3";
-import { CodeEditor } from "monaco-editor-vue3";
 import { DialogPlugin } from "tdesign-vue-next";
 import axios from "@/utils/axios";
-import VENDOR_CODE_TEMPLATE from "@/lib/vendorTemplate.ts?raw";
 import { providersLogo, modelProviderRules } from "@/utils/providersLogo";
-import type { UploadFile } from "tdesign-vue-next";
-import { LoadingPlugin } from "tdesign-vue-next";
 import settingStore from "@/stores/setting";
 import TextModelTest from "./vendorTest/TextModelTest.vue";
 import ImageModelTest from "./vendorTest/ImageModelTest.vue";
@@ -445,15 +370,6 @@ function getModeLabel(mode: string, type: string) {
   return MODE_LABEL_MAP[mode] ? $t(MODE_LABEL_MAP[mode]) : mode;
 }
 
-const editorOptions = {
-  fontSize: 14,
-  automaticLayout: true,
-  tabSize: 2,
-  scrollBeyondLastLine: false,
-  formatOnPaste: true,
-  formatOnType: true,
-};
-
 const modelTypeOptions = [
   { value: "text", label: "settings.vendor.textModel" },
   { value: "image", label: "settings.vendor.imageModel" },
@@ -525,11 +441,9 @@ const vendorModels = computed(() => currentVendor.value?.models || currentVendor
 const requiredInputs = computed(() => currentVendor.value?.inputs?.filter((input) => input.required) || []);
 const optionalInputs = computed(() => currentVendor.value?.inputs?.filter((input) => !input.required) || []);
 
-// ── 供应商弹窗 ──
-const vendorDialogVisible = ref(false);
-const codeDialogVisible = ref(false);
-const vendorCode = ref(VENDOR_CODE_TEMPLATE);
-const fileInputRef = ref<HTMLInputElement | null>(null);
+// ── 供应商操作状态 ──
+// ⚠ Phase 1c Task 11：`vendorDialogVisible` / `codeDialogVisible` / `vendorCode` / `fileInputRef`
+//   四个 ref 随"添加供应商 + 代码编辑器"两个弹窗一起删除（后端 addVendor/updateCode 已不存在）。
 const updating = ref(false);
 const autoUpdating = ref(false);
 const autoSaveReady = ref(false);
@@ -647,92 +561,6 @@ watch(
   },
   { flush: "post" },
 );
-const id = ref<string>();
-function handleAddVendor() {
-  addMode.value = "importAdd";
-  id.value = undefined;
-  vendorCode.value = VENDOR_CODE_TEMPLATE;
-  vendorDialogVisible.value = true;
-  codeDialogVisible.value = false;
-}
-function handleConfirmVendor() {
-  if (!id.value) {
-    const firstConfirm = DialogPlugin.confirm({
-      theme: "danger",
-      header: $t("settings.vendor.msg.highRiskConfirm"),
-      body: $t("settings.vendor.msg.addVendorRiskBody"),
-      confirmBtn: { content: $t("settings.vendor.msg.iKnowRisk"), theme: "danger" },
-      cancelBtn: $t("settings.vendor.msg.cancel"),
-      onConfirm: () => {
-        firstConfirm.destroy();
-        const secondConfirm = DialogPlugin.confirm({
-          theme: "danger",
-          header: $t("settings.vendor.msg.confirmAgain"),
-          body: $t("settings.vendor.msg.addVendorConfirmBody"),
-          confirmBtn: { content: $t("settings.vendor.msg.confirmAndAdd"), theme: "danger" },
-          cancelBtn: $t("settings.vendor.msg.goBackCheck"),
-          onConfirm: async () => {
-            axios
-              .post("/setting/vendorConfig/addVendor", { tsCode: vendorCode.value })
-              .then((res) => {
-                window.$message.success($t("settings.vendor.msg.vendorAdded"));
-                vendorDialogVisible.value = false;
-                codeDialogVisible.value = false;
-                getVendorList();
-              })
-              .catch((err) => {
-                window.$message.error(err.message ?? `${$t("settings.vendor.msg.addFailed")}`);
-              })
-              .finally(() => {
-                secondConfirm.destroy();
-              });
-          },
-          onClose: () => secondConfirm.hide(),
-        });
-      },
-      onClose: () => firstConfirm.hide(),
-    });
-  } else {
-    const firstConfirm = DialogPlugin.confirm({
-      theme: "danger",
-      header: $t("settings.vendor.msg.highRiskConfirm"),
-      body: $t("settings.vendor.msg.updateVendorRiskBody"),
-      confirmBtn: { content: $t("settings.vendor.msg.iKnowRisk"), theme: "danger" },
-      cancelBtn: $t("settings.vendor.msg.cancel"),
-      onConfirm: () => {
-        firstConfirm.destroy();
-        const secondConfirm = DialogPlugin.confirm({
-          theme: "danger",
-          header: $t("settings.vendor.msg.confirmAgain"),
-          body: $t("settings.vendor.msg.updateVendorConfirmBody"),
-          confirmBtn: { content: $t("settings.vendor.msg.confirmAndUpdate"), theme: "danger" },
-          cancelBtn: $t("settings.vendor.msg.goBackCheck"),
-          onConfirm: async () => {
-            axios
-              .post("/setting/vendorConfig/updateCode", {
-                id: id.value,
-                tsCode: vendorCode.value,
-              })
-              .then((res) => {
-                window.$message.success($t("settings.vendor.msg.updateSuccess"));
-                vendorDialogVisible.value = false;
-                codeDialogVisible.value = false;
-                getVendorList();
-              })
-              .catch((err) => {
-                window.$message.error(`${$t("settings.vendor.msg.updateFailed")}${err.message}`);
-              })
-              .finally(() => {
-                secondConfirm.destroy();
-              });
-          },
-          onClose: () => secondConfirm.hide(),
-        });
-      },
-      onClose: () => firstConfirm.hide(),
-    });
-  }
-}
 // ── 模型弹窗 ──
 const modelDialogVisible = ref(false);
 const editingModelIndex = ref<number | null>(null);
@@ -1018,12 +846,6 @@ function handleDeleteModel(modelName: string) {
     },
   });
 }
-function handleEditVendorCode() {
-  if (!currentVendor.value) return;
-  id.value = currentVendor.value.id;
-  vendorCode.value = currentVendor.value.code;
-  codeDialogVisible.value = true;
-}
 function handleDeleteVendor() {
   if (!currentVendor.value) return;
   const confirmDialog = DialogPlugin.confirm({
@@ -1075,179 +897,6 @@ function onChange(item: any, val: number) {
     .catch((err) => {
       item.enable = prevEnable;
     });
-}
-const addMode = ref("importAdd");
-const link = ref("");
-const linkReading = ref(false);
-
-watch(addMode, (val) => {
-  if (val == "codeAdd") codeDialogVisible.value = true;
-  else codeDialogVisible.value = false;
-});
-
-//链接读取
-function linkRead() {
-  if (linkReading.value) return;
-  const firstConfirm = DialogPlugin.confirm({
-    theme: "danger",
-    header: $t("settings.vendor.msg.highRiskConfirm"),
-    body: $t("settings.vendor.msg.linkAddVendorRiskBody"),
-    confirmBtn: { content: $t("settings.vendor.msg.iKnowRisk"), theme: "danger" },
-    cancelBtn: $t("settings.vendor.msg.cancel"),
-    onConfirm: () => {
-      firstConfirm.destroy();
-      const secondConfirm = DialogPlugin.confirm({
-        theme: "danger",
-        header: $t("settings.vendor.msg.confirmAgain"),
-        body: $t("settings.vendor.msg.addVendorConfirmBody"),
-        confirmBtn: { content: $t("settings.vendor.msg.confirmAndAdd"), theme: "danger" },
-        cancelBtn: $t("settings.vendor.msg.goBackCheck"),
-        onConfirm: async () => {
-          const instance = LoadingPlugin({
-            fullscreen: true,
-            attach: "body",
-            preventScrollThrough: false,
-          });
-          const timer = setTimeout(() => {
-            instance.hide();
-            clearTimeout(timer);
-          }, 1000);
-          linkReading.value = true;
-          try {
-            const { data } = await axios.post("/setting/vendorConfig/getCodeByLink", { link: link.value });
-            if (!data.includes("vendor")) {
-              let alertBox: any = null;
-              if (data.includes("<html>")) {
-                alertBox = DialogPlugin.alert({
-                  theme: "danger",
-                  header: "链接返回了一个网页，添加供应商需要返回TS代码，请确认链接是否正确",
-                  body: "请勿输入中转站地址，如需使用中转站请修改OpenAI标准接口的baseUrl使用中转站地址",
-                  onConfirm: ({ e }) => {
-                    alertBox.hide();
-                  },
-                });
-              } else {
-                DialogPlugin.alert({
-                  theme: "danger",
-                  header: "链接返回的内容不正确，添加供应商需要返回TS代码，请确认链接是否正确",
-                  onConfirm: ({ e }) => {
-                    alertBox.hide();
-                  },
-                });
-              }
-              return;
-            }
-            if (data) {
-              axios.post("/setting/vendorConfig/addVendor", { tsCode: data });
-              window.$message.success($t("settings.vendor.msg.vendorAdded"));
-              vendorDialogVisible.value = false;
-              codeDialogVisible.value = false;
-              getVendorList();
-            } else {
-              window.$message.error($t("settings.vendor.msg.linkAddFailed"));
-              codeDialogVisible.value = false;
-            }
-          } catch (err: any) {
-            window.$message.error(`${$t("settings.vendor.msg.addFailed")}${err.message}`);
-          } finally {
-            clearTimeout(timer);
-            instance.hide();
-            linkReading.value = false;
-            secondConfirm.destroy();
-          }
-        },
-        onClose: () => secondConfirm.hide(),
-      });
-    },
-    onClose: () => firstConfirm.hide(),
-  });
-}
-const uploadRef = ref();
-// 上传前校验并解析
-async function handleBeforeUpload(file: UploadFile) {
-  const rawFile = file.raw;
-  if (!rawFile) {
-    window.$message.error($t("workbench.novel.import.msg.selectFile"));
-    return false;
-  }
-  LoadingPlugin(true);
-  try {
-    const firstConfirm = DialogPlugin.confirm({
-      theme: "danger",
-      header: $t("settings.vendor.msg.highRiskConfirm"),
-      body: $t("settings.vendor.msg.importAdd"),
-      confirmBtn: { content: $t("settings.vendor.msg.iKnowRisk"), theme: "danger" },
-      cancelBtn: $t("settings.vendor.msg.cancel"),
-      onConfirm: () => {
-        firstConfirm.destroy();
-        const secondConfirm = DialogPlugin.confirm({
-          theme: "danger",
-          header: $t("settings.vendor.msg.confirmAgain"),
-          body: $t("settings.vendor.msg.addVendorConfirmBody"),
-          confirmBtn: { content: $t("settings.vendor.msg.confirmAndAdd"), theme: "danger" },
-          cancelBtn: $t("settings.vendor.msg.goBackCheck"),
-          onConfirm: async () => {
-            //拿到上传的数据
-            const fileReader = new FileReader();
-            fileReader.readAsText(rawFile);
-            fileReader.onload = () => {
-              const content = fileReader.result;
-              axios
-                .post("/setting/vendorConfig/addVendor", { tsCode: content })
-                .then((res) => {
-                  window.$message.success($t("settings.vendor.msg.vendorAdded"));
-                  vendorDialogVisible.value = false;
-                  codeDialogVisible.value = false;
-                  getVendorList();
-                })
-                .catch((err) => {
-                  window.$message.error(err.message ?? `${$t("settings.vendor.msg.addFailed")}`);
-                })
-                .finally(() => {
-                  secondConfirm.destroy();
-                });
-            };
-          },
-          onClose: () => secondConfirm.hide(),
-        });
-      },
-      onClose: () => firstConfirm.hide(),
-    });
-  } catch {
-    window.$message.error($t("workbench.novel.import.msg.parseFailed"));
-  } finally {
-    LoadingPlugin(false);
-  }
-  return false;
-}
-const fileList = ref<any[]>([]);
-// 触发上传
-function triggerUpload() {
-  uploadRef.value?.triggerUpload();
-}
-function requestMethod() {
-  return Promise.resolve({
-    response: {},
-    status: "success",
-  } as const);
-}
-// 处理拖拽上传
-async function handleDrop(e: DragEvent) {
-  const files = e.dataTransfer?.files;
-  if (files && files.length > 0) {
-    await handleBeforeUpload({ raw: files[0] });
-  }
-}
-function handleFileChange(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    vendorCode.value = (ev.target?.result as string) || "";
-  };
-  reader.readAsText(file);
-  input.value = "";
 }
 </script>
 
