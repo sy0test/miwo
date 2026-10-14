@@ -266,12 +266,19 @@ if (dockerfile) {
    * `failed to compute cache key: "/app/apps/api/data/vendor" not found` 直接失败 —— 也就是
    * "只在 CI/生产才炸"。这条断言把那个失败**搬到本机**（同一类判据，见 F2/F5 的动机）。
    *
-   * ── 判据的边界（刻意收窄，避免假红）──
-   *   · 只看 `COPY`，跳过 `COPY --from=<stage>`（源在**镜像**里，本机文件系统无法证明它存在）；
-   *   · 支持反斜杠续行（`COPY a \\\n b dest`）；
-   *   · 每个源 token 必须对应**仓库相对路径**上的一个真实文件/目录（相对 Dockerfile 的 build context，
-   *     即仓库根，与 `api.build.context: ..` 同口径）；
-   *   · `--chown=`/`--chmod=` 之类的 flag 跳过；`["json","form"]` 形态顶层不做（本仓库用的是 shell 形态）。
+   * ── 判据的边界（**实测改过两版，这一版的边界是被红端逼出来的**）──
+   *   · 只校验**从构建上下文拷**的 COPY，即**不带 `--from=`** 的：`COPY --from=<stage> …` 的源在
+   *     **别的 stage 的镜像**里（`/app/apps/api/data/vendor` 这种以 `/app/` 开头的路径在本机根本
+   *     不该存在），拿本机文件系统去证明它存在只会**恒假红**。
+   *     ⚠ 这是第一版的错：它把 `--from=` 的行整条 `continue` 掉了，于是**被删掉的那个
+   *     `COPY --from=build …/data/vendor` 也一起被跳过** ⇒ 断言永远绿（假绿，比假红更坏）。
+   *     正确口径 = 不跳过这些行，而是**只查它们的源是不是以 `/app/` 开头**（镜像内路径），
+   *     不以 `/app/` 开头的（例如将来有人写 `COPY --from=build apps/api/data/vendor …`）
+   *     一律按上下文路径校验。
+   *   · 支持反斜杠续行（`COPY a \\\n b dest`）。
+   *   · 每个上下文源 token 必须对应**仓库相对路径**上的一个真实文件/目录（相对 Dockerfile 的
+   *     build context，即仓库根，与 `api.build.context: ..` 同口径）。
+   *   · `--chown=`/`--chmod=` 之类的 flag 跳过；`["json","form"]` 形态顶层不做（本仓库用 shell 形态）。
    */
   {
     // 先拼**逻辑行**：把 `\` 续行接起来（否则带续行的 COPY 只会被看到第一段）
@@ -285,10 +292,12 @@ if (dockerfile) {
       }
     }
     let checkedSources = 0;
+    let checkedInImageSources = 0;
+    let ctxOk = 0;
+    const inImageSkipped = [];
     for (const { text } of logicalLines) {
       const m = text.match(/^\s*COPY\s+(.*)$/i);
       if (!m) continue;
-      if (/--from=/i.test(m[1])) continue; // 源在镜像里，本机不可判
       const tokens = m[1]
         .split(/\s+/)
         .filter((t) => t && !t.startsWith("--"));
@@ -298,9 +307,19 @@ if (dockerfile) {
       }
       const sources = tokens.slice(0, -1);
       for (const src of sources) {
+        // `--from=` 的源在镜像里 ⇒ 只认「绝对镜像路径」这个形状（`/app/...`），本机不校验；
+        // 其余一律按**构建上下文**（仓库相对）校验 —— 这样"从别的 stage 拷一个上下文目录"
+        // 这种搬家写法照样会被抓住。
+        const inImage = /--from=/i.test(m[1]) && src.startsWith("/");
+        if (inImage) {
+          checkedInImageSources += 1;
+          inImageSkipped.push(src);
+          continue;
+        }
         checkedSources += 1;
         const abs = path.join(ROOT, src);
-        if (!fs.existsSync(abs)) {
+        if (fs.existsSync(abs)) ctxOk += 1;
+        else {
           failures.push(
             `deploy/Dockerfile 的 COPY 源不存在：${src}（宿主机上 ${abs} 找不到）。` +
               `指向已删除的目录会让 \`docker compose build\` 在 COPY 步失败 —— 而本机没有 Docker，` +
@@ -309,8 +328,14 @@ if (dockerfile) {
         }
       }
     }
-    // 自证观测（Ruling 243 口径）：一个 COPY 源都没解析到 ⇒ 说明解析器失效，不许当"干净"
-    if (checkedSources === 0) failures.push("deploy/Dockerfile 的 COPY 源解析没跑起来（0 个源被检查）—— 本断言等于不存在，请核对解析规则");
+    // 自证观测（Ruling 243 口径）：两边都没解析到 ⇒ 说明解析器失效，不许当"干净"
+    if (checkedSources === 0 && checkedInImageSources === 0) {
+      failures.push("deploy/Dockerfile 的 COPY 源解析没跑起来（0 个源被检查）—— 本断言等于不存在，请核对解析规则");
+    }
+    console.log(
+      `   · Dockerfile COPY 源校验：构建上下文 ${checkedSources} 个（缺 ${checkedSources - ctxOk} 个）+ 镜像内 ${checkedInImageSources} 个（跳过，无法在本机证明）`,
+    );
+    console.log(`     - 跳过的镜像内源：${inImageSkipped.join(", ") || "（无）"}`);
   }
 }
 if (api && !api.build) {
