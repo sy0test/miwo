@@ -11,9 +11,15 @@
  * ── 断言（每条都打印机器可读行）──
  *   A. 零丢失：终态（succeeded/dead/canceled）数 == M
  *   B. 发生了回收：至少 1 条 attempts >= 2（否则租约回收没生效）
- *   C. 无重叠执行：同一 jobId 的 [start,end] 区间不重叠（事件流 `${MIWO_DATA_DIR}/job-selftest.jsonl`）
- *   D. 上限不被突破：按 50ms 采样，全局在跑数 ≤ globalMaxRunning、单用户在跑数 ≤ perUserMaxRunning
+ *   C. 无重叠执行：**按 (jobId, attempt) 分组**配对 [start,end]，同一 job 的相邻 attempt 不重叠
+ *      （事件流 `${MIWO_DATA_DIR}/job-selftest.jsonl`）。⚠ 被 SIGKILL 的 attempt **没有 end**
+ *      —— 这是 B 断言强制发生的场景，不参与重叠判定（否则 B 与 C 互相矛盾，见 review-D.md F-1）
+ *   D. 上限不被突破：按 50ms 采样，全局在跑数 ≤ `JOB_POLICY.globalMaxRunning`、
+ *      单用户在跑数 ≤ `JOB_POLICY.perUserMaxRunning`（**上界只来自 policy.ts**，不是环境变量默认值 —— F-2）
  *   E. 没有"永久 running"：终态检查时 state=running 的行数 == 0
+ *
+ * ⚠ 本文件可以被 `require`（纯函数 `buildSpans` / `findOverlaps` / `resolveLimits` 已导出，供
+ *   `tests/job-chaos-assertions.test.ts` 做判别力用例）；**直接执行时**才跑 main()。
  *
  * 用法（仓库根或 apps/api 下均可）：
  *   node apps/api/scripts/job-chaos.cjs                 # 默认 M=30 K=3 U=5 ms=400
@@ -53,38 +59,139 @@ const fail = (code, m) => {
   process.exit(code);
 };
 
-// ── 0) 驱动门禁：必须 MySQL ──
-if (String(process.env.MIWO_DB_DRIVER || "") !== "mysql") {
-  console.error("[chaos] 本 harness 需要 MySQL（MIWO_DB_DRIVER=mysql）：sqlite 在多进程下没有行锁语义，");
-  console.error("        '多 worker 并发领取' 与本组断言无法成立。");
-  console.error("        ⇒ 本机（无 MySQL）请用 sqlite 单元用例；本脚本在 CI 的 mysql job / 服务器上跑。");
-  console.error("        （这不是通过，也不是失败 —— 是'观测不到'，按 Ruling 243 以 EXIT 2 结束）");
-  process.exit(2);
-}
-
-const mysql2 = (() => {
-  try {
-    return require(path.join(API_DIR, "node_modules", "mysql2", "promise"));
-  } catch {
-    try {
-      return require("mysql2/promise");
-    } catch (e) {
-      fail(2, `[chaos] 找不到 mysql2（${e.message}）—— 请先在 apps/api 下 pnpm install`);
+/**
+ * 【F-1】把事件流按 **(jobId, attempt)** 分组，得到每次 attempt 的 `[start, end]` 跨度。
+ *
+ * ── 为什么必须按 attempt 分组（而不是"第 i 个 start 配第 i 个 end"）──
+ * 本 harness **自己**会 SIGKILL 一个 worker（见下面第 5 步）制造租约回收，而 `handlers/selftest.ts`
+ * 只在**正常跑完**后才 append `end` ⇒ 被杀的 attempt **永远没有 end**。于是"第 i 个 start 配第 i 个
+ * end"会整体错位：被杀 attempt 的 start 与**重跑 attempt 的 end** 配成一个横跨两次执行的区间，
+ * 重跑的 start 落在这个假区间内 ⇒ 误判"区间重叠" ⇒ C FAIL。
+ * 而 B 断言（`max(attempts) >= 2`）**强制这个场景必须发生** ⇒ 旧算法下 B 与 C 互相矛盾，
+ * **队列实现完全正确时** CI mysql job / `verify:phase1d` 的 D2 也会变红（review-D.md F-1）。
+ *
+ * ── 口径 ──
+ *   · 每个 (jobId, attempt) 至多一个 start / 一个 end；`e = null` = **这次 attempt 没有正常收尾**
+ *     （被 SIGKILL / 租约丢失 / 进程退出）。这是**预期内**的状态，不是异常。
+ *   · 返回 `Map<jobId, Array<{attempt, s, e}>>`（按 s 升序；没有 start 的事件只保留在 `unknown` 计数里）。
+ */
+function buildSpans(events) {
+  const byJob = new Map();
+  let orphanEnds = 0;
+  for (const e of events) {
+    if (e === null || typeof e !== "object" || e.jobId === undefined) continue;
+    if (!byJob.has(e.jobId)) byJob.set(e.jobId, new Map());
+    const attempts = byJob.get(e.jobId);
+    const attempt = e.attempt === undefined ? 1 : e.attempt;
+    if (!attempts.has(attempt)) attempts.set(attempt, { attempt, s: null, e: null, userId: undefined });
+    const a = attempts.get(attempt);
+    if (e.event === "start") {
+      a.s = e.ts;
+      if (e.userId !== undefined) a.userId = e.userId;
+    } else if (e.event === "end") {
+      if (a.s === null) orphanEnds += 1; // 只有 end 没有 start ⇒ 事件流不完整，下面当异常报
+      a.e = e.ts;
     }
   }
-})();
+  const out = new Map();
+  for (const [jobId, attempts] of byJob) {
+    const spans = [...attempts.values()]
+      .filter((a) => a.s !== null)
+      .sort((x, y) => x.s - y.s);
+    out.set(jobId, spans);
+  }
+  out.orphanEnds = orphanEnds; // Map 上挂一个计数（调用方打印用；不影响遍历）
+  return out;
+}
 
-const cfg = {
-  host: process.env.MIWO_DB_HOST || "127.0.0.1",
-  port: Number(process.env.MIWO_DB_PORT || 3307),
-  user: process.env.MIWO_DB_USER || "miwo",
-  password: process.env.MIWO_DB_PASSWORD || "miwo",
-  database: process.env.MIWO_DB_NAME || "miwo_test",
-};
+/**
+ * 【F-1】找出**同一条 job 的相邻 attempt 之间**的重叠（= 两次执行真的同时在跑）。
+ *
+ * ⚠ 只有**左端 attempt 有 end** 时才能判定："它还没结束，右端就开始了"。
+ *   左端 `e === null`（被 SIGKILL）说明我们**不知道**它何时停下 ⇒ 该 attempt **不参与重叠判定**
+ *   （否则 chaos 自己制造的场景必然误判，见 `buildSpans` 的头注）。
+ * ⚠ 这个放宽**不影响**真正要守的不变式：一条 job 被两个 worker 同时执行时，两次 attempt
+ *   **都会有 end**（都正常/失败收尾），相邻区间必然重叠 ⇒ 照样红（见 `tests/job-chaos-assertions.test.ts`
+ *   的 `REAL_OVERLAP` 用例：这是"只收紧不放宽"的判别力证据）。
+ */
+function findOverlaps(jobSpans) {
+  const overlaps = [];
+  for (const [jobId, spans] of jobSpans) {
+    for (let i = 1; i < spans.length; i += 1) {
+      const prev = spans[i - 1];
+      const cur = spans[i];
+      if (prev.e === null) continue; // 左端没有 end ⇒ 无法判定（被 SIGKILL 是预期场景）
+      if (cur.s < prev.e) overlaps.push({ jobId, prev, cur });
+    }
+  }
+  return overlaps;
+}
+
+/**
+ * 【F-2】D 断言的上界**只能**来自 `JOB_POLICY`（api/worker 真正用的那份），不许用硬编码默认值。
+ *
+ * 旧实现 `Number(process.env.MIWO_CHAOS_GLOBAL_MAX || 8)`：CI 没设这两个变量 ⇒ 验的是**旧的** 8/2，
+ * 而策略（spec §15 的 O10 口径）本来就是"会改的地方" ⇒ 收紧时恒真、放宽时误红（review-D.md F-2）。
+ * 现在：上界 = `JOB_POLICY.*`；`MIWO_CHAOS_*` 若被设置，**必须与策略一致**，否则拒绝跑（EXIT 2）。
+ */
+function resolveLimits(policy, env = process.env) {
+  const global = Number(policy.globalMaxRunning);
+  const perUser = Number(policy.perUserMaxRunning);
+  const num = (v) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+  const problems = [];
+  const gEnv = num(env.MIWO_CHAOS_GLOBAL_MAX);
+  const pEnv = num(env.MIWO_CHAOS_PER_USER_MAX);
+  if (gEnv !== undefined && gEnv !== global) problems.push(`MIWO_CHAOS_GLOBAL_MAX=${gEnv} 与 JOB_POLICY.globalMaxRunning=${global} 不一致`);
+  if (pEnv !== undefined && pEnv !== perUser) problems.push(`MIWO_CHAOS_PER_USER_MAX=${pEnv} 与 JOB_POLICY.perUserMaxRunning=${perUser} 不一致`);
+  return { global, perUser, problems, source: "JOB_POLICY" };
+}
+
+/** CLI 路径：真读 `@/jobs/policy` 的 `JOB_POLICY`（用 tsx 的 CJS 钩子 require TS；失败即拒跑）。 */
+function loadJobPolicy() {
+  try {
+    require("tsx/cjs");
+  } catch (e) {
+    fail(2, `[chaos] 无法注册 tsx/cjs（${e.message}）—— 上界必须来自 JOB_POLICY，拒绝用硬编码默认值`);
+  }
+  try {
+    return require(path.join(API_DIR, "src", "jobs", "policy.ts")).JOB_POLICY;
+  } catch (e) {
+    fail(2, `[chaos] 读不到 @/jobs/policy 的 JOB_POLICY（${e.message}）—— 拒绝用硬编码默认值`);
+  }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
+  // ── 0) 驱动门禁：必须 MySQL（⚠ 必须在 main() 里：本文件被单测 `require` 时不得退出进程）──
+  if (String(process.env.MIWO_DB_DRIVER || "") !== "mysql") {
+    console.error("[chaos] 本 harness 需要 MySQL（MIWO_DB_DRIVER=mysql）：sqlite 在多进程下没有行锁语义，");
+    console.error("        '多 worker 并发领取' 与本组断言无法成立。");
+    console.error("        ⇒ 本机（无 MySQL）请用 sqlite 单元用例；本脚本在 CI 的 mysql job / 服务器上跑。");
+    console.error("        （这不是通过，也不是失败 —— 是'观测不到'，按 Ruling 243 以 EXIT 2 结束）");
+    process.exit(2);
+  }
+
+  const mysql2 = (() => {
+    try {
+      return require(path.join(API_DIR, "node_modules", "mysql2", "promise"));
+    } catch {
+      try {
+        return require("mysql2/promise");
+      } catch (e) {
+        fail(2, `[chaos] 找不到 mysql2（${e.message}）—— 请先在 apps/api 下 pnpm install`);
+      }
+    }
+  })();
+
+  const cfg = {
+    host: process.env.MIWO_DB_HOST || "127.0.0.1",
+    port: Number(process.env.MIWO_DB_PORT || 3307),
+    user: process.env.MIWO_DB_USER || "miwo",
+    password: process.env.MIWO_DB_PASSWORD || "miwo",
+    database: process.env.MIWO_DB_NAME || "miwo_test",
+  };
+
   const conn = await mysql2.createConnection(cfg);
   const workers = [];
   const killAll = () => {
@@ -192,38 +299,35 @@ async function main() {
     const B = Number(attempts.mx || 0) >= 2;
     say(`[chaos] B 租约回收生效：max(attempts)=${attempts.mx} ⇒ ${B ? "PASS" : "FAIL"}`);
 
-    // C 无重叠执行（按 jobId 组装区间）
-    const spans = new Map();
-    for (const e of events) {
-      if (!spans.has(e.jobId)) spans.set(e.jobId, []);
-      spans.get(e.jobId).push({ event: e.event, ts: e.ts, attempt: e.attempt });
+    // C 无重叠执行（【F-1】按 (jobId, attempt) 分组配对；无 end 的 attempt 不参与重叠判定）
+    const jobSpans = buildSpans(events);
+    const overlaps = findOverlaps(jobSpans);
+    for (const o of overlaps) {
+      say(`[chaos]   ⚠ job #${o.jobId} attempt ${o.prev.attempt}→${o.cur.attempt} 区间重叠：${JSON.stringify(o.prev)} vs ${JSON.stringify(o.cur)}`);
     }
-    let overlaps = 0;
-    for (const [jobId, evs] of spans) {
-      const starts = evs.filter((x) => x.event === "start").sort((a, b) => a.ts - b.ts);
-      const ends = evs.filter((x) => x.event === "end").sort((a, b) => a.ts - b.ts);
-      const intervals = starts.map((s, i) => ({ s: s.ts, e: ends[i] ? ends[i].ts : Number.POSITIVE_INFINITY })).sort((a, b) => a.s - b.s);
-      for (let i = 1; i < intervals.length; i += 1) {
-        if (intervals[i].s < intervals[i - 1].e) {
-          overlaps += 1;
-          say(`[chaos]   ⚠ job #${jobId} 区间重叠：${JSON.stringify(intervals[i - 1])} vs ${JSON.stringify(intervals[i])}`);
-        }
-      }
-    }
-    const C = overlaps === 0;
-    say(`[chaos] C 无重叠执行：事件 ${events.length} 条 / job ${spans.size} 个 / 重叠 ${overlaps} ⇒ ${C ? "PASS" : "FAIL"}`);
+    const killedAttempts = [...jobSpans.values()].flat().filter((s) => s.e === null).length;
+    const C = overlaps.length === 0 && jobSpans.orphanEnds === 0;
+    if (jobSpans.orphanEnds) say(`[chaos]   ⚠ 事件流有 ${jobSpans.orphanEnds} 条 end 没有对应 start（事件流不完整）`);
+    say(
+      `[chaos] C 无重叠执行：事件 ${events.length} 条 / job ${jobSpans.size} 个 / 重叠 ${overlaps.length} ⇒ ${C ? "PASS" : "FAIL"}` +
+        `（其中 ${killedAttempts} 次 attempt 无 end = 被 SIGKILL/中止，按设计不参与重叠判定）`,
+    );
 
-    // D 并发上限（50ms 采样）
-    const GLOBAL_MAX = Number(process.env.MIWO_CHAOS_GLOBAL_MAX || 8);
-    const PER_USER_MAX = Number(process.env.MIWO_CHAOS_PER_USER_MAX || 2);
+    // D 并发上限（50ms 采样）【F-2】上界只来自 JOB_POLICY；MIWO_CHAOS_* 只能用于"一致性自检"
+    const policy = loadJobPolicy();
+    const { global: GLOBAL_MAX, perUser: PER_USER_MAX, problems: limitProblems } = resolveLimits(policy, process.env);
+    if (limitProblems.length) {
+      // 明确拒绝跑：env 与策略不一致时"验的是旧上界"，正是 F-2 的形态
+      fail(2, `[chaos] 上界来源冲突（拒绝用旧上界跑验收）：\n        ${limitProblems.join("\n        ")}\n        ⇒ 请删掉 MIWO_CHAOS_*，或让它与 apps/api/src/jobs/policy.ts 的 JOB_POLICY 一致`);
+    }
+    say(`[chaos] D 上界来源：JOB_POLICY globalMaxRunning=${GLOBAL_MAX} / perUserMaxRunning=${PER_USER_MAX}`);
     const intervals = [];
-    for (const [jobId, evs] of spans) {
-      const starts = evs.filter((x) => x.event === "start").sort((a, b) => a.ts - b.ts);
-      const ends = evs.filter((x) => x.event === "end").sort((a, b) => a.ts - b.ts);
-      starts.forEach((s, i) => {
-        const userId = evs.find((x) => x.userId !== undefined)?.userId;
-        intervals.push({ s: s.ts, e: ends[i] ? ends[i].ts : s.ts + MS, userId });
-      });
+    for (const [, spans] of jobSpans) {
+      for (const a of spans) {
+        // ⚠ 无 end 的 attempt（被 SIGKILL）用 "start + selftest 时长" 兜底：这是**下界**估计（它至少跑了 MS），
+        //    对"峰值是否超上限"这个断言是保守方向（可能高估并发），不会把超限洗掉。
+        intervals.push({ s: a.s, e: a.e === null ? a.s + MS : a.e, userId: a.userId });
+      }
     }
     let peakGlobal = 0;
     let peakPerUser = 0;
@@ -266,4 +370,13 @@ async function main() {
   }
 }
 
-main();
+/**
+ * ⚠ **只有直接跑本文件时才进 main()**：`tests/job-chaos-assertions.test.ts` 要 `require` 本文件来
+ * 单测 `buildSpans` / `findOverlaps` / `resolveLimits`（F-1/F-2 的判别力用例）——那时**不许**退出进程、
+ * 不许连 MySQL。所以驱动门禁（必须 MySQL）与 mysql2 的 require 都在 main() 内部。
+ */
+if (require.main === module) {
+  main();
+}
+
+module.exports = { buildSpans, findOverlaps, resolveLimits };
