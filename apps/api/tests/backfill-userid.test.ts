@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { MiwoConfig } from "@/config";
+import { configDefaults } from "./helpers/config-fixture";
 import { createKnex } from "@/db/connect";
 import { runMigrations } from "@/db/migrations";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
@@ -41,9 +42,9 @@ const LONG_PROJECT = 2000000000200;
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-backfill-"));
 function cfg(file: string): MiwoConfig {
   return {
+    ...configDefaults(),
     env: "dev", port: 10599, host: "127.0.0.1", dataDir: TMP, mediaDir: path.join(TMP, "oss"),
-    storageDriver: "local", publicBaseUrl: "http://127.0.0.1:10599", trustProxy: 0,
-    jwtSecret: "x".repeat(48), db: { driver: "sqlite", file },
+    db: { driver: "sqlite", file },
   };
 }
 let knex: any;

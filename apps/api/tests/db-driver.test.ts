@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { MiwoConfig } from "@/config";
+import { configDefaults } from "./helpers/config-fixture";
 import { clientConfig, connectionConfig, createKnex, describeTarget, dialectOfConfig, MYSQL_SESSION_SETUP, applyMysqlSessionSettings, mysqlAfterCreate, sqliteAfterCreate, SQLITE_BUSY_TIMEOUT_MS } from "@/db/connect";
 import { sqldialect, types } from "@/db/dialect";
 
@@ -11,9 +12,9 @@ afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 function cfgSqlite(file = path.join(TMP, "a.sqlite")): MiwoConfig {
   return {
+    ...configDefaults(),
     env: "dev", port: 10599, host: "127.0.0.1", dataDir: TMP, mediaDir: path.join(TMP, "oss"),
-    storageDriver: "local", publicBaseUrl: "http://127.0.0.1:10599", trustProxy: 0,
-    jwtSecret: "x".repeat(48), db: { driver: "sqlite", file },
+    db: { driver: "sqlite", file },
   };
 }
 function cfgMysql(): MiwoConfig {

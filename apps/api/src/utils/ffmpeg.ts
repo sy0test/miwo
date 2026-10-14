@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { config } from "@/config";
 
 const run = promisify(execFile);
 
@@ -9,18 +10,29 @@ const run = promisify(execFile);
  * 为什么走外部进程而不是 npm 包：切片段只用得到 trim/concat 两个滤镜，
  * 装 fluent-ffmpeg 只是多一层壳，还要额外的 postinstall。
  *
- * 二进制路径可用 `FFMPEG_PATH` / `FFPROBE_PATH` 覆盖 —— Electron 打包后
+ * 二进制路径可用 `MIWO_FFMPEG_PATH` / `MIWO_FFPROBE_PATH` 覆盖 —— Electron 打包后
  * PATH 与开发机不同，写死 "ffmpeg" 在那边会找不到。
+ *
+ * ⚠ Phase 1c Task 10：原来这里是**模块级常量**（`process.env.FFMPEG_PATH || "ffmpeg"`，
+ *   在 import 期求值）。改成函数内读 `config` 有两个理由，都不是风格问题：
+ *     ① "配置的唯一入口是 config.ts"要在**代码上**成立（门禁 `verify:config` 断言的正是这一点）；
+ *     ② 模块级常量让"不同配置下的行为"**不可测**（单测改了 config 也影响不到已经求值的常量）。
+ *   代价是每次调用多一次属性读取（可忽略：切片是分钟级的外部进程）。
  */
-const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
-const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
-
+function ffmpegBin(): string {
+  return config.ffmpeg.path;
+}
+function ffprobeBin(): string {
+  return config.ffmpeg.probePath;
+}
 /** 单条命令的超时。切片是纯本地转码，正常几秒；卡住多半是文件坏了 */
-const TIMEOUT = Number(process.env.FFMPEG_TIMEOUT || 10 * 60 * 1000);
+function timeoutMs(): number {
+  return config.ffmpeg.timeoutMs;
+}
 
 async function exec(bin: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await run(bin, args, { timeout: TIMEOUT, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+    const { stdout } = await run(bin, args, { timeout: timeoutMs(), maxBuffer: 16 * 1024 * 1024, windowsHide: true });
     return stdout;
   } catch (e: any) {
     if (e?.code === "ENOENT") throw new Error(`找不到 ${bin}，请确认已安装并加入 PATH（或用环境变量指定路径）`);
@@ -40,7 +52,7 @@ export type VideoMeta = {
 
 /** 读源片元信息。timeout 之外还兜住「文件不是视频」—— ffprobe 会直接报错 */
 export async function probeVideo(file: string): Promise<VideoMeta> {
-  const out = await exec(FFPROBE, ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file]);
+  const out = await exec(ffprobeBin(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", file]);
   let json: any;
   try {
     json = JSON.parse(out);
@@ -69,7 +81,7 @@ export async function probeVideo(file: string): Promise<VideoMeta> {
  */
 export async function extractCover(srcFile: string, outFile: string, atSec = 0): Promise<void> {
   const grab = (t: number) =>
-    exec(FFMPEG, [
+    exec(ffmpegBin(), [
       "-y", "-hide_banner", "-loglevel", "error",
       "-ss", String(t), "-i", srcFile,
       "-frames:v", "1",
@@ -130,5 +142,5 @@ export async function cutClip(srcFile: string, ranges: [number, number][], outFi
   else args.push("-an");
   args.push("-movflags", "+faststart", outFile);
 
-  await exec(FFMPEG, args);
+  await exec(ffmpegBin(), args);
 }

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { analyzeRedrawAssets, sendRedrawError, persistStage } from "@/utils/redrawAnalyze";
+import { config } from "@/config";
 
 const router = express.Router();
 
@@ -29,8 +30,8 @@ const router = express.Router();
  * 软件中途退出的话，`fixDB` 启动时会把还挂在 0 的行判成 -1，不会永远转圈。
  */
 
-/** 外部预处理脚本。**只认环境变量或这个开发机上的绝对路径** —— 见上面的交付前替换提醒 */
-const PREP_SCRIPT = process.env.REDRAW_PREP || "D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs";
+/** 外部预处理脚本。**唯一来源是 `config.redrawPrepScript`**（= `MIWO_REDRAW_PREP`，缺省与改动前的字面量逐字一致） */
+const PREP_SCRIPT = config.redrawPrepScript;
 
 export default router.post(
   "/",

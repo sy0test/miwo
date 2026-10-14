@@ -200,8 +200,9 @@ if (apiJob) {
     );
   }
   check(
-    apiRuns.includes("node tools/check-config-single-source.cjs"),
-    "api job 缺少 `node tools/check-config-single-source.cjs`：apps/api/src 下不得绕过 config.ts 直读环境变量",
+    apiRuns.includes("pnpm run verify:config"),
+    "api job 缺少 `pnpm run verify:config`（= node tools/check-config-single-source.cjs）：" +
+      "apps/api/src 下不得绕过 config.ts 直读环境变量",
   );
   check(
     apiRuns.includes("pnpm run verify:build"),

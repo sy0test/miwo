@@ -85,12 +85,55 @@ const EXEMPTIONS = [
     reason:
       "「Phase 0 验收的执行边界」一节必须写出两个旧仓库的**真实目录名**（`code/toonflow-upstream` / `code/toonflow-web`）才能说清 `verify:legacy-freeze --check` 为什么在 CI 上必然失败（无 remote 的 runner 上没有这两个仓）。这是旧仓库的真实目录名、不是本项目品牌。",
   },
+  // ── Phase 1c Task 10：`TOONFLOW_PROXY` → `MIWO_PROXY` 的**废弃留档**（不是品牌 token）──
+  // ⚠ 这条豁免与它取代的那一条（原文是 `{scope:"README.md", match:"TOONFLOW_PROXY", min:1}`）**同性质**：
+  //   它允许的字符串是**环境变量的旧名**（本机变量名，不是品牌文案），用途是"告诉运维这个名字已经废弃"。
+  // ⚠ 为什么分成 5 条而不是 1 条宽豁免：本门禁的护栏 B 要求"豁免必须真实命中且不低于 min"，
+  //   按文件分开 ⇒ **哪一处留档被删掉会当场红**（否则一条宽豁免会在"只删了一处"时静默通过）。
+  // ⚠ 逐处清点（共 8 处，与下面 min 之和相等）：README.md 2（配置收口小节 + 对账表）、
+  //   apps/api/src/config.ts 2（接口注释 + loadConfig 注释）、apps/api/src/proxy.ts 2（文件头 + 重命名处）、
+  //   apps/api/.env.example 1、deploy/.env.example 1。
   {
     scope: "README.md",
     match: "TOONFLOW_PROXY",
-    min: 1,
+    min: 2,
     reason:
-      "README 的「非 MIWO_ 环境变量」表里要如实列出 `TOONFLOW_PROXY` 这个名字（含「重命名已排 Phase 1c」的说明）。**不是**品牌文案：它是本机环境变量名，改名要等 Phase 1c 连同 apps/api/src/proxy.ts 一起做。",
+      "Phase 1c 配置收口小节与逐条对账表里要如实写明 `TOONFLOW_PROXY` 已被**重命名为 `MIWO_PROXY`**（旧名不再读取）。是环境变量旧名的废弃留档，不是品牌文案。",
+  },
+  {
+    scope: "apps/api/src/config.ts",
+    match: "TOONFLOW_PROXY",
+    min: 2,
+    reason:
+      "接口注释（`proxyUrl` 字段）与 `loadConfig` 的收口注释里各一处：写明该字段的**旧名**是 `TOONFLOW_PROXY`（否则下一个人不知道重命名发生过）。是环境变量旧名的废弃留档。",
+  },
+  {
+    scope: "apps/api/src/proxy.ts",
+    match: { re: "toonflow", flags: "gi" },
+    min: 2,
+    reason:
+      "**取代**原 `min:3` 的那条豁免（Task 10 的重命名本身让旧条目只剩 2 处命中 ⇒ 按护栏 B 必须收缩）。现在是：文件头的解析顺序注释 + 重命名处的注释，各一处；代码里**不再读取** `TOONFLOW_PROXY`（读的是 `config.proxyUrl`）。",
+  },
+  {
+    scope: "apps/api/.env.example",
+    match: "TOONFLOW_PROXY",
+    min: 1,
+    reason: "模板里要写明 `MIWO_PROXY` 的**旧名已废弃**（否则运维会继续写旧名并以为生效）。是环境变量旧名的废弃留档。",
+  },
+  {
+    scope: "deploy/.env.example",
+    match: "TOONFLOW_PROXY",
+    min: 1,
+    reason: "同上（部署模板也必须有这句，prod 的运维不会去看 apps/api 的模板）。是环境变量旧名的废弃留档。",
+  },
+  {
+    scope: "apps/api/tests/config-single-source.test.ts",
+    match: "TOONFLOW_PROXY",
+    min: 5,
+    reason:
+      "配置收口用例里**必须**出现旧名：① 注释说明重命名；② 用例名；③ 构造 `loadConfig({TOONFLOW_PROXY: …})` —— " +
+      "**故意设了旧名再断言 `config.proxyUrl === \"\"`**，这就是\"旧名已彻底无效\"的机械判据（少一处这条断言就失去判别力）；" +
+      "④⑤ 断言消息与旧名清单里的那一项。是环境变量旧名的废弃留档，不是品牌文案。",
   },
   {
     scope: "deploy/README.md",
@@ -228,13 +271,6 @@ const EXEMPTIONS = [
     match: "HBAI-Ltd/Toonflow-app",
     min: 2,
     reason: "上游仓库 URL ×2（第三方/上游地址）。",
-  },
-  {
-    scope: "apps/api/src/proxy.ts",
-    match: { re: "toonflow", flags: "gi" },
-    min: 3,
-    reason:
-      "`TOONFLOW_PROXY` 环境变量名（含注释里的同名提及）。它的重命名已排 **Phase 1c**（Task 12 必做 7 记载）；本轮改它会让现网代理配置失效。",
   },
   {
     scope: "apps/web/src/components/setting/components/dbConfig.vue",

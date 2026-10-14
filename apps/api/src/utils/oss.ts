@@ -79,7 +79,9 @@ class OSS {
     const safePath = normalizeUserPath(userRelPath);
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
     let url = `/${prefix}/`;
-    if (process.env.ossURL && process.env.ossURL !== "") url = process.env.ossURL + `/${prefix}/`;
+    // Phase 1c Task 10：原来读 `process.env.ossURL`（绕过 config.ts）⇒ 收进 `config.ossUrl`。
+    // 语义逐字不变：**非空才覆盖前缀**；空串 = 走下面的 dev/Electron 规则或相对路径。
+    if (config.ossUrl) url = config.ossUrl.replace(/\/$/, "") + `/${prefix}/`;
     // dev（纯 Node，可能被局域网浏览器访问）用对外基地址 —— 唯一真相是 config.publicBaseUrl
     // （= MIWO_PUBLIC_BASE_URL，dev 缺省 http://<MIWO_HOST>:<MIWO_PORT>），不再自己探测局域网 IP：
     // 探测出来的网卡可能与浏览器实际走的那张不同（本机就有 192.168.1.12 与虚拟网卡两个非回环地址）。

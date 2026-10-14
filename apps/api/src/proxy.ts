@@ -6,12 +6,17 @@
  * 只能靠命令行先把 NODE_USE_ENV_PROXY/HTTPS_PROXY 设好再启动进程（运行时再设无效）。
  *
  * 这里在服务启动前装配一次全局 dispatcher，解析顺序：
- *   TOONFLOW_PROXY > HTTPS_PROXY/HTTP_PROXY > Windows 系统代理注册表 > 直连
+ *   MIWO_PROXY（旧名 TOONFLOW_PROXY 已废弃）> HTTPS_PROXY/HTTP_PROXY > Windows 系统代理注册表 > 直连
  * 从注册表取到的地址会先做一次 TCP 探活，避免「Clash 退出但系统代理残留」把出网全搞挂。
+ *
+ * ⚠ 四个标准代理变量（`HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy`）**刻意保留原名**：
+ *   undici 的 `EnvHttpProxyAgent`（:122 装配的那个）只认这些名字 —— 改名等于让代理配置失效。
+ *   它们也是 `tools/check-config-single-source.cjs` 豁免表里**唯一**的四个名字。
  */
 import net from "node:net";
 import { execFileSync } from "node:child_process";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
+import { config } from "@/config";
 
 /** 本地与私有网段不走代理：应用自身端口、局域网内的服务端/中转站 */
 const NO_PROXY = ["localhost", "127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"].join(",");
@@ -95,11 +100,17 @@ export async function installProxy(): Promise<void> {
   installed = true;
 
   try {
-    const explicit = normalize(process.env.TOONFLOW_PROXY);
+    // ⚠ Phase 1c Task 10：`TOONFLOW_PROXY` → **`MIWO_PROXY`**（Phase 0 ledger 已裁定的重命名），
+    //   收进唯一配置入口 `config.proxyUrl`。旧名**不再读取**。
+    const explicit = normalize(config.proxyUrl);
+    // ⚠ 这四个是**标准代理变量**（`HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy`），
+    //   **刻意保留原名**：undici 的 `EnvHttpProxyAgent`（下面 `setGlobalDispatcher` 用的那个）
+    //   读的就是它们 —— 改成 `MIWO_*` 等于让代理配置彻底失效。
+    //   它们是 `tools/check-config-single-source.cjs` 的**唯一豁免项**（豁免表里逐条附了这条理由）。
     const fromEnv = normalize(process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy);
 
     let proxyUrl = explicit ?? fromEnv;
-    let source = explicit ? "TOONFLOW_PROXY" : "环境变量";
+    let source = explicit ? "MIWO_PROXY" : "环境变量";
 
     // 显式配置一律尊重；只有从注册表自动探测来的才做探活
     if (!proxyUrl) {

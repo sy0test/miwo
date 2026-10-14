@@ -128,7 +128,7 @@ jobs:
           # 为什么单开一条：`check-deploy-config.cjs` 的 `inCode` 是**只从 config.ts 里 match 出来的**，
           # 所以"别的文件直读 env"它完全看不见（实测 oss.ts/ffmpeg.ts/analyzeSource.ts/proxy.ts 都在界外），
           # 而 README 声称"配置唯一入口是 config.ts" —— 这条门禁就是那句话的机器化。
-          node tools/check-config-single-source.cjs
+          pnpm run verify:config
       - name: 路由生成（幂等）
         working-directory: apps/api
         run: node --import=tsx scripts/generate-router.ts

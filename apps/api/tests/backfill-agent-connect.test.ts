@@ -21,6 +21,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import type { MiwoConfig } from "@/config";
+import { configDefaults } from "./helpers/config-fixture";
 import { createKnex } from "@/db/connect";
 
 const API_ROOT = path.resolve(__dirname, "..");
@@ -50,8 +51,8 @@ function envOf(dataDir: string): NodeJS.ProcessEnv {
 
 function cfgOf(file: string): MiwoConfig {
   return {
+    ...configDefaults(),
     env: "dev", port: 10599, host: "127.0.0.1", dataDir: path.dirname(file), mediaDir: path.join(path.dirname(file), "oss"),
-    storageDriver: "local", publicBaseUrl: "http://127.0.0.1:10599", trustProxy: 0,
     jwtSecret: CONFIG_SECRET, db: { driver: "sqlite", file },
   };
 }

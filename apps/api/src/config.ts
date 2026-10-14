@@ -44,6 +44,17 @@ export interface MiwoConfig {
   trustProxy: number;
   jwtSecret: string;
   /**
+   * 媒体 URL 前缀覆盖（原 `process.env.ossURL`）。空串 = 用相对/公开基地址。
+   * ⚠ dev 与 Electron 的基地址另有规则（见 `utils/oss.ts` 的 `getFileUrl`）：本字段只在非空时**覆盖前缀**。
+   */
+  ossUrl: string;
+  /** 外部二进制与超时（原 `FFMPEG_PATH` / `FFPROBE_PATH` / `FFMPEG_TIMEOUT`，Phase 1c Task 10 收口）。 */
+  ffmpeg: { path: string; probePath: string; timeoutMs: number };
+  /** 出海转绘的预处理脚本（原 `REDRAW_PREP`）；空串表示不启用。 */
+  redrawPrepScript: string;
+  /** 出网代理（原 `TOONFLOW_PROXY`，Phase 1c Task 10 **重命名**为 `MIWO_PROXY`）；空 = 直连/读标准代理变量。 */
+  proxyUrl: string;
+  /**
    * 数据库目标（spec §5.1 的联合类型：sqlite 分支 dev/回归，mysql 分支部署）。
    *
    * ⚠ Phase 1a / Task 4 起这个联合类型被**真正消费**：`src/db/connect.ts` 的 `createKnex()`
@@ -51,6 +62,10 @@ export interface MiwoConfig {
    *   （`utils/db.ts` 的 `dbReady` → `connect()`）据此连库并跑迁移。
    *   在此之前它只是配置层的一个形状，没有任何"选分支"的消费者。
    *   ⚠ 本 Task **不新增**任何 `MIWO_*` 变量（裁定 5）：这里只补注释。
+   * ⚠ Phase 1c / Task 10 追加 `ossUrl` / `ffmpeg` / `redrawPrepScript` / `proxyUrl` 四个字段：
+   *   它们把此前**散落在消费点**的 6 个 `process.env` 读取收进唯一入口，
+   *   由 `node tools/check-config-single-source.cjs`（`pnpm run verify:config`）机械守住
+   *   （`apps/api/src/**` 里不许再绕过 config.ts 直读 env；四个标准代理变量是唯一豁免）。
    */
   db: MiwoDbConfigSqlite | MiwoDbConfigMysql;
 }
@@ -143,6 +158,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   // 兼容生态代码（Express/knex/vite 等仍读 NODE_ENV）
   env.NODE_ENV = rawEnv === "dev" ? "development" : "production";
 
+  // ---- Phase 1c Task 10：把散落在消费点的 env 读取收进唯一入口 ----
+  // ⚠ 默认值与改动前的现状**逐字一致**（否则"没配就换个行为"是一次静默的行为变更）：
+  //   · `utils/oss.ts:82` 的 `process.env.ossURL`（空 = 不覆盖前缀）；
+  //   · `utils/ffmpeg.ts:15/16/19` 的 `FFMPEG_PATH || "ffmpeg"` / `FFPROBE_PATH || "ffprobe"` /
+  //     `Number(FFMPEG_TIMEOUT || 10*60*1000)`；
+  //   · `routes/redraw/analyzeSource.ts:33` 的字面量（开发机绝对路径）；
+  //   · `proxy.ts:98` 的 `TOONFLOW_PROXY`（**重命名**为 `MIWO_PROXY`，Phase 0 ledger 已裁定）。
+  // ⚠ `toInt` 而不是 `Number(...)`：改动前的 `Number(FFMPEG_TIMEOUT || …)` 会把 "abc" 静默吃成 NaN
+  //   ⇒ 超时变成"永不超时"。`toInt` 在非法值上 fail-fast（这正是 config.ts 存在的理由）。
+  const ossUrl = optional(env, "MIWO_OSS_URL") ?? "";
+  const ffmpegTimeoutMs = toInt(env, "MIWO_FFMPEG_TIMEOUT_MS", 10 * 60 * 1000, 1000);
+  const ffmpegPath = optional(env, "MIWO_FFMPEG_PATH") ?? "ffmpeg";
+  const ffprobePath = optional(env, "MIWO_FFPROBE_PATH") ?? "ffprobe";
+  const redrawPrepScript = optional(env, "MIWO_REDRAW_PREP") ?? "D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs";
+  const proxyUrl = optional(env, "MIWO_PROXY") ?? "";
+
   return {
     env: rawEnv,
     port,
@@ -153,6 +184,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     publicBaseUrl,
     trustProxy,
     jwtSecret,
+    ossUrl,
+    ffmpeg: { path: ffmpegPath, probePath: ffprobePath, timeoutMs: ffmpegTimeoutMs },
+    redrawPrepScript,
+    proxyUrl,
     db,
   };
 }

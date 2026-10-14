@@ -39,21 +39,32 @@ pnpm.cmd dev
   `src/router.ts` 是**提交在仓库里的构建产物**（构建期生成，不再由 `app.ts` 运行期重建）；空清单会被生成器直接拒绝覆盖。
 - 配置入口是 `apps/api/src/config.ts`（`MIWO_*` 变量的唯一入口 + 启动期校验），开发期模板见 `apps/api/.env.example`。
   ⚠ **dev + 局域网/手机浏览器访问**时必须显式设 `MIWO_PUBLIC_BASE_URL`（否则远端浏览器把缺省的 `127.0.0.1` 当自己，媒体全挂）。
-- ⚠ **但"配置唯一入口是 `config.ts`、只认 `MIWO_*`"目前并不成立**：`apps/api/src` 另有 **10 个非 `MIWO_` 前缀**的环境变量被**直接读**
-  （复核命令：`git grep -n "process\.env" -- apps/api/src`）。它们绕过了启动期校验，多数没有门禁覆盖，**Phase 1c 逐个迁进 `config.ts`**：
+- **Phase 1c 收口（Task 10 起）：应用配置的唯一入口是 `apps/api/src/config.ts`**（启动期 fail-fast；
+  `MIWO_ENV`/`MIWO_PORT`/`MIWO_HOST`/`MIWO_DATA_DIR`/`MIWO_JWT_SECRET`/`MIWO_DB_*`/`MIWO_PUBLIC_BASE_URL`/`MIWO_TRUST_PROXY`/
+  `MIWO_STORAGE_DRIVER`/`MIWO_MEDIA_DIR`，以及本任务新增的 `MIWO_OSS_URL`/`MIWO_FFMPEG_PATH`/`MIWO_FFPROBE_PATH`/
+  `MIWO_FFMPEG_TIMEOUT_MS`/`MIWO_REDRAW_PREP`/`MIWO_PROXY`）。
+  `apps/api/src/**` 里**不得**再出现绕过 `config.ts` 的 `process.env.*` 读取 —— 由
+  `node tools/check-config-single-source.cjs`（`pnpm.cmd run verify:config`，已进 CI）机械断言。
+  **实测口径**：扫描 281 个 `.ts`，观测到 9 处 `process.env` 读取 = `config.ts` 内部 7 处 + 赋值左侧（写，非读）2 处；
+  唯一的显式豁免是**四条标准代理变量** + 两条登记在案的例外（见下）。
+- 历史遗留变量名 `TOONFLOW_PROXY` 已在 Phase 1c **重命名为 `MIWO_PROXY`**（旧名不再读取；`proxy.ts` 的日志与注释同步更新）。
+  下表是这次收口的**逐条对账**（旧表里的 10 个非 `MIWO_` 变量 + 2 个额外项）：
 
-  | 变量 | 读取位置 | 作用 | 迁移状态 |
+  | 变量（旧名） | 原读取位置 | 现在归属 | 状态 |
   |---|---|---|---|
-  | `ossURL` | `utils/oss.ts:73` | **会改媒体 URL**：非空时媒体 URL 以它作基地址（效果上覆盖 `MIWO_PUBLIC_BASE_URL`） | ⚠ **未文档化、无门禁覆盖** —— Phase 1c 迁进 `MIWO_*` |
-  | `FFMPEG_PATH` | `utils/ffmpeg.ts:15` | ffmpeg 可执行文件（缺省 `ffmpeg`，走 PATH） | Phase 1c |
-  | `FFPROBE_PATH` | `utils/ffmpeg.ts:16` | ffprobe 可执行文件（缺省 `ffprobe`） | Phase 1c |
-  | `FFMPEG_TIMEOUT` | `utils/ffmpeg.ts:19` | 单次 ffmpeg 超时（缺省 10 分钟） | Phase 1c |
-  | `REDRAW_PREP` | `routes/redraw/analyzeSource.ts:33` | 外部分镜预处理脚本路径（**缺省值是本机绝对路径** `D:/sy_workspace/tools/redraw-prep/...`，容器里必须显式覆盖） | Phase 1c |
-  | `TOONFLOW_PROXY` | `proxy.ts:98` | 出网代理地址（显式指定） | **重命名/迁移已排 Phase 1c**（Task 12 必做 7 记载） |
-  | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | `proxy.ts:99` | 标准代理环境变量（生态约定，供回退） | **不迁**（标准名，改了会与 curl/undici 生态不一致） |
+  | `ossURL` | `utils/oss.ts:73` | `config.ossUrl`（`MIWO_OSS_URL`，可选） | ✅ 已收进 config |
+  | `FFMPEG_PATH` | `utils/ffmpeg.ts:15` | `config.ffmpeg.path`（`MIWO_FFMPEG_PATH`，缺省 `ffmpeg`） | ✅ 已收进 config（模块级常量改成函数内读 —— 唯一的结构改动） |
+  | `FFPROBE_PATH` | `utils/ffmpeg.ts:16` | `config.ffmpeg.probePath`（`MIWO_FFPROBE_PATH`） | ✅ 已收进 config |
+  | `FFMPEG_TIMEOUT` | `utils/ffmpeg.ts:19` | `config.ffmpeg.timeoutMs`（`MIWO_FFMPEG_TIMEOUT_MS`，缺省 600000） | ✅ 已收进 config，且**非法值改为 fail-fast**（旧写法 `Number("abc")` = NaN = 永不超时） |
+  | `REDRAW_PREP` | `routes/redraw/analyzeSource.ts:33` | `config.redrawPrepScript`（`MIWO_REDRAW_PREP`） | ✅ 已收进 config（缺省值与原字面量**逐字一致**） |
+  | `TOONFLOW_PROXY` | `proxy.ts:98` | `config.proxyUrl`（**`MIWO_PROXY`**） | ✅ 已**重命名**并收进 config |
+  | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | `proxy.ts:99` | **保留原名** | ⛔ **不迁**：undici 的 `EnvHttpProxyAgent` 只认这四个标准名（改名即失效）；是门禁豁免表里的四条 |
+  | `MIWO_DATA_DIR`（迁移脚本） | `db/migrations/003_vendor_asset_sync.ts:37` | **保留**（仍直读 env） | ⛔ 登记豁免：迁移文件由 knex 迁移器独立加载，不能依赖应用级 `config` 单例 |
+  | `MIWO_GEN_DB_TYPES`（门控） | `utils/db.ts:41` | **保留**（仍直读 env） | ⛔ 登记豁免：它是"这次是哪个脚本在跑"的**门控变量**，不是可调配置；进 `config` 或 `.env.example` 都会改变语义 |
+  | （额外）`process.env.NODE_ENV` | `config.ts:135`（**写**） | `config.ts` 派生写出 | ✅ 门禁只查"读取"，赋值左侧不算违规 |
 
-  ⚠ `process.env.NODE_ENV` 已不再被业务代码用于决策：`utils/oss.ts:77` 原来读 `NODE_ENV === "development"`（与 `config.env === "dev"` 语义等价，
-  是第 5 个决策点），Task 12 必做 5 已改为 `config.env === "dev"`。`NODE_ENV` 现在只由 `config.ts:135` **派生写出**，供 Express/knex 等生态代码读。
+  ⚠ `process.env.NODE_ENV` 已不再被业务代码用于决策：`utils/oss.ts` 原来读 `NODE_ENV === "development"`（与 `config.env === "dev"` 语义等价，
+  是第 5 个决策点），Task 12 必做 5 已改为 `config.env === "dev"`。`NODE_ENV` 现在只由 `config.ts` **派生写出**，供 Express/knex 等生态代码读。
 - 部署文件与容器 Node 版本要求见 [`deploy/README.md`](deploy/README.md)；一致性由 `node tools/check-deploy-config.cjs` 保证。
 
 ## 数据层手册（Phase 1a）

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createKnex } from "@/db/connect";
 import type { MiwoConfig } from "@/config";
+import { configDefaults } from "./helpers/config-fixture";
 import { makeTenantAware, parseTableSpec, JOIN_METHODS, TenantIsolationError, PlatformWriteDeniedError } from "@/db/tenant-guard";
 import { PolicyNotFoundError, TABLE_POLICIES, TENANT_TABLES } from "@/db/policies";
 import { TenantContextError, type TenantCtx } from "@/db/tenant-context";
@@ -21,9 +22,9 @@ afterAll(async () => {
 
 function cfg(file: string): MiwoConfig {
   return {
+    ...configDefaults(),
     env: "dev", port: 10599, host: "127.0.0.1", dataDir: TMP, mediaDir: path.join(TMP, "oss"),
-    storageDriver: "local", publicBaseUrl: "http://127.0.0.1:10599", trustProxy: 0,
-    jwtSecret: "x".repeat(48), db: { driver: "sqlite", file },
+    db: { driver: "sqlite", file },
   };
 }
 
