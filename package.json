@@ -33,6 +33,7 @@
     "verify:config": "node tools/check-config-single-source.cjs",
     "verify:mounts": "node tools/check-non-api-mounts.cjs",
     "verify:phase1c-media": "node apps/api/scripts/verify-phase1c-media.cjs",
+    "verify:phase1d": "node apps/api/scripts/verify-phase1d.cjs",
     "verify:legacy-freeze": "node tools/record-legacy-freeze.cjs --check",
     "verify:exceptions": "node tools/check-tenant-exceptions.cjs",
     "verify:exceptions:record": "node tools/check-tenant-exceptions.cjs --record",

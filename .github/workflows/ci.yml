@@ -178,6 +178,12 @@ jobs:
       # MySQL 口径在本 job 里**未实测**（脚本显式打印 SKIP 理由、**不计入通过数**）；真跑在 mysql job。
       - name: Phase 1c 端到端（注册 / 登录 / 会话 / 跨租户隔离 / 收权 / 安全面）
         run: pnpm run verify:phase1c
+      # Phase 1d / Task 12：**Phase 1d 的唯一验收命令**（A 结构 / B 静态方言 / C sqlite 端到端 /
+      # D MySQL（本 job 里显式 SKIP，真跑在 mysql job）/ E 门禁+既有验收）。
+      # 第四次同一族教训：验证脚本写好了但没接线 ≈ 没有验证。`tools/check-ci-yaml.cjs` 现在把
+      # "api job 必须含 pnpm run verify:phase1d" 钉死（有红/绿判别力证据）。
+      - name: Phase 1d 队列验收（结构 + 静态方言 + sqlite 端到端）
+        run: pnpm run verify:phase1d
       - name: 后端打包（产物 data/serve/app.js 已被 .gitignore 忽略）
         run: pnpm --filter @miwo/api run build
       # Phase 1a / Task 11：Phase 1a 的唯一验收命令，**放在最后**。
@@ -287,3 +293,19 @@ jobs:
         # 这里不写 `|| true`、也不写 continue-on-error —— 掩盖不是通过。
         # 与上面 verify 脚本的断言 8 是**两条独立**的护栏：脚本内部用 require.resolve 解析
         # vitest 入口并断言"0 skipped"；这一步是 CI 层面的同一份测试再跑一次（verbose 便于看用例名）。
+      # ── Phase 1d / Task 12：把**队列的 MySQL 口径**也真跑到（此前只在 sqlite 上验过）──
+      # 为什么必须两步：① 队列的租约/SKIP LOCKED/可空唯一列在 sqlite 上**证明不了**（见
+      #   apps/api/scripts/job-chaos.cjs 文件头）；② `MIWO_TEST_SLOW=1` 让唯一的事务守卫不被 skip
+      #   （Ruling 26 的遗留：Phase 1a 从没把它接进 CI）。
+      # `tools/check-ci-yaml.cjs` 断言本 job 必须含这两步（含 job-chaos.cjs）。
+      - name: 队列 MySQL 集成（租约 / SKIP LOCKED / 可空唯一列；不允许 skipped）
+        working-directory: apps/api
+        env:
+          MIWO_TEST_MYSQL: "1"
+          MIWO_TEST_SLOW: "1"
+        run: pnpm exec vitest run tests/job-mysql-integration.test.ts --reporter=verbose
+      - name: 队列多进程混沌（杀 worker → 租约回收 → 零丢失 / 上限 / 无重叠）
+        working-directory: apps/api
+        env:
+          MIWO_TEST_MYSQL: "1"
+        run: node scripts/job-chaos.cjs

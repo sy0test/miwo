@@ -225,6 +225,15 @@ if (apiJob) {
     "api job 缺少 `pnpm run verify:phase1c`（Phase 1c 的唯一验收命令必须在 CI 里真的跑到；" +
       "它自己开一次性数据目录、跑真迁移链与真 db:bootstrap-admin CLI、起真应用打真 HTTP）",
   );
+  // Phase 1d / Task 12：**Phase 1d 的唯一验收命令**必须在 api job 里真的跑到（A 结构 / B 静态方言 /
+  // C sqlite 端到端 / D MySQL（api job 里显式 SKIP，真跑在 mysql job）/ E 门禁+既有验收）。
+  // ⚠ 与上面 `verify:phase1c` 同一个坑：判据必须**整行锚定**，否则 `verify:phase1c-media` 之类的
+  //   前缀会让它恒真。宽泛的"scripts 里的 verify:* 都要在 CI 里"那一条（下面的 for 循环）也覆盖它，
+  //   但**不能替代**这条 —— 循环只证明"某处出现过"，锚定才证明"作为独立步骤跑过"。
+  check(
+    /^\s*pnpm run verify:phase1d\s*$/m.test(apiRuns),
+    "api job 缺少 `pnpm run verify:phase1d`（Phase 1d 的唯一验收命令必须在 CI 里真的跑到）",
+  );
   // Phase 1b / Task 8：策略门禁不仅要"在 CI 里"，还必须**真跑**（不许被 continue-on-error / `|| true` 变成永不失败）。
   // ⚠ 判据刻意严于"值为 true"：**出现这个键/写法就算失败** —— 那两样都是掩盖，不是通过。
   //   （mysql job 的同类断言在下面单独一段；这里管 api/web 两个 job。）
@@ -368,6 +377,15 @@ if (!mysqlJob) {
   const steps = JSON.stringify(mysqlJob.steps || []);
   for (const needle of ["verify-mysql-migration.cjs", "mysql-integration.test.ts"]) {
     if (!steps.includes(needle)) failures.push(`ci.yml 的 mysql job 的 steps 里找不到 "${needle}"`);
+  }
+  // Phase 1d / Task 12：**队列的 MySQL 口径**也必须在 mysql job 里真跑（Task 10 Step 6）。
+  // 为什么单独钉：`job-mysql-integration.test.ts` 与 `job-chaos.cjs` 都由 MIWO_TEST_MYSQL 门控，
+  // 少了这两步它们在唯一的自动化环境里**一次都不会跑**（Ruling 26 同族）。
+  if (!steps.includes("job-mysql-integration.test.ts")) {
+    failures.push("ci.yml 的 mysql job 缺少队列 MySQL 集成步骤（tests/job-mysql-integration.test.ts）");
+  }
+  if (!steps.includes("job-chaos.cjs")) {
+    failures.push("ci.yml 的 mysql job 缺少多进程 chaos 步骤（apps/api/scripts/job-chaos.cjs）：租约回收/零丢失/上限只有真 MySQL 多进程才验得了");
   }
   // ⚠ Phase 1a / Task 11：mysql job **必须**先把合成 dev 库快照造出来。
   //   为什么把它钉死而不是"可选"：`tests/mysql-integration.test.ts` 的搬迁用例源库是
