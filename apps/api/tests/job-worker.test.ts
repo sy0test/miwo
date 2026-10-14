@@ -136,8 +136,49 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
     await db.destroy();
   });
 
-  it("超时 → 按失败处理（maxAttempts=1 时进 dead），不会把 worker 挂住", async () => {
+  /**
+   * ★ 修复轮 Med-3（review-B F5）：**心跳路径的隔离用例**。
+   *
+   * 为什么原用例对"心跳路径"没有判别力：原用例的 `maxAttempts:2` 在强夺租约后会走
+   * **回收 → 重领 → supersede** 那条路，于是三条 abort 路径（`verifyLease` / `heartbeat` /
+   * supersede）任一条存活都能让它绿。reviewer 四档篡改实测：单拆任一条**仍绿**，全拆才红。
+   *
+   * 隔离手法（reviewer 已验证可行）：`maxAttempts: 1` ⇒ 租约一到期回收方就把它判成 `dead`
+   * （终态），**永远不会被重领** ⇒ supersede 路径不可达 ⇒ 只剩心跳的两条分支能 abort。
+   * 这样"拆掉心跳的任一条分支"就必须红（实测：只拆一条仍绿 —— 两条分支互为兜底，属设计内的
+   * 冗余；**两条一起拆必红**，见 groupB-report.md 修复轮证据）。
+   */
+  it("★ 心跳路径隔离（maxAttempts=1，supersede 不可达）：租约丢失必须由心跳 abort", async () => {
+    let aborted = false;
+    let wrote = false;
     const def: JobDefinition<{ ms: number }> = {
+      type: "t.lease-hb", timeoutMs: 10_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as { ms: number },
+      dedupeKey: () => null,
+      handle: async (ctx: JobContext, p: { ms: number }) => {
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, p.ms);
+          ctx.signal.addEventListener("abort", () => { aborted = true; clearTimeout(t); resolve(); });
+        });
+        if (!ctx.signal.aborted) wrote = true;
+        return { ok: true };
+      },
+    };
+    const { db, store, registry, policy } = await setup([def]);
+    await store.enqueue({ type: "t.lease-hb", userId: 1, payload: { ms: 5_000 } });
+    const runner = startWorkerLoop({ store, registry, workerId: "w-test", policy, log: () => {} });
+    await sleep(150);
+    // 强夺租约（模拟时钟跳变/长 GC）。maxAttempts=1 ⇒ 回收即 dead ⇒ 不会被重领 ⇒ 无 supersede。
+    await db("o_job").update({ leaseUntil: Date.now() - 1 }).where("state", "running");
+    for (let i = 0; i < 80 && !aborted; i += 1) await sleep(50);
+    await runner.stop();
+    expect(aborted).toBe(true);   // 只有心跳两条分支能达成这一条
+    expect(wrote).toBe(false);
+    expect((await store.list({ limit: 5 }))[0]?.state).toBe("dead"); // 证明真的走了"回收即死"这条路
+    await db.destroy();
+  });
+
+  it("超时 → 按失败处理（maxAttempts=1 时进 dead），不会把 worker 挂住", async () => {    const def: JobDefinition<{ ms: number }> = {
       type: "t.timeout", timeoutMs: 100, maxAttempts: 1, pool: "p",
       parse: (raw) => raw as { ms: number },
       dedupeKey: () => null,
