@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-14T11:50:14.683Z",
+  "generatedAt": "2026-10-14T12:30:48.284Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
@@ -363,10 +363,10 @@
     "apps/api/src/db/connect.ts": {
       "count": 1,
       "lines": [
-        207
+        234
       ],
       "confirmed": true,
-      "note": "[162 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。⚠ 行号 112 → **162** 是必做修复轮（【裁定 A】把目标护栏接进 connect()）在文件头新增注释导致的位移；**处数与 SQL 文本均未变**（仍是 `select 1`），本条结论不受影响。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[162 db.raw(\"select 1\")] 处置（spec §7.3 / Phase 1a Task 4）：这是启动期的**驱动探活**（connect() 在跑迁移之前用一条 select 1 确认连得上），不访问任何 o_* 表、不返回任何行数据、也没有请求上下文，因此**不参与租户过滤**，也不需要 requireAdmin——它是实例级运维动作，而不是租户数据访问。Phase 1b 的 policies.ts 对 connect.ts 这一类启动期文件按「无 ctx 的允许路径」处理（与 KNOWN_DIRECT_DB 里的 utils/db.ts、lib/fixDB.ts 同性质），不得给它注入租户条件。⚠ 行号轨迹 **112 → 162 → 234**：162 是必做修复轮（【裁定 A】把目标护栏接进 connect()）在文件头新增注释导致的位移；234 是 **Phase 1c Task 4** 在本文件新增 sqlite `busy_timeout` 钩子（`sqliteAfterCreate`）及其注释导致的位移。三次都只是**位移**：**处数与 SQL 文本均未变**（仍是 `select 1`），本条结论不受影响。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#raw 的处置：提及租户表 → 抛；纯表达式（GROUP_CONCAT）→ 放行",
@@ -376,15 +376,15 @@
     "apps/api/src/db/tenant-guard.ts": {
       "count": 2,
       "lines": [
-        525,
-        537
+        557,
+        569
       ],
       "confirmed": true,
-      "note": "[522/534 guarded.raw 的两个入口] 处置（Task 2 Step 3；**行号与处数由 Task 3 修复轮 2 重钉**）：这两处 `raw` 都是**守卫自己**的包装点（534 = 顶层 `guarded.raw`，522 = `guardTrx` 里的事务入口），不是业务调用点。`guarded.raw(sql, bindings)` 先做 `mentionsTenantTable(sql)` 检查：SQL 文本里出现任何租户表名就抛 `TenantIsolationError`（\"raw() 的 SQL 提及租户表，无法注入隔离条件（fail-closed）\"），只有**纯表达式**（如 `GROUP_CONCAT(name)`、`select 1`）才落到这一行、转发给底层 `knex.raw`。也就是说它不是\"绕过租户条件\"，而是**租户表 raw 的唯一拦截器**：拦不住就抛，永远不静默。② 它不接受 `o_*` 表名做参数（`sql` 是 SQL 文本、`bindings` 是值绑定），表名级 join 由同一文件的 `JOIN_METHODS` 分支负责（对租户表注入 ON 条件）。③ 实测用例 `tests/tenant-guard.test.ts` 的「raw 的处置」与「M3b」两条两向钉住：`db.raw(\"select count(*) from o_tasks\")` 必须抛 `TenantIsolationError`；`db.raw(\"GROUP_CONCAT(name)\")` 必须放行。④ 这一行**不需要**租户条件注入：注入点是 `guardBuilder()`（主表 `andWhere`）与 `JOIN_METHODS`（ON 子句），`raw` 文本无法安全改写，所以策略是\"提及租户表即拒绝\"（fail-closed，见模块头规则 5）。⑤ 修复轮 1（M3/表名大小写 M4）+ **Task 3 修复轮 2**：`trx.raw` 与顶层 `raw` **共用同一个检查**（`assertRawSafe`），但**各自绑定自己的连接** —— 修复轮 1 曾写成\"复用顶层实现\"，而复用时走的是根连接 ⇒ 事务里的**合法** `trx.raw` 落到事务外，sqlite 池 max=1 时与持有连接的事务**互等**（实测把既有用例挂到 5s 超时）。所以清单里现在是**两处**机械扫点；`mentionsTenantTable` 的比较已**不分大小写**（`delete from O_TASKS` 也拦），`raw` 的判据不变。⑥ 该行的注释文字刻意不写 `.raw` 紧跟左括号的形态（散文里的 `xxx.raw(...)` 会被本门禁的正则算成一处 `raw`），以免清单里出现一个「注释行被当成调用点」的假条目 —— Task 3 修复轮 2 的新注释也遵守了这一条（首录时曾多出 2 处假点，改回后 1→2 处全部是真调用点）。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "守卫**自身**的 raw 通道实现：先 `assertRawSafe(sql)`（提及租户表就抛、纯表达式放行）再转发给底层 `trx.raw` / `knex.raw` ⇒ 这两处就是隔离机制本身，不是绕过口。（Phase 1c Task 4 在本文件新增 `isPlatformWriteCtx()` 及其注释 ⇒ 行号下移；处数与 SQL 文本未变。）",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#raw 的处置：提及租户表 → 抛；纯表达式（GROUP_CONCAT）→ 放行",
-        "note": "守卫**自身**的 raw 通道实现：先 `assertRawSafe(sql)`（提及租户表就抛、纯表达式放行）再转发给底层 `trx.raw` / `knex.raw` ⇒ 这两处就是隔离机制本身，不是绕过口。"
+        "note": "守卫**自身**的 raw 通道实现：先 `assertRawSafe(sql)`（提及租户表就抛、纯表达式放行）再转发给底层 `trx.raw` / `knex.raw` ⇒ 这两处就是隔离机制本身，不是绕过口。（Phase 1c Task 4 在本文件新增 `isPlatformWriteCtx()` 及其注释 ⇒ 行号下移；处数与 SQL 文本未变。）"
       }
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
@@ -403,77 +403,62 @@
     "apps/api/src/routes/setting/dbConfig/clearData.ts": {
       "count": 3,
       "lines": [
-        14,
-        19,
-        23
+        31,
+        36,
+        40
       ],
       "confirmed": true,
-      "note": "[11 读 sqlite_master][16 PRAGMA foreign_keys=OFF][20 PRAGMA foreign_keys=ON] 处置（spec §7.3）：requireAdmin + **默认关闭**（需显式环境变量开启）+ 审计。现状是无鉴权的「drop 全库并重新 initDB」接口；Phase 1b 起这些 raw 只在显式开启后可达，且 PRAGMA/整库操作不参与租户过滤（它们是实例级运维操作，不是租户数据访问）。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ 未修（如实登记）：`sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效（标未实测）。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ `sqlite_master` 是 sqlite 方言，MySQL 下不可用 ⇒ Phase 1c）"
-      }
-    },
-    "apps/api/src/routes/setting/dbConfig/clearTable.ts": {
-      "count": 2,
-      "lines": [
-        19,
-        27
-      ],
-      "confirmed": true,
-      "note": "[15 读 sqlite_master][23 DELETE FROM \"${tableName}\"] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。⚠【F6 更正】第 23 行是**表名插值**（`DELETE FROM \"${tableName}\"`）——**值本身是参数化的**，没走参数化的是**表名**（只做了「表存在」校验、没有「允许被清」的白名单）。Phase 1c：改成 knex 的 .del()/.truncate() + 表名白名单，避免手写 SQL 成为隔离缺口。 【Task 8】现状口径见本条 `phase1b`。",
-      "phase1b": {
-        "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ **表名插值** `DELETE FROM \"${tableName}\"`：值本身是参数化的，**表名**只做了「存在」校验、没有「允许被清」的白名单 ⇒ Phase 1c）"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ 未修（如实登记）：`sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效（标未实测）。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/dbInfo.ts": {
       "count": 2,
       "lines": [
-        14,
-        20
+        24,
+        30
       ],
       "confirmed": true,
-      "note": "[9 读 sqlite_master][15 SELECT COUNT(*) FROM \"${table.name}\"] 处置（spec §7.3 / 附录 B.1）：接口**保留但收权 + 脱敏**。第 15 行是**参数化安全**的（表名来自第 9 行枚举，不含用户输入），Phase 1b 只需 requireAdmin；若将来把行数按租户展示，必须改成经包装层带 userId 的计数，不能用全表 COUNT(*)。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级只读接口（附录 B.1 唯一保留价值者）：`requireAdmin` + 只回 `{name,rowCount}`（不回任何列内容）+ 审计（`db.info`）。**Phase 1c Task 4 的取舍**：它**刻意不挂** `allowDbAdminOps` 闸 —— 那条闸是给「破坏性/凭据面」接口用的，而 dbInfo 只有表名与行数；把运维在故障时唯一的结构视图也关掉，代价大于收益。❗ 行数本身能反映租户规模 ⇒ 仍收权到 admin（若将来要按租户展示，必须走包装层带 userId 的计数）。⚠ 未修：`sqlite_master` 是 sqlite 方言，MySQL 下无效。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ `sqlite_master` 是 sqlite 方言，MySQL 下不可用 ⇒ Phase 1c）"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级只读接口（附录 B.1 唯一保留价值者）：`requireAdmin` + 只回 `{name,rowCount}`（不回任何列内容）+ 审计（`db.info`）。**Phase 1c Task 4 的取舍**：它**刻意不挂** `allowDbAdminOps` 闸 —— 那条闸是给「破坏性/凭据面」接口用的，而 dbInfo 只有表名与行数；把运维在故障时唯一的结构视图也关掉，代价大于收益。❗ 行数本身能反映租户规模 ⇒ 仍收权到 admin（若将来要按租户展示，必须走包装层带 userId 的计数）。⚠ 未修：`sqlite_master` 是 sqlite 方言，MySQL 下无效。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/exportData.ts": {
       "count": 2,
       "lines": [
-        27,
-        33
+        79,
+        86
       ],
       "confirmed": true,
-      "note": "[9 读 sqlite_master][15 SELECT * FROM \"${table.name}\"] 处置（spec §7.3）：requireAdmin + **脱敏**（剔除 passwordHash / inputValues / tokenKey）+ 审计。现状是「任意登录用户一条 GET 导出整库」，含 o_user 密码哈希与 o_vendorConfig 明文 key；Phase 1b 必须先把脱敏做进导出行，再谈租户过滤（导出是实例级运维动作，不做租户过滤，所以只能靠收权 + 脱敏兜住）。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：整库 `SELECT *` 导出（无租户语义）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **脱敏导出模式** `GET /exportData?redact=1` —— 按表剔除 `o_user.passwordHash` / `o_vendorConfig.inputValues` / `o_setting.tokenKey` / `o_invite.code`（值换 `***REDACTED***`，**保留键名**，并在响应体回 `redacted`/`redactedColumns` 自证这份文件不可用于恢复）；⚠ **默认模式仍是完整备份**（刻意如此：掩掉它 = 恢复备份后登录不上的功能回归，属安全取舍而非遗漏）；③ 下载落审计（`db.export`，含 redacted 标记）。另：`o_setting.tokenKey` 行仍被 `EXCLUDED_EXPORT_ROWS` 剔除（零往返损失）。⚠ 未修：前端 `apps/web/.../dbConfig.vue:199` 仍写死旧备份名前缀（只影响浏览器另存为的默认名，不解析响应头）⇒ 归 Task 11。⚠ `sqlite_master` 是 sqlite 方言。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（另：导出**已剔除** `o_setting.tokenKey` 行，见 `EXCLUDED_EXPORT_ROWS`；`o_user.password`/`o_vendorConfig.inputValues` 的脱敏归 Phase 1c）"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库 `SELECT *` 导出（无租户语义）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **脱敏导出模式** `GET /exportData?redact=1` —— 按表剔除 `o_user.passwordHash` / `o_vendorConfig.inputValues` / `o_setting.tokenKey` / `o_invite.code`（值换 `***REDACTED***`，**保留键名**，并在响应体回 `redacted`/`redactedColumns` 自证这份文件不可用于恢复）；⚠ **默认模式仍是完整备份**（刻意如此：掩掉它 = 恢复备份后登录不上的功能回归，属安全取舍而非遗漏）；③ 下载落审计（`db.export`，含 redacted 标记）。另：`o_setting.tokenKey` 行仍被 `EXCLUDED_EXPORT_ROWS` 剔除（零往返损失）。⚠ 未修：前端 `apps/web/.../dbConfig.vue:199` 仍写死旧备份名前缀（只影响浏览器另存为的默认名，不解析响应头）⇒ 归 Task 11。⚠ `sqlite_master` 是 sqlite 方言。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/importData.ts": {
-      "count": 7,
+      "count": 6,
       "lines": [
-        21,
-        25,
-        29,
-        35,
-        40,
-        47,
-        54
+        68,
+        72,
+        76,
+        82,
+        89,
+        97
       ],
       "confirmed": true,
-      "note": "[16 读 sqlite_master][20 PRAGMA OFF][24 PRAGMA ON][30 PRAGMA OFF][35 读 sqlite_master][42 DELETE FROM \"${tableName}\"][49 PRAGMA ON] 处置（spec §7.3）：requireAdmin + **默认关闭** + 审计。现状：任意登录用户 POST 一个 JSON 就能先 drop 所有表再灌入任意数据（第 46 行还用 db(tableName).insert(batch) 直写整库）。Phase 1b 默认关闭该接口；若仍要保留，导入的表名与列必须走白名单，并明确它是「整库恢复」而不是租户级写入。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "整库恢复（无租户语义，**别给它注入租户条件**）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（`src/lib/tableWhitelist.ts`）+ **列白名单**（逐表比对 `columnInfo()`，目标表没有的列**直接拒绝**而不是静默丢），且**在任何 drop 之前**完成全部校验（否则等发现非法表名时库已经被删掉了）；③ 审计（`db.import`，含 `rejected:*` 与失败原因）。判别力：非白名单表名 400 且直读确认**库还在**、未知列 400 且库还在、关闸 403。⚠ 未修：`sqlite_master`/PRAGMA 是 sqlite 方言（MySQL 未实测）。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权（无 ctx 401 / 非 admin 403 / admin 才可达）。（⚠ 无表名/列白名单；sqlite 方言 `sqlite_master`/PRAGMA ⇒ Phase 1c）"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "整库恢复（无租户语义，**别给它注入租户条件**）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（`src/lib/tableWhitelist.ts`）+ **列白名单**（逐表比对 `columnInfo()`，目标表没有的列**直接拒绝**而不是静默丢），且**在任何 drop 之前**完成全部校验（否则等发现非法表名时库已经被删掉了）；③ 审计（`db.import`，含 `rejected:*` 与失败原因）。判别力：非白名单表名 400 且直读确认**库还在**、未知列 400 且库还在、关闸 403。⚠ 未修：`sqlite_master`/PRAGMA 是 sqlite 方言（MySQL 未实测）。"
       }
     }
   },
@@ -489,47 +474,47 @@
     },
     "apps/api/src/routes/setting/dbConfig/clearData.ts": {
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（无 ctx 401 / 非 admin 403）；**\"默认关闭/显式环境变量\"未做** —— 任务书（Ruling 240 #4）明确禁止新增 `MIWO_*` 开关，故只收权。`tests/ops-endpoints-auth.test.ts` 覆盖真应用+真 HTTP：普通 token 403 且**直读快照逐项不变**（一行没被 drop）。⚠ 第 11/16/20 行的 `sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效 ⇒ Phase 1c。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ 未修（如实登记）：`sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效（标未实测）。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（clearData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ 未修（如实登记）：`sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效（标未实测）。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/clearTable.ts": {
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`；**\"默认关闭\"未做**（禁止新增 `MIWO_*` 开关，Ruling 240 #4）；表名白名单仍归 Phase 1c。判别力：普通 token 403 且**直读确认 marker 行没被删**；admin token 打同一路径 **200 且该行真的没了**（正向对照，见 `tests/ops-endpoints-auth.test.ts` ④）。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：按**请求体里的表名**动态清表（无租户语义）⇒ 走唯一绕过口 systemDb + **requireAdmin**。**Phase 1c Task 4 已把四件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（单一来源 = `src/db/policies.ts` 的业务表 − `INFRA_TABLES`，实现见 `src/lib/tableWhitelist.ts`）——于是 `knex_migrations` 这类**存在的表**不再被算作可清；③ 手写 `DELETE FROM 表名插值` **已删除**，改成 knex 的 `.del()`（表名由 knex 转义，不再是手写 SQL）；④ 审计（`db.clearTable`，含 `rejected:*` 原因）。判别力：非白名单表 400、关闸 403、开闸 200 且直读确认那一行真的消失。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（clearTable.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：按**请求体里的表名**动态清表（无租户语义）⇒ 走唯一绕过口 systemDb + **requireAdmin**。**Phase 1c Task 4 已把四件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（单一来源 = `src/db/policies.ts` 的业务表 − `INFRA_TABLES`，实现见 `src/lib/tableWhitelist.ts`）——于是 `knex_migrations` 这类**存在的表**不再被算作可清；③ 手写 `DELETE FROM 表名插值` **已删除**，改成 knex 的 `.del()`（表名由 knex 转义，不再是手写 SQL）；④ 审计（`db.clearTable`，含 `rejected:*` 原因）。判别力：非白名单表 400、关闸 403、开闸 200 且直读确认那一行真的消失。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/dbInfo.ts": {
       "confirmed": true,
-      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403；admin 200，实测）；返回体仍是 `{name,rowCount}`（**表名 + 总行数**）—— 回填之后行数已能反映租户规模，若将来要按租户展示必须走包装层带 userId 的计数（Phase 1c）。⚠ 第 9 行 `sqlite_master` 是 sqlite 方言，MySQL 下无效。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级只读接口（附录 B.1 唯一保留价值者）：`requireAdmin` + 只回 `{name,rowCount}`（不回任何列内容）+ 审计（`db.info`）。**Phase 1c Task 4 的取舍**：它**刻意不挂** `allowDbAdminOps` 闸 —— 那条闸是给「破坏性/凭据面」接口用的，而 dbInfo 只有表名与行数；把运维在故障时唯一的结构视图也关掉，代价大于收益。❗ 行数本身能反映租户规模 ⇒ 仍收权到 admin（若将来要按租户展示，必须走包装层带 userId 的计数）。⚠ 未修：`sqlite_master` 是 sqlite 方言，MySQL 下无效。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（dbInfo.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级只读接口（附录 B.1 唯一保留价值者）：`requireAdmin` + 只回 `{name,rowCount}`（不回任何列内容）+ 审计（`db.info`）。**Phase 1c Task 4 的取舍**：它**刻意不挂** `allowDbAdminOps` 闸 —— 那条闸是给「破坏性/凭据面」接口用的，而 dbInfo 只有表名与行数；把运维在故障时唯一的结构视图也关掉，代价大于收益。❗ 行数本身能反映租户规模 ⇒ 仍收权到 admin（若将来要按租户展示，必须走包装层带 userId 的计数）。⚠ 未修：`sqlite_master` 是 sqlite 方言，MySQL 下无效。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/exportData.ts": {
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。**【Task 7 实际处置·2026-10-13】**：① 已挂 `requireAdmin`（普通 token 403）；② **已剔除 `o_setting.tokenKey` 行**（`EXCLUDED_EXPORT_ROWS` 常量）—— 它是 JWT 签名密钥，泄露=可伪造任意用户（含 admin）的 token；剔除**不破坏往返**（`db/legacy/import.ts` 本就把 tokenKey 列为\"绝不导回\"）。用例：admin 导出 200 且响应体**不含密钥值与 key 名**，同时**正向对照**断言导出确实含 `o_setting` 表（防\"什么都没导\"的假绿）。⚠ `o_user.password` / `o_vendorConfig.inputValues` 的脱敏**未做**：掩掉它们会让\"恢复备份后登录不上 / 供应商配置失效\"，是功能取舍，归 Phase 1c（已上报）。⚠ 第 27/33 行 `sqlite_master` 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：整库 `SELECT *` 导出（无租户语义）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **脱敏导出模式** `GET /exportData?redact=1` —— 按表剔除 `o_user.passwordHash` / `o_vendorConfig.inputValues` / `o_setting.tokenKey` / `o_invite.code`（值换 `***REDACTED***`，**保留键名**，并在响应体回 `redacted`/`redactedColumns` 自证这份文件不可用于恢复）；⚠ **默认模式仍是完整备份**（刻意如此：掩掉它 = 恢复备份后登录不上的功能回归，属安全取舍而非遗漏）；③ 下载落审计（`db.export`，含 redacted 标记）。另：`o_setting.tokenKey` 行仍被 `EXCLUDED_EXPORT_ROWS` 剔除（零往返损失）。⚠ 未修：前端 `apps/web/.../dbConfig.vue:199` 仍写死旧备份名前缀（只影响浏览器另存为的默认名，不解析响应头）⇒ 归 Task 11。⚠ `sqlite_master` 是 sqlite 方言。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（exportData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库 `SELECT *` 导出（无租户语义）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **脱敏导出模式** `GET /exportData?redact=1` —— 按表剔除 `o_user.passwordHash` / `o_vendorConfig.inputValues` / `o_setting.tokenKey` / `o_invite.code`（值换 `***REDACTED***`，**保留键名**，并在响应体回 `redacted`/`redactedColumns` 自证这份文件不可用于恢复）；⚠ **默认模式仍是完整备份**（刻意如此：掩掉它 = 恢复备份后登录不上的功能回归，属安全取舍而非遗漏）；③ 下载落审计（`db.export`，含 redacted 标记）。另：`o_setting.tokenKey` 行仍被 `EXCLUDED_EXPORT_ROWS` 剔除（零往返损失）。⚠ 未修：前端 `apps/web/.../dbConfig.vue:199` 仍写死旧备份名前缀（只影响浏览器另存为的默认名，不解析响应头）⇒ 归 Task 11。⚠ `sqlite_master` 是 sqlite 方言。"
       }
     },
     "apps/api/src/routes/setting/dbConfig/importData.ts": {
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403 且直读确认**没有 drop/灌入**）；**\"默认关闭\"与\"表名/列白名单\"未做**（前者禁止新增 `MIWO_*` 开关，Ruling 240 #4；后者归 Phase 1c）。⚠ 本接口**不做租户过滤**（整库恢复语义）⇒ 只能靠\"收权 + 白名单\"兜住，别给它注入租户条件。⚠ 第 21/25/29/35/40/47/54 行的 `sqlite_master`/PRAGMA 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "整库恢复（无租户语义，**别给它注入租户条件**）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（`src/lib/tableWhitelist.ts`）+ **列白名单**（逐表比对 `columnInfo()`，目标表没有的列**直接拒绝**而不是静默丢），且**在任何 drop 之前**完成全部校验（否则等发现非法表名时库已经被删掉了）；③ 审计（`db.import`，含 `rejected:*` 与失败原因）。判别力：非白名单表名 400 且直读确认**库还在**、未知列 400 且库还在、关闸 403。⚠ 未修：`sqlite_master`/PRAGMA 是 sqlite 方言（MySQL 未实测）。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（importData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "整库恢复（无租户语义，**别给它注入租户条件**）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（`src/lib/tableWhitelist.ts`）+ **列白名单**（逐表比对 `columnInfo()`，目标表没有的列**直接拒绝**而不是静默丢），且**在任何 drop 之前**完成全部校验（否则等发现非法表名时库已经被删掉了）；③ 审计（`db.import`，含 `rejected:*` 与失败原因）。判别力：非白名单表名 400 且直读确认**库还在**、未知列 400 且库还在、关闸 403。⚠ 未修：`sqlite_master`/PRAGMA 是 sqlite 方言（MySQL 未实测）。"
       }
     }
   },
@@ -547,51 +532,51 @@
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭**（requireAdmin + 显式环境变量开启 + 审计）。它拿到裸 db 才能执行 dropTableIfExists 与 PRAGMA；Phase 1b 在默认关闭的前提下保留这段裸用法，并在 policies.ts 里显式声明「实例级运维接口，不参与租户注入」。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（无 ctx 401 / 非 admin 403）；**\"默认关闭/显式环境变量\"未做** —— 任务书（Ruling 240 #4）明确禁止新增 `MIWO_*` 开关，故只收权。`tests/ops-endpoints-auth.test.ts` 覆盖真应用+真 HTTP：普通 token 403 且**直读快照逐项不变**（一行没被 drop）。⚠ 第 11/16/20 行的 `sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效 ⇒ Phase 1c。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ 未修（如实登记）：`sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效（标未实测）。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（clearData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ 未修（如实登记）：`sqlite_master`/PRAGMA 是 sqlite 方言，MySQL 下无效（标未实测）。"
       }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/clearTable.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。与 clearData 同类：裸 db 用于 schema/drop 与 DELETE 拼串；Phase 1b 保留但必须默认关闭，且表名需白名单校验（现在只校验「表存在」，没校验「允许被清」）。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`；**\"默认关闭\"未做**（禁止新增 `MIWO_*` 开关，Ruling 240 #4）；表名白名单仍归 Phase 1c。判别力：普通 token 403 且**直读确认 marker 行没被删**；admin token 打同一路径 **200 且该行真的没了**（正向对照，见 `tests/ops-endpoints-auth.test.ts` ④）。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：按**请求体里的表名**动态清表（无租户语义）⇒ 走唯一绕过口 systemDb + **requireAdmin**。**Phase 1c Task 4 已把四件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（单一来源 = `src/db/policies.ts` 的业务表 − `INFRA_TABLES`，实现见 `src/lib/tableWhitelist.ts`）——于是 `knex_migrations` 这类**存在的表**不再被算作可清；③ 手写 `DELETE FROM 表名插值` **已删除**，改成 knex 的 `.del()`（表名由 knex 转义，不再是手写 SQL）；④ 审计（`db.clearTable`，含 `rejected:*` 原因）。判别力：非白名单表 400、关闸 403、开闸 200 且直读确认那一行真的消失。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（clearTable.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：按**请求体里的表名**动态清表（无租户语义）⇒ 走唯一绕过口 systemDb + **requireAdmin**。**Phase 1c Task 4 已把四件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（单一来源 = `src/db/policies.ts` 的业务表 − `INFRA_TABLES`，实现见 `src/lib/tableWhitelist.ts`）——于是 `knex_migrations` 这类**存在的表**不再被算作可清；③ 手写 `DELETE FROM 表名插值` **已删除**，改成 knex 的 `.del()`（表名由 knex 转义，不再是手写 SQL）；④ 审计（`db.clearTable`，含 `rejected:*` 原因）。判别力：非白名单表 400、关闸 403、开闸 200 且直读确认那一行真的消失。"
       }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/dbInfo.ts",
       "confirmed": true,
-      "note": "处置（spec 附录 B.1）：**保留 + 收权 + 脱敏**。它只用裸 db 读 sqlite_master 与 COUNT(*)，是唯一一个保留价值的 dbConfig 接口；Phase 1b 加 requireAdmin，返回体不暴露表结构与敏感列。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403；admin 200，实测）；返回体仍是 `{name,rowCount}`（**表名 + 总行数**）—— 回填之后行数已能反映租户规模，若将来要按租户展示必须走包装层带 userId 的计数（Phase 1c）。⚠ 第 9 行 `sqlite_master` 是 sqlite 方言，MySQL 下无效。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级只读接口（附录 B.1 唯一保留价值者）：`requireAdmin` + 只回 `{name,rowCount}`（不回任何列内容）+ 审计（`db.info`）。**Phase 1c Task 4 的取舍**：它**刻意不挂** `allowDbAdminOps` 闸 —— 那条闸是给「破坏性/凭据面」接口用的，而 dbInfo 只有表名与行数；把运维在故障时唯一的结构视图也关掉，代价大于收益。❗ 行数本身能反映租户规模 ⇒ 仍收权到 admin（若将来要按租户展示，必须走包装层带 userId 的计数）。⚠ 未修：`sqlite_master` 是 sqlite 方言，MySQL 下无效。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（dbInfo.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级只读接口（附录 B.1 唯一保留价值者）：`requireAdmin` + 只回 `{name,rowCount}`（不回任何列内容）+ 审计（`db.info`）。**Phase 1c Task 4 的取舍**：它**刻意不挂** `allowDbAdminOps` 闸 —— 那条闸是给「破坏性/凭据面」接口用的，而 dbInfo 只有表名与行数；把运维在故障时唯一的结构视图也关掉，代价大于收益。❗ 行数本身能反映租户规模 ⇒ 仍收权到 admin（若将来要按租户展示，必须走包装层带 userId 的计数）。⚠ 未修：`sqlite_master` 是 sqlite 方言，MySQL 下无效。"
       }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/exportData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 脱敏**（requireAdmin + 剔除 passwordHash / inputValues / tokenKey + 审计）。裸 db 用于 SELECT * 全表导出；Phase 1b 保留能力但先做脱敏，脱敏规则要有测试用例（漏一个 tokenKey 就是线上凭据泄露）。**【Task 7 实际处置·2026-10-13】**：① 已挂 `requireAdmin`（普通 token 403）；② **已剔除 `o_setting.tokenKey` 行**（`EXCLUDED_EXPORT_ROWS` 常量）—— 它是 JWT 签名密钥，泄露=可伪造任意用户（含 admin）的 token；剔除**不破坏往返**（`db/legacy/import.ts` 本就把 tokenKey 列为\"绝不导回\"）。用例：admin 导出 200 且响应体**不含密钥值与 key 名**，同时**正向对照**断言导出确实含 `o_setting` 表（防\"什么都没导\"的假绿）。⚠ `o_user.password` / `o_vendorConfig.inputValues` 的脱敏**未做**：掩掉它们会让\"恢复备份后登录不上 / 供应商配置失效\"，是功能取舍，归 Phase 1c（已上报）。⚠ 第 27/33 行 `sqlite_master` 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "实例级运维接口：整库 `SELECT *` 导出（无租户语义）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **脱敏导出模式** `GET /exportData?redact=1` —— 按表剔除 `o_user.passwordHash` / `o_vendorConfig.inputValues` / `o_setting.tokenKey` / `o_invite.code`（值换 `***REDACTED***`，**保留键名**，并在响应体回 `redacted`/`redactedColumns` 自证这份文件不可用于恢复）；⚠ **默认模式仍是完整备份**（刻意如此：掩掉它 = 恢复备份后登录不上的功能回归，属安全取舍而非遗漏）；③ 下载落审计（`db.export`，含 redacted 标记）。另：`o_setting.tokenKey` 行仍被 `EXCLUDED_EXPORT_ROWS` 剔除（零往返损失）。⚠ 未修：前端 `apps/web/.../dbConfig.vue:199` 仍写死旧备份名前缀（只影响浏览器另存为的默认名，不解析响应头）⇒ 归 Task 11。⚠ `sqlite_master` 是 sqlite 方言。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（exportData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "实例级运维接口：整库 `SELECT *` 导出（无租户语义）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **脱敏导出模式** `GET /exportData?redact=1` —— 按表剔除 `o_user.passwordHash` / `o_vendorConfig.inputValues` / `o_setting.tokenKey` / `o_invite.code`（值换 `***REDACTED***`，**保留键名**，并在响应体回 `redacted`/`redactedColumns` 自证这份文件不可用于恢复）；⚠ **默认模式仍是完整备份**（刻意如此：掩掉它 = 恢复备份后登录不上的功能回归，属安全取舍而非遗漏）；③ 下载落审计（`db.export`，含 redacted 标记）。另：`o_setting.tokenKey` 行仍被 `EXCLUDED_EXPORT_ROWS` 剔除（零往返损失）。⚠ 未修：前端 `apps/web/.../dbConfig.vue:199` 仍写死旧备份名前缀（只影响浏览器另存为的默认名，不解析响应头）⇒ 归 Task 11。⚠ `sqlite_master` 是 sqlite 方言。"
       }
     },
     {
       "path": "apps/api/src/routes/setting/dbConfig/importData.ts",
       "confirmed": true,
-      "note": "处置（spec §7.3）：**收权 + 默认关闭** + 审计。这是全仓权限最大的接口（drop 全库 + 任意表 insert），裸 db 用法最多；Phase 1b 默认关闭，开启时要求表名/列白名单，并保证导入不会绕过租户列回填。**【Task 7 实际处置·2026-10-13】**：已挂 `requireAdmin`（普通 token 403 且直读确认**没有 drop/灌入**）；**\"默认关闭\"与\"表名/列白名单\"未做**（前者禁止新增 `MIWO_*` 开关，Ruling 240 #4；后者归 Phase 1c）。⚠ 本接口**不做租户过滤**（整库恢复语义）⇒ 只能靠\"收权 + 白名单\"兜住，别给它注入租户条件。⚠ 第 21/25/29/35/40/47/54 行的 `sqlite_master`/PRAGMA 是 sqlite 方言。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "整库恢复（无租户语义，**别给它注入租户条件**）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（`src/lib/tableWhitelist.ts`）+ **列白名单**（逐表比对 `columnInfo()`，目标表没有的列**直接拒绝**而不是静默丢），且**在任何 drop 之前**完成全部校验（否则等发现非法表名时库已经被删掉了）；③ 审计（`db.import`，含 `rejected:*` 与失败原因）。判别力：非白名单表名 400 且直读确认**库还在**、未知列 400 且库还在、关闸 403。⚠ 未修：`sqlite_master`/PRAGMA 是 sqlite 方言（MySQL 未实测）。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
-        "note": "运维接口（importData.ts）：拿裸 systemDb 做整库/动态表名操作（无租户语义），Task 7 起由 requireAdmin 收权。"
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "note": "整库恢复（无租户语义，**别给它注入租户条件**）⇒ systemDb + **requireAdmin**。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（`allowDbAdminOps`）；② **表名白名单**（`src/lib/tableWhitelist.ts`）+ **列白名单**（逐表比对 `columnInfo()`，目标表没有的列**直接拒绝**而不是静默丢），且**在任何 drop 之前**完成全部校验（否则等发现非法表名时库已经被删掉了）；③ 审计（`db.import`，含 `rejected:*` 与失败原因）。判别力：非白名单表名 400 且直读确认**库还在**、未知列 400 且库还在、关闸 403。⚠ 未修：`sqlite_master`/PRAGMA 是 sqlite 方言（MySQL 未实测）。"
       }
     }
   ],
@@ -609,7 +594,7 @@
       "path": "apps/api/src/routes/other/deleteAllData.ts",
       "phase1b": {
         "disposition": "route-removed-later",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
         "note": "附录 B.1 绕过口之一。**Task 7 已停用**（无条件 HTTP 501，连 admin 也打不动），并摘掉 `initDB`/`systemDb` 依赖 ⇒ **零 DB 面**（因此不在 systemDbUsers/bypassFiles 里）。「修好 vs 彻底删除」登记为 Phase 1c/2 决策项。"
       },
       "note": "附录 B.1 绕过口之一。**Task 7 已停用**（无条件 HTTP 501，连 admin 也打不动），并摘掉 `initDB`/`systemDb` 依赖 ⇒ **零 DB 面**（因此不在 systemDbUsers/bypassFiles 里）。「修好 vs 彻底删除」登记为 Phase 1c/2 决策项。"
@@ -618,7 +603,7 @@
       "path": "apps/api/src/routes/setting/dbConfig/clearData.ts",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
         "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
       },
       "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
@@ -627,7 +612,7 @@
       "path": "apps/api/src/routes/setting/dbConfig/clearTable.ts",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
         "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
       },
       "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
@@ -636,7 +621,7 @@
       "path": "apps/api/src/routes/setting/dbConfig/dbInfo.ts",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
         "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
       },
       "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
@@ -645,7 +630,7 @@
       "path": "apps/api/src/routes/setting/dbConfig/exportData.ts",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
         "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
       },
       "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
@@ -654,7 +639,7 @@
       "path": "apps/api/src/routes/setting/dbConfig/importData.ts",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 6 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
+        "evidence": "ops-endpoints-auth.test.ts#② 普通 token（id=7）⇒ 5 个运维接口全部 403，且**一行都没少**（直读快照逐项相等）",
         "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
       },
       "note": "附录 B.1 绕过口之一。**Task 3** 把裸 `db` 改成 `systemDb as db`（实例级运维、无租户语义）；**Task 7** 挂 `requireAdmin`（普通 token 403、无 token 401、admin 才可达，且直读确认破坏性接口没执行）。"
