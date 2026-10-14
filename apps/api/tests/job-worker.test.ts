@@ -165,14 +165,20 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
       },
     };
     const { db, store, registry, policy } = await setup([def]);
-    await store.enqueue({ type: "t.lease-hb", userId: 1, payload: { ms: 5_000 } });
+    // ⚠ handler 时长与轮询上限都刻意压在 vitest 5s 默认超时**之内**：否则篡改后拿到的
+    //    是 `Test timed out` 而不是那条有判别力的断言（`expected false to be true`），
+    //    证据就变模糊了。2s handler + 2s 轮询 ⇒ 最坏 ~3s 结束。
+    await store.enqueue({ type: "t.lease-hb", userId: 1, payload: { ms: 2_000 } });
     const runner = startWorkerLoop({ store, registry, workerId: "w-test", policy, log: () => {} });
     await sleep(150);
     // 强夺租约（模拟时钟跳变/长 GC）。maxAttempts=1 ⇒ 回收即 dead ⇒ 不会被重领 ⇒ 无 supersede。
     await db("o_job").update({ leaseUntil: Date.now() - 1 }).where("state", "running");
-    for (let i = 0; i < 80 && !aborted; i += 1) await sleep(50);
+    for (let i = 0; i < 40 && !aborted; i += 1) await sleep(50);
+    // ⚠ 必须在 `stop()` **之前**取快照：`stop()` 超时后会对在跑任务**强制 abort**，
+    //    那会把 `aborted` 置真、掩盖"心跳根本没 abort"这个事实（判别力就丢了）。
+    const abortedByHeartbeat = aborted;
     await runner.stop();
-    expect(aborted).toBe(true);   // 只有心跳两条分支能达成这一条
+    expect(abortedByHeartbeat).toBe(true); // 只有心跳两条分支能达成这一条
     expect(wrote).toBe(false);
     expect((await store.list({ limit: 5 }))[0]?.state).toBe("dead"); // 证明真的走了"回收即死"这条路
     await db.destroy();
