@@ -836,16 +836,19 @@ pnpm.cmd run db:compare -- --manifest=$out                                  # �
 
 | # | 旧行为（每次启动） | 现在 | 影响 / 替代 |
 |---|---|---|---|
-| 1 | 把 6 类 `state='生成中'` 的行**无条件**改判失败（`o_novel.eventState=0`、`o_script.extractState=0`、`o_assets.promptState`、`o_image.state`、`o_storyboard.state`、`o_video.state`） | **不再自动改判** | 重启后残留的"生成中"会**一直留在那里**（这正是删除的收益：多实例不再互踩、不再误杀正在跑的任务）。正式替代是 **Phase 1d 的队列租约超时**（spec §9.2）；在 1d 落地前，人工清除用 **`pnpm.cmd run db:repair-stuck`**（下节） |
+| 1 | 把 6 类 `state='生成中'` 的行**无条件**改判失败（`o_novel.eventState=0`、`o_script.extractState=0`、`o_assets.promptState`、`o_image.state`、`o_storyboard.state`、`o_video.state`） | **不再自动改判** | 重启后残留的"生成中"会**一直留在那里**（这正是删除的收益：多实例不再互踩、不再误杀正在跑的任务）。正式替代是 **Phase 1d 的队列租约超时**（spec §9.2）；**Phase 1d 已落地** ⇒ 现在用 **`pnpm.cmd run job:admin -- --reconcile [--apply]`**（判据更强：看任务还在不在队列里/还有没有有效租约），旧脚本 **`db:repair-stuck` 已弃用**（下节） |
 | 2 | **无条件覆写** `o_prompt.data` 全文 | **不再覆写** | **收益**：运营改过的提示词不再每次重启被冲掉。新库的提示词由 `002_platform_seed`（Task 5）**只插不改** |
 
 > 登记落点：本表 + `apps/api/src/db/migrations/001_schema.ts` 的 `up` 开头（`lib/fixDB.ts` 的
 > "已停用"横幅已随该文件在 Phase 1c Task 5 删除，此处不再作为登记落点）
 > + `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-4-report.md`。
 
-### `db:repair-stuck`（人工清除"卡在生成中"的残留行）
+### `db:repair-stuck`（**已弃用**；人工清除"卡在生成中"的残留行）
 
-> **这是 Phase 1d 队列租约超时落地之前的临时手段**，不是长期机制。
+> ⛔ **【Phase 1d 登记：已弃用】** 队列租约回收 + 产物对账（`job:admin --reconcile`）已经落地，
+> 它的判据更强（"任务还在不在队列里 / 还有没有有效租约"，而不是按时间窗猜）。本脚本**保留但不再推荐**：
+> 启动时会打印弃用说明并把口径指向 `pnpm.cmd run job:admin -- --reconcile --apply`。
+> **删除它归 Phase 1c**（队列侧 deferred 表第 2 条 / `apps/api/README-jobs.md` §6）。
 > **登记落点就是本节**（根 `README.md`）：脚本挂在 `apps/api/package.json`
 > （`tsx` 只装在 `@miwo/api`，根 `package.json` 里跑不了 `--import=tsx`）。
 > ⚠ 计划文本里写的 `apps/api/README-db.md` **全仓不存在**，旧引用一律以本节为准。
@@ -865,6 +868,24 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
   脚本会打印"该表有 N 行生成中但没有可用时间列 → 不按 age 修"，而不是无差别改判。这条限制**是有意的**
   （宁可漏修，也不要误杀）。要给 `o_image` 补时间列属结构变更，排 Phase 1c/1d。
 - ⚠ 不动 `apps/api/data/db2.sqlite`：先 `MIWO_DATA_DIR` 指向一次性库再试（env 优先于 `.env` 文件）。
+
+## 任务队列（Phase 1d 起）
+
+- **存储**：`o_job`（MySQL 表驱动，无 Redis）；`o_gate` 是 vendor 分池的槽位租约（跨进程限流）。
+- **执行**：worker 进程（`data/serve/worker.js`，`pnpm.cmd --filter @miwo/api run worker` 开发用）；
+  api 进程只入队 + 推事件（`job:update` 到 `user:{userId}` room）。
+- **语义**：租约（默认 60s，心跳 15s）+ 过期回收 + 幂等（`dedupeActive` 可空唯一列）+ 重试退避 + 死信（`state='dead'`）。
+- **卡死恢复**：Phase 1a 删掉的"启动时把生成中改判失败"由本阶段的**租约回收 + 产物对账**接管；
+  `db:repair-stuck` 已弃用（`job:admin --reconcile` 的判据更强：看任务还在不在队列里）。
+- **并发口径**：`JOB_POLICY`（`apps/api/src/jobs/policy.ts`）与 `GATE_LIMITS`（`apps/api/src/jobs/gate.ts`）是唯一落点，
+  **不新增任何 `MIWO_*` 变量**；O10（100 并发的口径）未定，当前按"注册用户"取保守默认。
+- **部署形态**：worker 是真单元 —— systemd `deploy/systemd/miwo-worker.service`（Phase 1 主推）或
+  compose 的 `worker` 服务（与 api 同镜像、只换启动命令）；**两者二选一**，同时起会让并发口径翻倍（`deploy/README.md` §3.5）。
+- **手册**：`apps/api/README-jobs.md`（状态机 / 参数表 / 租约 / 幂等 / 运维命令 / 卡死恢复 / 降级口径 U1–U7 / 已知限制 / deferred 表）。
+- **验收**：`pnpm.cmd run verify:phase1d`（本机 sqlite 口径 + 结构/静态断言）；MySQL 多进程混沌见 `pnpm.cmd --filter @miwo/api run job:chaos`。
+- ⚠ **未实测**：本机不启动 MySQL、没有 Docker ⇒ MySQL 方言/可空唯一列/`for update skip locked`/多进程 chaos、
+  以及容器内 worker 启动**都只有替代证据**（静态断言 + 文档），真跑在 CI 的 `mysql` job 与部署窗口。逐条见
+  `apps/api/README-jobs.md` §7（U1–U7）。
 
 ## 已知问题 / Known issues
 
@@ -959,7 +980,7 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
 | 13 | `data/vendor/*.ts` 的 13 个适配器与 `vendor.json` 模板的对账结果 | 观察项 | Task 10 Step 5 的输出；本阶段只报告不写盘（`003_vendor_asset_sync` 的 `up` 只登记不写文件） |
 | 14 | `apps/api/LICENSE`、`data/vendor/*.ts` 的 `author` 字段（写着**旧品牌名**）、前端 i18n 品牌残留 | Phase 1c / Phase 3 | Phase 0 ledger 的既有 deferred 裁定（本阶段不动，`check-brand` 有**逐条带理由**的豁免机制） |
 | 15 | `NOTICES.txt` 仍列 electron 系许可证 | Phase 1c | Phase 0 ledger（用 `pnpm license` 重生成） |
-| 16 | `deploy/` 的容器路径整体未验证 + 无 `.dockerignore` | Phase 1d 准入前必修 | Phase 0 ledger **N1**；`seed/*.ndjson` 在容器里也要能读到 —— **代码侧**由 `002_platform_seed` 的三条候选路径处理，**产物侧**由 Task 12 Step 4（裁定 60）的构建拷贝处理（源目录缺失即 `exit 1`，不静默） |
+| 16 | `deploy/` 的容器路径整体未验证 + 无 `.dockerignore` | Phase 1d 准入前必修 | Phase 0 ledger **N1**；`seed/*.ndjson` 在容器里也要能读到 —— **代码侧**由 `002_platform_seed` 的三条候选路径处理，**产物侧**由 Task 12 Step 4（裁定 60）的构建拷贝处理（源目录缺失即 `exit 1`，不静默）。**【Phase 1d 更新】`.dockerignore` 已落地**（`deploy/.dockerignore`，Phase 0 ledger N1 结清）；**容器路径本身仍未在真机验证**（本机无 Docker），见 `deploy/README.md` §3 / `apps/api/README-jobs.md` §7 U6 |
 | 17 | **4 个运维路由的租户处置**（`deleteAllData.ts` / `clearData.ts` / `importData.ts` / `getSwitchAiDevTool.ts`，共 7 处在 import 图上） | Phase 1b | **【L3 补登记·Ruling 45】** 本阶段摘的是"**每次启动无条件执行**"的调用；这 4 处是**用户请求时的 handler**，已逐条豁免 + 理由（带"必须真实命中否则报红"的活性断言）。`check-dead-ddl.cjs` 的豁免一旦不再命中就会逼人清理清单。**1b 必须把这 4 个 handler 纳入隔离处置的明确范围** |
 | 18 | **全新库 `login` 仍 400**；`app.ts:167` 的 **444 分支已不可达** | Phase 1c | **【L3 补登记·Ruling 58③ + Ruling 64】** ① `login`/socket 三处仍读库里的 `o_setting.tokenKey`，而 `002` **不 seed** 它 ⇒ **全新库上登录仍 400**。**不得宣称"全新库完整可用"**。② `config.ts` 的模块级 `loadConfig()` 对 `MIWO_JWT_SECRET` 是 fail-fast（≥32B）⇒ `config.jwtSecret` **恒非空** ⇒ `app.ts:167` 的 `if (!tokenKey) return 444` **不可达**，全仓无测试覆盖它（已就地标注 unreachable + 原因，不删）。本阶段已补"库值优先 / 配置兜底"的优先级回归网（`tests/auth-token-key.test.ts`） |
 | 19 | **无 id 的 4 张关联表用全列 `OFFSET` 分页（O(n²)）** | Phase 1b / 1e（搬迁工作） | **【L3 补登记·Ruling 106】** `importTable` 对无 id 表按全列 `OFFSET` 分页；老库这 4 张最大 926 行看不出来。**真实库若远超此量级，建议先单独压测再做正式搬迁**（否则搬迁耗时随行数**平方**增长，可能从分钟级变成小时级） |
@@ -974,8 +995,9 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
    外加 **`o_project`（已有该列）** ⇒ 19 + 1 = **20**。
    **1b 若照 18 回填会漏 2 张表**。机械口径：`001_schema.ts` 里 `t.u64(T, "userId")` 共 **20 处调用**，
    逐处对应一张表（`o_project` 那处注释已标"已有列"）。
-2. **重启后"生成中"不再自动改判失败** —— 在 Phase 1d 的队列租约落地前，界面上可能有永久"生成中"的残留行；
-   过渡期用 `pnpm.cmd run db:repair-stuck`（默认 dry-run）。
+2. **重启后"生成中"不再自动改判失败** —— **Phase 1d 的队列租约已落地**：残留行由**租约回收 + 产物对账**
+   （`pnpm.cmd run job:admin -- --reconcile --apply`）接管，判据是"任务还在不在队列里/还有没有有效租约"；
+   `pnpm.cmd run db:repair-stuck`（默认 dry-run）**已弃用**，只作最后手段。
 3. **MySQL 的 CI 证据来自 YAML 结构断言 + 本机等价命令**，真 GitHub runner 从未执行过（仓库无 remote）。
 4. **`deploy/` 的容器路径仍未验证**（本机无 Docker）。
 5. ~~**`o_agentWorkData.data` 仍是 `varchar(255)`**（中文长 JSON 有截断风险，Phase 1b 评估）。~~
