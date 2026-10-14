@@ -117,6 +117,38 @@ describe("hw 0. 跨方言运维原语（裁定 §2.5）", () => {
     }
   });
 
+  it("mysql 侧**离线形态（真跑函数，不连库）**：listTables/tableRowCount 真的按 mysql 字符串发查询", async () => {
+    // ⚠ 本机**不起 MySQL**（3307 独占），所以这里用一个**只记录 SQL 的假客户端**把
+    //   `listTables` / `tableRowCount` 真的执行一遍：观测到 SQL 才算数（Ruling 243 的口径 ——
+    //   "观测不到"不等于"干净"）。这条与上一条的区别：上一条只比 SQL 文本，这条证明**函数真的把它发出去了**。
+    const seen: string[] = [];
+    const fake: Knex = ((table: string) => ({
+      count: (_alias: unknown) => ({
+        first: async () => {
+          seen.push(`SELECT count(*) AS \`n\` FROM \`${table}\``);
+          return { n: 7 };
+        },
+      }),
+    })) as unknown as Knex;
+    (fake as unknown as { client: unknown }).client = { config: { client: "mysql2" } };
+    (fake as unknown as { raw: unknown }).raw = async (sql: string) => {
+      seen.push(sql);
+      expect(sql, "假客户端也要挡住 sqlite 方言（否则这条用例自己会假绿）").not.toMatch(/sqlite_master|PRAGMA/i);
+      return [{ name: "o_fake_a" }, { name: "o_fake_b" }];
+    };
+    (fake as unknown as { schema: unknown }).schema = { hasTable: async () => true };
+    (fake as unknown as { columnInfo?: unknown }).columnInfo = async () => ({});
+
+    const tables = await listTables(fake);
+    expect(tables, "mysql 分支的返回值必须被归一化成排好序的表名数组").toEqual(["o_fake_a", "o_fake_b"]);
+    expect(await tableRowCount(fake, "o_fake_a")).toBe(7);
+
+    expect(seen.length, "必须真的发出了两条查询（观测到才算数）").toBe(2);
+    expect(seen[0], "第一条必须是 information_schema 那条").toContain("information_schema.tables");
+    expect(seen[1], "第二条必须是按表名的 count，且表名来自上一条的结果").toContain("o_fake_a");
+    expect(seen.join("\n"), "任何一条都不得出现 sqlite 方言").not.toMatch(/sqlite_master|PRAGMA/i);
+  });
+
   it("白名单语义两端都成立：非白名单表名（含 sqlite_/_ 前缀与基础设施表）一律拒绝", () => {
     expect(isExportableTable("o_project")).toBe(true);
     expect(isExportableTable("knex_migrations"), "迁移记账表不是业务表").toBe(false);
