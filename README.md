@@ -29,6 +29,9 @@ pnpm.cmd dev
 > （`apps/api/data/db2.sqlite`，没有 `knex_migrations`），`pnpm dev` 会报 `table o_user already exists` ——
 > **不是迁移写错**，处置见下面「[不支持"在老库上原地跑迁移"](#-不支持在老库上原地跑迁移症状--原因--怎么做)」。
 > 想在空库上完整体验启动顺序（含"已应用迁移"日志）：`$env:MIWO_DATA_DIR="C:\Temp\miwo-boot"; pnpm.cmd dev`。
+> ⚠ **升级一台已有数据的实例前先读 [`apps/api/README-auth.md`](apps/api/README-auth.md)**：
+> Phase 1c 之后**库里一个能登录的账号都没有**（旧明文口令不迁移），第一件事是
+> `pnpm.cmd run db:bootstrap-admin -- --username=<名字> --apply`，然后发邀请码让用户重新注册。
 
 ### 路由与配置（改动须知）
 
@@ -347,15 +350,14 @@ pnpm.cmd run db:migrate:status -- --allow-repo-dev-db
 
 #### 手动点击测试：`pnpm.cmd run verify:manual-test`（Ruling 158 / 162 的落点）
 
-> ⚠ **Phase 1b 收尾轮实测：这条命令在当前 HEAD 上跑不起来（不是"没跑"）—— 边界已显式降级。**
-> 症状：脚本拿旧快照（`apps/api/data/db2.sqlite`，缺 19 个 `userId` 列）当手动测试库，记账行只补到
-> `003_vendor_asset_sync`，于是启动链 `migrate.latest()` 会执行 `004_backfill_userid` ⇒
-> **`no such column: userId`** ⇒ 进程退出、不打印 URL。
-> **当前可执行的口径是 `pnpm.cmd run verify:phase1b`**（新库 `db:migrate` → 确定性种子 → 真 HTTP 17/17 → 打印结论），
-> 它覆盖了"隔离在真实路径上成立"，但**不**覆盖"浏览器里点得动"。
-> 要恢复本条：需改 `code/miwo/scripts/manual-test.ps1`（**不在 Phase 1b 收尾轮的 writeScopes 内，未改**）——
-> 正确形态是"**新库 `db:migrate` → 导入旧快照数据 → 打印 URL**"（与 `verify:phase1b` 同口径，
-> 复用 `db:import` 的 NDJSON 导入而不是"把旧快照直接当库用"）。已登记在 deferred 清单第 16 条。
+> ✅ **Phase 1c Task 12 已修好这条通道**（Phase 1b deferred #16 关闭）。改前它在 HEAD 上**跑不起来**，
+> 症状是拿旧快照当手动测试库（记账行只补到 `003_vendor_asset_sync`，于是 `migrate.latest()` 要跑
+> `004_backfill_userid`，而那份快照缺 19 个 `userId` 列 ⇒ **`no such column: userId`** ⇒ 进程退出、不打印 URL）。
+> 现在它是与 `verify:phase1b` 同口径的**正确形态**：
+> **新库 `db:migrate`（001..006）→ `db:bootstrap-admin` 建一次性管理员 → 夹具种子 → 起服务 → 打印 URL**。
+> ⚠ 它**不再导入**旧快照数据：旧数据搬迁是另一件事（见 `apps/api/README-auth.md` 的「升级顺序」；
+> `db:import` 也拒绝往非空库里导）。它**从不打开** `apps/api/data/db2.sqlite`，并在第 [0/7] 步打印那个
+> 文件的 sha256，好让"没碰它"这句话可核对。
 
 阶段边界的验收口径是**"可以运行并且手动点击测试"**，不是"门禁绿"。这条命令就是那个口径的载体：
 构建前端 → 接到后端站点目录 → 准备一份**可启动的数据库** → 起后端 → **打印可访问 URL + 四步人工清单**。
@@ -365,31 +367,36 @@ pnpm.cmd run db:migrate:status -- --allow-repo-dev-db
 pnpm.cmd run verify:manual-test
 # 停掉它自己起的那个进程（只停它记下的 PID，见下）
 pnpm.cmd run verify:manual-test -- -Stop
-# 换端口
-pnpm.cmd run verify:manual-test -- -Port 10589
+# 换端口（默认 10688：10588 是 dev、18080 是局域网生产，占用它们会让就绪探测被别的进程回答）
+pnpm.cmd run verify:manual-test -- -Port 10689
 ```
 
-打开 URL 后按四步点（这就是"人工清单"）：
+打开 URL 后按四步点（脚本末尾会**原文打印**这四步，含当次随机生成的管理员口令与邀请码）：
 
 | 步 | 做什么 | 现在能不能成 |
 |---|---|---|
-| 1 | **登录 / 注册**（Phase 1c Task 11 起走 `/api/auth/register` + `/api/auth/login`；旧路径已退役） | ✅ 能（本机实测 `POST /api/auth/login` → 200） |
-| 2 | **新建一个项目** | ✅ 能（项目列表返回 dev 库里的真实项目） |
-| 3 | 走一条生成流程（Phase 1d 前为同步、1d 后为入队） | 需要模型/厂商凭据，本 Harness 不替你造数据 |
-| 4 | 看到媒体/额度（媒体 Phase 1e 前走本地、Phase 2 后看额度扣减） | 同 3 |
+| 1 | **登录**（管理员由 `db:bootstrap-admin` 当次建出，`mustChangePassword=1` ⇒ 先跳改密页） | ✅ 能（口令由脚本打印） |
+| 2 | **注册第二个用户**（默认注册方式是 `invite` ⇒ 用脚本种下的邀请码） | ✅ 能 |
+| 3 | **新建一个项目**（项目列表里另有脚本种下的示例项目 `id=900001`） | ✅ 能 |
+| 4 | **看到媒体**（`oss/manual-test/demo.png` 的**签名直链**由脚本打印；同路径不带签名必须 403） | ✅ 能 |
+| 附 | 刷新页面仍在线（HttpOnly refresh Cookie）/ 登出后旧 access 立即失效 | ✅ 能（API 级已由 `verify:phase1c` 的 D 组钉住） |
+
+⚠ **如实登记：浏览器里"人点一遍"这件事本身仍未做**（Phase 1b 就登记过的 1b-16）：
+本环境没有浏览器自动化框架，`apps/web` 也没有测试运行器。Task 12 做到的是
+"**入口真的能起、页面真的能打开、清单真的可执行**"——"人在浏览器里点过"仍待人工执行。
 
 脚本**打印的不只是 URL**：它还会 `GET /` 与构建产物里的每个 `.js`/`.css` 并逐条打印 HTTP 状态 ——
 **"服务起来了"不等于"页面打得开"**，这一条是为了让"页面打得开"也有原文证据。
 
 ⚠ **两个必须知道的事实**（都是本机实测，脚本头注释里有完整理由）：
 
-1. **手测跑的是 `apps/api/data/db2.sqlite` 的一次性副本，不是那个文件本身。**
-   那份 dev 库是**迁移时代之前的旧快照**（30 张表、有真实数据、**没有 `knex_migrations`**），
-   启动路径一跑 `migrate.latest()` 就 `table o_user already exists` 直接失败，并会把它的 sha256
-   从 `44716850…` 改成 `8C3C2F38…`（这正是上面「不支持在老库上原地跑迁移」那条）。
-   所以脚本把它拷到仓库外、补上"这些迁移已经跑过"的 knex 记账行，再让后端连副本 ——
-   **仓库内 dev 库的 sha256 全程不变**，而真实数据（`o_user` 的 admin、8 个项目、`o_setting.tokenKey`）都在，
-   登录因此可用（全新迁移出来的空库**没有**用户也没有 `tokenKey`，第 1 步根本没法点）。
+1. **手测跑的是仓库外一次性目录里的全新库，不是 `apps/api/data/db2.sqlite`。**
+   那份 dev 库是**迁移时代之前的旧快照**（有真实数据、**没有 `knex_migrations`**），
+   启动路径一跑 `migrate.latest()` 就会撞上 `table o_user already exists`，并把它写脏
+   （这正是上面「不支持在老库上原地跑迁移」那条）。
+   所以脚本在仓库外建一份全新库、跑完真迁移链，再用 `db:bootstrap-admin` 建当次管理员 ——
+   **它根本不打开那份 dev 库**，sha256 全程不变。
+   （历史：改前的手测口径是"拷一份旧快照 + 补 knex 记账行"，那条路在 `004` 上必死，已废。）
 2. **`vite build` 必须让 `TMP`/`TEMP` 指向仓库外的自有目录**：用系统 `%TEMP%` 时 esbuild 会
    `remove C:\Users\…\Temp\esbuild-<hash>: Access is denied.` 而整个构建失败（同一个构建换个 TMP 就 exit 0）。
    脚本已自行处理；手动跑 `vite build` 遇到它按这条排查，不要当成前端代码坏了。
@@ -573,7 +580,7 @@ node tools/tenant-redend.cjs   # 11 项红端可复现（隔离副本 + VCS 还�
 | #11（媒体匿名可取） | **重标为"上线前安全项"**（不是"已处置"）：`/oss` 在鉴权之前 ⇒ 猜到 URL 就能取文件。归 **Phase 1e**。 |
 | #14（`o_modelPrompt.{fileName,path}` 需改回 `text`） | **已过期**：HEAD 里两列都已是 `t.text`（MySQL → longtext）⇒ 已解决，永久忽略。 |
 | #15（`o_agentWorkData.data` 是 `varchar(255)`） | **已过期**：HEAD 里已是 `t.text` ⇒ 已解决，永久忽略。 |
-| 新增 #16 | **`verify:manual-test` 当前跑不起来**（见上）⇒ 需改 `code/miwo/scripts/manual-test.ps1`（本轮无该 writeScope）；**Phase 1c**。替代口径 = `pnpm verify:phase1b`。 |
+| 新增 #16 | ~~**`verify:manual-test` 当前跑不起来**~~ ⇒ ✅ **Phase 1c Task 12 已修**：`scripts/manual-test.ps1` 重写为"仓库外新库 `db:migrate` → `db:bootstrap-admin` → 夹具种子 → 起服务 → 打印 URL + 四步清单"，`node scripts/seed-manual-test.ts` 是它的夹具种子。**浏览器里人点一遍仍未做**（登录页那条失真提示文案也已在 T12 一并修掉）。 | T12 |
 | 新增 #17 | **`o_assets2Storyboard` 缺少显式排序列**：本轮为了 MySQL 兼容，把"SQLite 插入序（rowid）"改成按 `assetId` 排 —— 语义上**不等价**。要恢复真正的"用户挂载顺序"需要加 `sortIndex` 列（迁移 + 写入端）⇒ **Phase 1c**。 |
 | 新增 #18 | `apps/api/src/utils/getConfig.ts:42` 的 `u.db("t_config")` 是**死路径**（`t_config` 既不在策略表也不在 `001_schema`）⇒ 调用必抛 `PolicyNotFoundError`；本轮**只登记不改**（`src/utils/**` 不在 writeScopes），**Phase 1c** 删除或改接平台表。 |
 | 新增 #19 | 并发隔离目前只有 20 路 `Promise.all` 的等价证据（`tests/tenant-isolation-http.test.ts` 的 U4 用例），**没有**压测/长连接/多进程证据 ⇒ 需要时在 Phase 1e 补。 |
