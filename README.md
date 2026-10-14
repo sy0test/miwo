@@ -336,6 +336,16 @@ pnpm.cmd run db:migrate:status -- --allow-repo-dev-db
 
 #### 手动点击测试：`pnpm.cmd run verify:manual-test`（Ruling 158 / 162 的落点）
 
+> ⚠ **Phase 1b 收尾轮实测：这条命令在当前 HEAD 上跑不起来（不是"没跑"）—— 边界已显式降级。**
+> 症状：脚本拿旧快照（`apps/api/data/db2.sqlite`，缺 19 个 `userId` 列）当手动测试库，记账行只补到
+> `003_vendor_asset_sync`，于是启动链 `migrate.latest()` 会执行 `004_backfill_userid` ⇒
+> **`no such column: userId`** ⇒ 进程退出、不打印 URL。
+> **当前可执行的口径是 `pnpm.cmd run verify:phase1b`**（新库 `db:migrate` → 确定性种子 → 真 HTTP 17/17 → 打印结论），
+> 它覆盖了"隔离在真实路径上成立"，但**不**覆盖"浏览器里点得动"。
+> 要恢复本条：需改 `code/miwo/scripts/manual-test.ps1`（**不在 Phase 1b 收尾轮的 writeScopes 内，未改**）——
+> 正确形态是"**新库 `db:migrate` → 导入旧快照数据 → 打印 URL**"（与 `verify:phase1b` 同口径，
+> 复用 `db:import` 的 NDJSON 导入而不是"把旧快照直接当库用"）。已登记在 deferred 清单第 16 条。
+
 阶段边界的验收口径是**"可以运行并且手动点击测试"**，不是"门禁绿"。这条命令就是那个口径的载体：
 构建前端 → 接到后端站点目录 → 准备一份**可启动的数据库** → 起后端 → **打印可访问 URL + 四步人工清单**。
 
@@ -518,6 +528,37 @@ node tools/tenant-redend.cjs   # 11 项红端可复现（隔离副本 + VCS 还�
 | 8 | `firstProjectIdInFlowData` 只认 **≥6 位**数字 | **刻意设计**：真实 id 是 13 位 `Date.now()`；放宽会误伤 `oss/300/a.png` 这类相对路径 | 不改（登记） |
 | 9 | `o_vendorConfig.volcengine.enable` **不搬迁** | 预裁定（Phase 1a 账本 Ruling 103） | 已裁定，不做 |
 | 10 | **媒体仍匿名可取**（`/oss` 在鉴权之前） | 本阶段闭合的是"经 API 越权拿到**数据**"，不是"猜到 URL 直接取文件" | Phase 1e |
+
+### 6. 收尾修复轮（Phase 1b 终审后）与 deferred 更正
+
+**已在本轮修掉（终审抓到的"本机绿、真实路径坏"第 4 例）：**
+
+- **`order by \`rowid\` asc`（4 个生产路由）**：`rowid` 是 **SQLite 隐式列**，MySQL 没有 ⇒ `ER_BAD_FIELD_ERROR`，
+  正好压在"分镜资产顺序 → 图片/视频提示词"核心链上（sqlite 全绿、MySQL 500）。
+  已改为显式列 `assetId`（关联表只有 `(storyboardId, assetId, userId)`，没有 createTime/id ⇒ 这是唯一确定性排序）。
+  **新增类别级门禁 `node tools/check-mysql-dialect.cjs`**（`pnpm verify:mysql-dialect`，已进 CI + `check-ci-yaml`）：
+  `apps/api/src` 剥注释后出现 `rowid`/`_rowid_` 即红；`routes/**` 里 `select` 的裸列名必须落在 `groupBy` 里
+  （含 `.raw(` 的文件只警告）。红端：注入 `orderBy("rowid")` ⇒ 红；注入未分组列 ⇒ 红。**未连真机**，只用 `toSQL()` 离线编译。
+- **`routes/task/getProject.ts` 的 `select("id","name").groupBy("name")`** ⇒ MySQL 8 `ONLY_FULL_GROUP_BY` 是 `ER_1055`；
+  已改成 `select("name").min("id as id").groupBy("name")`（保持"每个 name 一行"的原语义，且现在**确定**）。
+- **`/api/setting/agentDeploy/*` 家族 6 个端点全部收权**（此前 6 个都没挂 `requireAdmin`，其中 `agentSetKey` 是**写供应商 key** 的接口）：
+  无 token 401 / 普通 token 403 / admin 200，且普通 token 打完**直读数据一行未改**（`tests/ops-endpoints-auth.test.ts`）。
+  红端：拿掉**读**端点的 `requireAdmin` ⇒ 普通 token 直接 **200 并吐出供应商模型配置**。
+  ⚠ 注意判别力细节：6 个端点里**写**端点本来就会被守卫的 `platform` 写规则挡成 403（纵深防御），
+  所以"拿掉 `requireAdmin` ⇒ 红"的**唯一可判据点**是**读**端点（`getAgentDeploy`/`getAgentUseMode`）。
+
+**deferred 更正（此前登记有误/已过期）：**
+
+| 原编号 | 更正 |
+|---|---|
+| #2（`getAgentDeploy` 未收权） | **已修**，且原描述不准：它只 `select o_agentDeploy.*`；真正的高危项是**同家族 6 个端点**，含 `agentSetKey`。见上。 |
+| #11（媒体匿名可取） | **重标为"上线前安全项"**（不是"已处置"）：`/oss` 在鉴权之前 ⇒ 猜到 URL 就能取文件。归 **Phase 1e**。 |
+| #14（`o_modelPrompt.{fileName,path}` 需改回 `text`） | **已过期**：HEAD 里两列都已是 `t.text`（MySQL → longtext）⇒ 已解决，永久忽略。 |
+| #15（`o_agentWorkData.data` 是 `varchar(255)`） | **已过期**：HEAD 里已是 `t.text` ⇒ 已解决，永久忽略。 |
+| 新增 #16 | **`verify:manual-test` 当前跑不起来**（见上）⇒ 需改 `code/miwo/scripts/manual-test.ps1`（本轮无该 writeScope）；**Phase 1c**。替代口径 = `pnpm verify:phase1b`。 |
+| 新增 #17 | **`o_assets2Storyboard` 缺少显式排序列**：本轮为了 MySQL 兼容，把"SQLite 插入序（rowid）"改成按 `assetId` 排 —— 语义上**不等价**。要恢复真正的"用户挂载顺序"需要加 `sortIndex` 列（迁移 + 写入端）⇒ **Phase 1c**。 |
+| 新增 #18 | `apps/api/src/utils/getConfig.ts:42` 的 `u.db("t_config")` 是**死路径**（`t_config` 既不在策略表也不在 `001_schema`）⇒ 调用必抛 `PolicyNotFoundError`；本轮**只登记不改**（`src/utils/**` 不在 writeScopes），**Phase 1c** 删除或改接平台表。 |
+| 新增 #19 | 并发隔离目前只有 20 路 `Promise.all` 的等价证据（`tests/tenant-isolation-http.test.ts` 的 U4 用例），**没有**压测/长连接/多进程证据 ⇒ 需要时在 Phase 1e 补。 |
 
 ## 迁移纪律（spec §5.2）
 
