@@ -229,7 +229,7 @@ describe("hw 1-3. helmet / /oss CORP / CORS 白名单", () => {
   });
 });
 
-describe("hw 4. 错误响应脱敏（真实 UNIQUE 约束冲突）", () => {
+describe("hw 3. 错误响应脱敏（真实 UNIQUE 约束冲突）", () => {
   it("500 响应体不含 UNIQUE/表名/列名/绝对路径/堆栈；日志里保留完整诊断（含 requestId）", async () => {
     const file = path.join(TMP, "leak.sqlite");
     const db: Knex = knexFactory({ client: "better-sqlite3", connection: { filename: file }, useNullAsDefault: true });
@@ -320,7 +320,7 @@ describe("hw 4. 错误响应脱敏（真实 UNIQUE 约束冲突）", () => {
   });
 });
 
-describe("hw 5. 限流（429）", () => {
+describe("hw 4. 限流（429）", () => {
   it(`超过 apiLimiter 阈值 ⇒ 429，且阈值在 dev 也生效（dev=${API_LIMIT_DEV}，旧版是 skip = 永不可达）`, async () => {
     // 用**同一份 createLimiter**装一个小阈值实例（不是复制实现）：这条断言测的是"429 分支可达"，
     // 而"dev 放宽是否真的放宽"由 API_LIMIT_DEV > API_LIMIT_PROD 与下面那条阈值断言共同保证。
@@ -381,7 +381,7 @@ describe("hw 5. 限流（429）", () => {
   });
 });
 
-describe("hw 6. trust proxy", () => {
+describe("hw 5. trust proxy", () => {
   it("app.set(\"trust proxy\", 1) 后 X-Forwarded-For 生效（req.ip = 真实客户端，而不是反代地址）", async () => {
     const withProxy = await serveAndFetch(
       (app) => {

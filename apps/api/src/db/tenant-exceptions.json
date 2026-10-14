@@ -377,10 +377,10 @@
         101
       ],
       "confirmed": true,
-      "note": "**Phase 1c Task 5+6 新增**（裁定 §2.5 的跨方言运维原语）。三处 raw 全部是**只会取表名/字节的中文说明的元数据或会话语句**，没有一条碰租户表的数据：(76) `sqlite_master` 的表名清单（fail-closed 地限定 `type='table'` 并排除 `sqlite_%`/`knex_%`）；(98/101) 按 client 分支的 `PRAGMA foreign_keys = ON/OFF` 与 MySQL 的 `SET FOREIGN_KEY_CHECKS = ?`。⚠ 这里仍然是 raw 的原因**必须**记住：knex 没有「列出全部表名」的跨方言 API，而 dbInfo/exportData/clearData 的语义就是「遍历全部表」⇒ 只能落到方言元数据表。⚠ 本文件**不 import** `@/utils` / `@/config`：它只接受调用方传进来的裸 knex 句柄，所以它不会被拖进启动链（对照 `tests/migration-import-graph.test.ts`）。⚠ MySQL 分支**未实测**（本机不起 MySQL），只有 `createKnex({client:\"mysql2\"})` + `toSQL()` 的形态证明。",
+      "note": "**Phase 1c Task 5+6 新增**（裁定 §2.5 的跨方言运维原语）。三处 raw 全部是**只会取表名/字节的中文说明的元数据或会话语句**，没有一条碰租户表的数据：(76) `sqlite_master` 的表名清单（fail-closed 地限定 `type='table'` 并排除 `sqlite_%`/`knex_%`）；(98/101) 按 client 分支的 `PRAGMA foreign_keys = ON/OFF` 与 MySQL 的 `SET FOREIGN_KEY_CHECKS = ?`。⚠ 这里仍然是 raw 的原因**必须**记住：knex 没有「列出全部表名」的跨方言 API，而 dbInfo/exportData/clearData 的语义就是「遍历全部表」⇒ 只能落到方言元数据表。⚠ 本文件**不 import** `@/utils` / `@/config`：它只接受调用方传进来的裸 knex 句柄，所以它不会被拖进启动链（对照 `tests/migration-import-graph.test.ts`）。⚠ MySQL 分支**未实测**（本机不起 MySQL），只有 `createKnex({client:\"mysql2\"})` 上的 **SQL 文本断言** + 一个「只记录 SQL 的假客户端」真跑 `listTables`/`tableRowCount` 的证明。",
       "phase1b": {
         "disposition": "systemDb+admin",
-        "evidence": "http-hardening.test.ts#跨方言运维接口",
+        "evidence": "http-hardening.test.ts#跨方言运维原语（裁定 §2.5）",
         "note": "调用方只可能是**已收权 + 审计 + 默认关闭**的实例级运维接口（`clearData`/`importData`/`dbInfo`/`exportData`，全部 `requireAdmin` + `opsEnabled(\"allowDbAdminOps\")`）：本文件的每一个 raw 都是**按方言给元数据/会话语句**，不接受任何来自请求的字符串拼接（表名由调用方从白名单或元数据表取得，值全程参数化）⇒ 不需要租户条件、也不该有。"
       }
     },
