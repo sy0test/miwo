@@ -431,7 +431,7 @@ $env:MIWO_TEST_SLOW="1"; pnpm.cmd exec vitest run          # 慢用例（约 60s
 
 | 门禁 | 命令 | 期望 |
 |---|---|---|
-| 默认套件 | `pnpm.cmd exec vitest run`（`apps/api` 下） | **443 passed \| 10 skipped** |
+| 默认套件 | `pnpm.cmd exec vitest run`（`apps/api` 下） | **449 passed \| 10 skipped** |
 | Phase 0 验收 | `node apps/api/scripts/verify-phase0.cjs` | **43/43** |
 | Phase 1a 验收 | `pnpm.cmd run verify:phase1a` | **76/76**（本机口径；CI 用 `verify:phase1a:ci`） |
 | Phase 1b 验收 | `pnpm.cmd run verify:phase1b` | **17/17**（另有 1 项 MySQL 口径**未实测**） |
