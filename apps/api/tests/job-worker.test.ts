@@ -95,12 +95,12 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
     await store.enqueue({ type: "t.ok", userId: 1, payload: { ms: 1 } });
     const runner = startWorkerLoop({ store, registry, workerId: "w-test", policy, log: () => {} });
     for (let i = 0; i < 60; i += 1) {
-      const rows = await store.list({ limit: 10 });
+      const rows = await store.list({ limit: 10, scope: { all: true } });
       if (rows.every((r) => r.state === "dead" || r.state === "succeeded")) break;
       await sleep(50);
     }
     await runner.stop();
-    const unknown = (await store.list({ limit: 10 })).find((r) => r.type === "t.unknown");
+    const unknown = (await store.list({ limit: 10, scope: { all: true } })).find((r) => r.type === "t.unknown");
     expect(unknown?.state).toBe("dead");
     expect(unknown?.lastError).toMatch(/未知任务类型/);
     expect((await store.stats()).succeeded).toBe(1);
@@ -188,7 +188,7 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
     await runner.stop();
     expect(abortedByHeartbeat).toBe(true); // 只有心跳两条分支能达成这一条
     expect(wrote).toBe(false);
-    expect((await store.list({ limit: 5 }))[0]?.state).toBe("dead"); // 证明真的走了"回收即死"这条路
+    expect((await store.list({ limit: 5, scope: { all: true } }))[0]?.state).toBe("dead"); // 证明真的走了"回收即死"这条路
     await db.destroy();
   });
 
@@ -206,7 +206,7 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
       await sleep(50);
     }
     await runner.stop();
-    const row = (await store.list({ limit: 5 }))[0];
+    const row = (await store.list({ limit: 5, scope: { all: true } }))[0];
     expect(row.state).toBe("dead");
     expect(row.lastError).toMatch(/超时|中止/);
     await db.destroy();

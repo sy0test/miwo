@@ -450,18 +450,48 @@ describe("D. 统计、方言形态与错误识别", () => {
     await db.destroy();
   });
 
-  it("list 过滤与上限（state / type / limit 夹到 1..500）", async () => {
+  it("list 过滤与上限（state / type / limit 夹到 1..500）；**作用域必填**（review-C F5）", async () => {
     const { db, store } = await setup();
     await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1, tag: "l1" } });
     await store.enqueue({ type: "test.sleep", userId: 1, payload: { ms: 1, tag: "l2" } });
     await store.claim({ workerId: "w1", limit: 1 });
-    expect((await store.list({ state: "running" })).length).toBe(1);
-    expect((await store.list({ state: "queued" })).length).toBe(1);
-    expect((await store.list({ type: "test.sleep" })).length).toBe(2);
-    expect((await store.list({ type: "nope" })).length).toBe(0);
-    expect((await store.list()).length).toBe(2);
-    expect((await store.list({ limit: 1 })).length).toBe(1);
-    expect((await store.list({ limit: 0 })).length).toBe(1); // 夹到 >=1
+    const ALL = { scope: { all: true } } as const;
+    expect((await store.list({ ...ALL, state: "running" })).length).toBe(1);
+    expect((await store.list({ ...ALL, state: "queued" })).length).toBe(1);
+    expect((await store.list({ ...ALL, type: "test.sleep" })).length).toBe(2);
+    expect((await store.list({ ...ALL, type: "nope" })).length).toBe(0);
+    expect((await store.list(ALL)).length).toBe(2);
+    expect((await store.list({ ...ALL, limit: 1 })).length).toBe(1);
+    expect((await store.list({ ...ALL, limit: 0 })).length).toBe(1); // 夹到 >=1
+    await db.destroy();
+  });
+
+  /**
+   * ★ review-C F5 的判别力用例：**作用域必须显式**。
+   *  - 类型层：`list({ state: "queued" })`（缺 scope）应编译不过（tsc 是判据；见 `JobListFilter`）；
+   *  - 运行层：绕过类型的 JS 调用（`as never`）必须**抛错**而不是"默认全量"；
+   *  - 语义层：`{scope:{userId}}` 只回该用户的行 —— 另一个用户的行**绝不可见**
+   *    （platform 表守卫不注入 userId，所以这一条完全靠调用方显式过滤）。
+   */
+  it("★ list 的作用域：缺 scope ⇒ 抛错；带他人 userId ⇒ 一条都读不到（1d-3）", async () => {
+    const { db, store } = await setup();
+    await store.enqueue({ type: "test.sleep", userId: 1001, payload: { ms: 1, tag: "s1" } });
+    await store.enqueue({ type: "test.sleep", userId: 1002, payload: { ms: 1, tag: "s2" } });
+
+    // ① 缺 scope（模拟 JS 调用方绕过类型）⇒ 必须抛，不许"默认全量"
+    await expect(store.list({ state: "queued" } as never)).rejects.toThrow(/必须显式选择作用域/);
+
+    // ② 显式系统/全量 ⇒ 两条都看得到（这是允许的，但必须**显式**声明）
+    expect((await store.list({ scope: { all: true } })).length).toBe(2);
+
+    // ③ 用户可见读取：A 只看到 A 的，B 只看到 B 的（跨租户泄漏的判别力就在这一条）
+    const a = await store.list({ scope: { userId: 1001 } });
+    const b = await store.list({ scope: { userId: 1002 } });
+    expect(a.length).toBe(1);
+    expect(b.length).toBe(1);
+    expect(Number(a[0].userId)).toBe(1001);
+    expect(Number(b[0].userId)).toBe(1002);
+    expect(JSON.stringify(a)).not.toContain("s2"); // 不含另一用户的 payload
     await db.destroy();
   });
 

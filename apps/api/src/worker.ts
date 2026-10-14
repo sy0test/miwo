@@ -31,6 +31,20 @@ import { startWorkerLoop } from "@/jobs/worker";
 async function main(): Promise<void> {
   // 1) 等 Phase 1a 的启动序列完成（连接 → 迁移 → 可用）。
   await dbReady;
+  /**
+   * 2) **注册队列基础设施**（review-C F2，Critical）。
+   *
+   * `o_gate` 闸门的单例工厂原先只在 `@/jobs`（桶文件）里注册，而 worker 启动链从不 import 它
+   * ⇒ worker 进程里六个 handler 的第一次 `withVendorSlot()` 直接抛 `[gate] 闸门未初始化`
+   * （实测：构建产物 `worker.js` 里连 `__setGateFactory(` 符号都没有）。
+   * ⇒ 这里显式 import 一次（放在 `await dbReady` **之后**：本模块会求值 `@/utils`，
+   *   即"连接 → 迁移"那条链，必须在路径确定之后再触发）。
+   * 机械守卫两层：`tools/check-build.cjs`（`worker.js` 产物里必须观测到该符号，否则 exit 3）
+   * + `tests/job-gate-init.test.ts`（源码级断言两条启动链都 import 了 `@/jobs/bootstrap`）。
+   */
+  const { bootstrapJobInfra } = await import("@/jobs/bootstrap");
+  bootstrapJobInfra();
+
   const db = u.db as unknown as Knex;
   for (let i = 0; i < 60; i += 1) {
     // ⚠ 必须 await hasTable：它返回的是恒真的 QueryBuilder。

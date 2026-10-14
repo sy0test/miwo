@@ -64,8 +64,23 @@ function parseBatch(raw: unknown): VideoBatchPayload {
   };
 }
 
+/**
+ * `video.generate` 的 parse。
+ *
+ * ⚠⚠ **必须幂等**（review-C F1，Critical）：入队时 `store.enqueue()` 会先 `parse()` 归一化再入库，
+ * worker 领到后又把**入库的那份 JSON** 再 `parse()` 一次（`worker.ts`）。所以 `parse` 必须满足
+ * `parse(parse(raw)) === parse(raw)`：本函数对"已经归一化过的 `items[]` 形状"直接走 `parseBatch`，
+ * 否则用 `parseSingle` 把"扁平单条"包成 `items[]`。
+ * 改坏这一条的后果是**最常用的单个视频入口**入队成功、worker 领走即 `dead`
+ * （实测原文：`lastError=[job] video.generate payload 缺少 videoId`，`o_video.state` 卡在"生成中"）。
+ * 机械守卫：`tests/job-parse-roundtrip.test.ts`（对注册表全部类型跑往返）。
+ */
 function parseSingle(raw: unknown): VideoBatchPayload {
   const o = raw as Partial<VideoBatchPayload> & { trackId?: number; videoId?: number; videoPath?: string; prompt?: string; duration?: number; refs?: VideoRef[] };
+  // 已经是归一化形状（入库后的那份）⇒ 直接按批处理解析（幂等分支，F1）。
+  // ⚠ 只在 items **非空**时走这条：空 items 必须落到 `parseBatch` 的"items 不能为空"校验里
+  //   （幂等化不许把校验放宽 —— 见 job-parse-roundtrip.test.ts 的"坏形状仍然抛"）。
+  if (Array.isArray(o?.items) && o.items.length > 0) return parseBatch(o);
   if (typeof o?.videoId !== "number") throw new Error("[job] video.generate payload 缺少 videoId");
   return parseBatch({
     ...o,

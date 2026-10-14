@@ -168,7 +168,7 @@ export function __setGateFactory(factory: () => Gate): void {
 export function getGate(): Gate {
   if (!singleton) {
     if (!gateFactory) {
-      throw new Error("[gate] 闸门未初始化：启动路径应调用 __setGateFactory()（见 src/jobs/index.ts），测试请直接传 deps.gate");
+      throw new Error("[gate] 闸门未初始化：启动路径应调用 __setGateFactory()（见 src/jobs/bootstrap.ts），测试请直接传 deps.gate");
     }
     singleton = gateFactory();
   }
@@ -178,6 +178,12 @@ export function getGate(): Gate {
 /** 仅供测试/运维重置单例（生产不用）。 */
 export function __setGateForTest(g: Gate | null): void {
   singleton = g;
+}
+
+/** 仅供测试：把"工厂 + 单例"都清空（用来复现"worker 进程还没注册"的初始状态）。 */
+export function __resetGateForTest(): void {
+  gateFactory = null;
+  singleton = null;
 }
 
 /**

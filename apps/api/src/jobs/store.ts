@@ -58,8 +58,7 @@ export function isDuplicateKeyError(e: unknown): boolean {
   return /UNIQUE constraint failed|Duplicate entry/i.test(msg);
 }
 
-export interface JobStoreDeps {
-  /**
+export interface JobStoreDeps {  /**
    * knex 实例。**生产传的是受守卫的 `u.db`**（`src/jobs/index.ts`）—— 传裸 knex 也不会错，
    * 因为本模块只用 `o_job` / `o_gate` 两张 platform 表，但那样就丢掉了"未声明表 fail-closed"的护栏。
    */
@@ -82,10 +81,23 @@ export interface JobStore {
   reclaimExpired(): Promise<{ requeued: number; dead: number }>;
   activeCounts(): Promise<{ global: number; perUser: Record<string, number> }>;
   get(id: number): Promise<JobRow | null>;
-  list(filter?: { state?: JobState; type?: string; limit?: number }): Promise<JobRow[]>;
+  /**
+   * 列举任务。**作用域是必填的**（review-C F5）：`{scope:{userId}}` = 用户可见读取；
+   * `{scope:{all:true}}` = 显式系统/全量。两个分支都不可省 —— 见实现处的长注释（1d-3）。
+   */
+  list(filter: JobListFilter): Promise<JobRow[]>;
   stats(): Promise<Record<string, number>>;
   requeueDead(id: number): Promise<boolean>;
 }
+
+/**
+ * `list()` 的过滤条件。`scope` 是**必填的判别联合**（不是可选字段）：
+ * 这样"忘写作用域"在 **tsc 阶段**就红，而不是等到生产上跨租户泄漏。
+ */
+export type JobListFilter = { state?: JobState; type?: string; limit?: number } & (
+  | { scope: { userId: number } }
+  | { scope: { all: true } }
+);
 
 /**
  * 候选查询（**导出供静态断言**，不执行）。
@@ -409,8 +421,26 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
     return row ?? null;
   }
 
-  async function list(filter: { state?: JobState; type?: string; limit?: number } = {}): Promise<JobRow[]> {
+  /**
+   * 列举任务 —— ⚠⚠ **调用方必须显式选择作用域**（review-C F5 / 账本 1d-3）。
+   *
+   * 为什么：`o_job` 是 **platform** 表 ⇒ 租户守卫**不注入** `userId` 条件，而本方法整体跑在
+   * `asSystem()` 的系统身份里 ⇒ **不带 `userId` 的调用会看到所有租户的行**（返回行还含 `payload`
+   * 原文 = 用户提示词）。本阶段还没有用户可见的读取路由（所以尚未泄漏），但那是**地雷**：
+   * 下一个人接上 `list()` 就是跨租户泄漏。
+   *
+   * ⇒ 类型上强制二选一（两个字段都是必填的联合分支，**缺一个就编译不过**）：
+   *   · `{ scope: { userId: number } }` —— 用户可见读取（路由层必须传 `ctx.userId`）；
+   *   · `{ scope: { all: true } }`     —— **显式**声明"系统/全量"（运维 CLI、对账、测试）。
+   * 运行时再兜一层：`scope` 形状不对 ⇒ 抛错（防止 JS 调用方绕过类型）。
+   */
+  async function list(filter: JobListFilter): Promise<JobRow[]> {
+    const scope = filter?.scope as { userId?: number; all?: boolean } | undefined;
+    if (!scope || (typeof scope.userId !== "number" && scope.all !== true)) {
+      throw new Error("[job] list() 必须显式选择作用域：{ scope: { userId } } 或 { scope: { all: true } }（1d-3：o_job 是 platform 表，守卫不注入 userId）");
+    }
     const q = db("o_job").select("*").orderBy("id", "desc").limit(Math.max(1, Math.min(filter.limit ?? 50, 500)));
+    if (typeof scope.userId === "number") q.andWhere("userId", scope.userId);
     if (filter.state) q.andWhere("state", filter.state);
     if (filter.type) q.andWhere("type", filter.type);
     return (await q) as JobRow[];

@@ -18,7 +18,7 @@ import { startProgressRelay } from "@/jobs/progressRelay";
 import { tenantErrorHandler } from "@/middleware/tenant";
 import { authenticate, authErrorHandler, optionalMediaAuth } from "@/middleware/auth";
 import { apiLimiter } from "@/middleware/rateLimit";
-import socketInit from "@/socket/index";
+import socketInit, { makeRelayTargetResolver } from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
 import { mediaAuthGuard, normalizeMediaRelPathInside, redactMediaQueryString, resolveInsideRoot } from "@/utils/mediaSign";
@@ -445,12 +445,16 @@ export default async function startServe(randomPort: Boolean = false) {
        * Phase 1d Task 8：**进度 relay 必须在 listen 之后启动**（spec §9.2 / §9.3）。
        *
        * 它做的事：worker（独立进程）只把状态写进 `o_job`，这里用**复合游标 (updatedAt,id)** 轮询
-       * "哪些任务变了"，再 `io.to(\`user:{userId}\`)` 推 `job:update`（载荷是白名单，见 progressRelay 文件头）。
+       * "哪些任务变了"，再 `to(\`user:{userId}\`).emit("job:update")`（载荷是白名单，见 progressRelay 文件头）。
        * 放在 listen 回调里（而不是更早）有两个理由：① 端口没起来就轮询没有意义（事件没订阅者）；
        * ② `closeServe()` 里 `relay.stop()` 是**唯一**的清理点 —— 测试里先 listen 再 close 必须能停表，
        * 否则 vitest 会留下活动定时器（实测会挂住进程）。
+       *
+       * ⚠⚠ **review-C F3（High）**：这里原来直接把**根 `io`** 交给 relay，而 room 是在
+       *   `/api/socket/productionAgent` **namespace 内** join 的 ⇒ 真客户端**一条都收不到**。
+       *   现在改传 `makeRelayTargetResolver(io)`：把每个事件发给该 room 真正被订阅的 namespace。
        */
-      const relay = startProgressRelay({ db: u.db as unknown as Knex, io, log: (m) => console.log(m) });
+      const relay = startProgressRelay({ db: u.db as unknown as Knex, io, targetOf: makeRelayTargetResolver(io), log: (m) => console.log(m) });
       const stopRelay = (): void => {
         relay.stop();
         server.removeListener("close", stopRelay);

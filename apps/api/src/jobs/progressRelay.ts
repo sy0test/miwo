@@ -34,6 +34,15 @@ export interface RelayEvent {
 export interface RelayDeps {
   db: Knex;
   io: { to(room: string): { emit(event: string, payload: unknown): void } };
+  /**
+   * ⚠ review-C F3（High）：room 是在 `/api/socket/productionAgent` **namespace 内** join 的，
+   * 而原来这里直接打**根 io** ⇒ 真客户端一条都收不到（tick 却报 sent>0）。
+   *
+   * 契约：**传入房间名，拿回"一个已经限定到该房间"的发送器**（即可直接 `.emit()` 的对象）。
+   * 这样调用点只有一句 `targetOf(room).emit(...)`，接线错（打根 io）与否一目了然。
+   * 缺省 = 用 `io` 本身（单测的假 io / 旧装配）。
+   */
+  targetOf?: (room: string) => { emit(event: string, payload: unknown): void };
   pollMs?: number;
   batch?: number;
   now?: () => number;
@@ -42,7 +51,7 @@ export interface RelayDeps {
 
 export function startProgressRelay(deps: RelayDeps): { stop(): void; tick(): Promise<number> } {
   const db = deps.db;
-  const pollMs = deps.pollMs ?? JOB_POLICY.relayPollMs;
+  const targetOf = deps.targetOf ?? ((room: string) => deps.io.to(room));  const pollMs = deps.pollMs ?? JOB_POLICY.relayPollMs;
   const batch = deps.batch ?? JOB_POLICY.relayBatch;
   const log = deps.log ?? (() => {});
   let cursorTs = 0;
@@ -84,7 +93,8 @@ export function startProgressRelay(deps: RelayDeps): { stop(): void; tick(): Pro
         stage: r.stage,
         ...(r.lastError ? { error: String(r.lastError).slice(0, 200) } : {}),
       };
-      deps.io.to(`user:${r.userId}`).emit("job:update", payload);
+      // ⚠ F3：目标必须是**该 room 被 join 的那个 namespace**（不是根 io）
+      targetOf(`user:${r.userId}`).emit("job:update", payload);
       sent += 1;
     }
     if (lastSent.size > 5_000) lastSent.clear(); // 兜底：不让这张表无限长
