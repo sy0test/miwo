@@ -1,3 +1,6 @@
+// ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
+//   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板 - AtlasCloud MASS
  * @version 0.8
@@ -112,11 +115,6 @@ type AtlasVideoModelKind =
 // 全局声明
 // ============================================================
 
-declare const axios: any;
-declare const logger: (msg: string) => void;
-declare const urlToBase64: (url: string) => Promise<string>;
-declare const pollTask: (fn: () => Promise<PollResult>, interval?: number, timeout?: number) => Promise<PollResult>;
-declare const createOpenAICompatible: any;
 declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
@@ -441,7 +439,13 @@ const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3
         : rawBody;
       return await fetch(url, { ...options, body: JSON.stringify(body) });
     },
-  }).chatModel(model.modelName);
+    // ⚠ Phase 1c Task 8（**人工补的一处类型断言**，重跑 vendor-to-module.cjs --force 会覆盖掉）：
+    //   沙箱形态下 `createOpenAICompatible` 是 `declare const … : any`，上面这个 `fetch` 覆写
+    //   （参数比全局 fetch 窄：只收 string）从来不做类型检查。改成真实 import 后 tsc 报 TS2322
+    //   （窄签名不能赋给宽签名）⇒ `as any` 是**保留既有运行时行为**的等价写法。
+    //   真正该做的是把覆写签名放宽成 `(input: string | URL | Request, init?)` 再自己取字符串，
+    //   那属于改适配器逻辑，不在本任务范围。
+  } as any).chatModel(model.modelName);
 };
 
 const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<string> => {
@@ -578,12 +582,7 @@ const updateVendor = async (): Promise<string> => {
 // 导出
 // ============================================================
 
-exports.vendor = vendor;
-exports.textRequest = textRequest;
-exports.imageRequest = imageRequest;
-exports.videoRequest = videoRequest;
-exports.ttsRequest = ttsRequest;
-exports.checkForUpdates = checkForUpdates;
-exports.updateVendor = updateVendor;
 
-export { };
+
+
+export { vendor, textRequest, imageRequest, videoRequest, ttsRequest, checkForUpdates, updateVendor };

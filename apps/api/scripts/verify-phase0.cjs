@@ -463,8 +463,13 @@ async function checkBootAndApi() {
    *      启动顺序的运行期证据在 Task 4 Step 5 的一次性实验里（对同一目录启动两次、25ms 轮询比对
    *      "迁移日志"与"端口可连"的先后：t+1515ms vs t+2128ms）。该实验脚本是一次性的、跑完即删，
    *      原文见 `.superpowers/sdd/2026-10-12-miwo-phase1a-mysql-migrations/task-4-report.md` §3。
-   *   2. `vendor/` `skills/` `modelPrompt/` 三个**只读静态资产目录**（`configHealth` 的
-   *      "vendor 13 / skills 31" 两条断言与启动期读取依赖它们；**不复制** `db2.sqlite`）。
+   *   2. `skills/` `modelPrompt/` 两个**只读静态资产目录**（`configHealth` 的技能计数与启动期读取
+   *      依赖它们；**不复制** `db2.sqlite`）。
+   *      ⚠ Phase 1c Task 8：原来还有 `vendor/`（沙箱执行的适配器文件）。适配器已改成**编译期内置**的
+   *        `src/vendors/*.ts`（esbuild 打进产物）⇒ 运行期不再有 `data/vendor`，这里也不再拷它。
+   *        上面两个目录是**必需**的：缺了说明 checkout 不完整（旧写法 `if existsSync` 是静默跳过，
+   *        会让下面的"skills 31"断言变成空转 —— 现在直接 fail）。
+   *      （`vendor/` 若将来又出现，仍会被一并拷进去 —— 保留那个可选分支只是为了别把老数据目录弄坏。）
    *
    * ⚠ **Task 5 起不再需要那段临时种子脚手架**（`scripts/verify-phase0-seed-min.ts`，已随本 Task 删除）：
    *    `002_platform_seed` 是它的正式接替者 —— 一次 `db:migrate` 就把平台种子（提示词 / Agent 部署 /
@@ -479,7 +484,15 @@ async function checkBootAndApi() {
   let dataDir;
   try {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-phase0-boot-"));
-    for (const sub of ["vendor", "skills", "modelPrompt"]) {
+    // ⚠ 必需目录缺失必须**红**（不是静默跳过）：它们是"受控资产在 checkout 里"的判据，
+    //   缺了的话后面 configHealth 的计数断言会在"空目录"上假绿。
+    for (const sub of ["skills", "modelPrompt"]) {
+      const src = path.join(API_ROOT, "data", sub);
+      if (!fs.existsSync(src)) throw new Error(`受控资产目录缺失：${src}`);
+      copyDirRecursive(src, path.join(dataDir, sub));
+    }
+    // `vendor/`：Phase 1c Task 8 之后正常不存在（适配器已编译期内置）⇒ 可选，存在才拷。
+    for (const sub of ["vendor"]) {
       const src = path.join(API_ROOT, "data", sub);
       if (fs.existsSync(src)) copyDirRecursive(src, path.join(dataDir, sub));
     }
@@ -609,12 +622,15 @@ async function checkBootAndApi() {
         fail(G_AUTH, "configHealth 响应是 JSON", `响应前 200 字符：${res.body.slice(0, 200)}`);
       }
 
-      // 免登录摘要里必须带上"装全没装全"的文件计数（Task 8 实测 skills:31 vendor:13）
+      // 免登录摘要里必须带上"装全没装全"的文件计数（Task 8 实测 skills:31）
       const files = json && json.data && json.data.files ? json.data.files : null;
       if (!files) {
         fail(G_AUTH, "摘要含文件计数 files", `未取到 data.files：${res.body.slice(0, 200)}`);
       } else {
-        record(G_AUTH, "data/vendor 适配器数 13", files.vendor === 13, `实际 ${files.vendor}`);
+        // ⚠ Phase 1c Task 8：`vendor` 的值从"数据目录下的 .ts 数"改成 `builtin:<n>`
+        //   （适配器是编译期内置的，数据目录里已经**没有** vendor/ 了 —— 再数目录会得 -1，
+        //   被读成"资产没装全"，那是假红）。断言口径同步改成"内置注册表里有 13 个"。
+        record(G_AUTH, "内置供应商适配器数 13（src/vendors，编译期内置）", files.vendor === "builtin:13", `实际 ${files.vendor}`);
         record(G_AUTH, "data/skills 技能数 31", files.skills === 31, `实际 ${files.skills}`);
       }
 

@@ -1,3 +1,6 @@
+// ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
+//   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板 - 火山引擎(豆包)
  * @version 2.0
@@ -100,23 +103,6 @@ interface PollResult {
 // 全局声明
 // ============================================================
 
-declare const axios: any;
-declare const logger: (msg: string) => void;
-declare const jsonwebtoken: any;
-declare const zipImage: (base64: string, size: number) => Promise<string>;
-declare const zipImageResolution: (base64: string, w: number, h: number) => Promise<string>;
-declare const mergeImages: (base64Arr: string[], maxSize?: string) => Promise<string>;
-declare const urlToBase64: (url: string) => Promise<string>;
-declare const pollTask: (fn: () => Promise<PollResult>, interval?: number, timeout?: number) => Promise<PollResult>;
-declare const createOpenAI: any;
-declare const createDeepSeek: any;
-declare const createZhipu: any;
-declare const createQwen: any;
-declare const createAnthropic: any;
-declare const createOpenAICompatible: any;
-declare const createXai: any;
-declare const createMinimax: any;
-declare const createGoogleGenerativeAI: any;
 declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
@@ -318,7 +304,8 @@ const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3
         body: JSON.stringify(modifiedBody),
       });
     },
-  }).chatModel(model.modelName);
+    // ⚠ Task 8 人工补的类型断言（重跑 vendor-to-module.cjs --force 会覆盖掉）：见 atlascloud.ts 同处说明。
+  } as any).chatModel(model.modelName);
 };
 
 const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<string> => {
@@ -666,12 +653,7 @@ const updateVendor = async (): Promise<string> => {
 // 导出
 // ============================================================
 
-exports.vendor = vendor;
-exports.textRequest = textRequest;
-exports.imageRequest = imageRequest;
-exports.videoRequest = videoRequest;
-exports.ttsRequest = ttsRequest;
-exports.checkForUpdates = checkForUpdates;
-exports.updateVendor = updateVendor;
 
-export {};
+
+
+export { vendor, textRequest, imageRequest, videoRequest, ttsRequest, checkForUpdates, updateVendor };

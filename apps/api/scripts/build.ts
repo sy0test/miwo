@@ -19,7 +19,8 @@ const external = [
   "undici",
   "@huggingface/transformers",
   "onnxruntime-node",
-  "vm2",
+  // ⚠ "vm2" 曾在这里（沙箱执行）。Phase 1c Task 8 删掉了那条代码通道与依赖 ⇒ 本条目一并删除：
+  //   留着它会让"仓库里还有 vm2"这件事看起来像有意为之（external 列表不驱动安装，但它是一份声明）。
   "sqlite3",
   "better-sqlite3",
   "sharp",

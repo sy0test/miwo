@@ -254,6 +254,64 @@ if (dockerfile) {
   if (!/COPY[^\n]*\.npmrc/.test(dockerfile)) {
     failures.push("deploy/Dockerfile 必须 COPY .npmrc：仓库把 enable-pre-post-scripts=true 放在那里，缺了它构建不跑 prebuild（router.ts 会陈旧）");
   }
+
+  /**
+   * 7b) `COPY <src>… <dest>` 的宿主机源**必须存在**（Phase 1c Task 8 新增）。
+   *
+   * ── 为什么必须是一条独立断言 ──
+   * Task 8 把供应商适配器从 `apps/api/data/vendor`（沙箱执行的资产）搬成编译期内置的
+   * `apps/api/src/vendors/*.ts`，于是 `COPY --from=build /app/apps/api/data/vendor ./apps/api/data/vendor`
+   * 变成了**指向已删除目录**的行。它的失败**不在本机**：开发机没有 Docker，`pnpm run build` 全绿、
+   * 所有单测全绿，而 `docker compose build` 会在 COPY 那一步以
+   * `failed to compute cache key: "/app/apps/api/data/vendor" not found` 直接失败 —— 也就是
+   * "只在 CI/生产才炸"。这条断言把那个失败**搬到本机**（同一类判据，见 F2/F5 的动机）。
+   *
+   * ── 判据的边界（刻意收窄，避免假红）──
+   *   · 只看 `COPY`，跳过 `COPY --from=<stage>`（源在**镜像**里，本机文件系统无法证明它存在）；
+   *   · 支持反斜杠续行（`COPY a \\\n b dest`）；
+   *   · 每个源 token 必须对应**仓库相对路径**上的一个真实文件/目录（相对 Dockerfile 的 build context，
+   *     即仓库根，与 `api.build.context: ..` 同口径）；
+   *   · `--chown=`/`--chmod=` 之类的 flag 跳过；`["json","form"]` 形态顶层不做（本仓库用的是 shell 形态）。
+   */
+  {
+    // 先拼**逻辑行**：把 `\` 续行接起来（否则带续行的 COPY 只会被看到第一段）
+    const logicalLines = [];
+    for (const raw of dockerfile.split(/\r?\n/)) {
+      if (/\\\s*$/.test(raw) && logicalLines.length && logicalLines[logicalLines.length - 1].continued) {
+        logicalLines[logicalLines.length - 1].text += " " + raw.replace(/\\\s*$/, "");
+        logicalLines[logicalLines.length - 1].continued = /\\\s*$/.test(raw);
+      } else {
+        logicalLines.push({ text: raw, continued: /\\\s*$/.test(raw) });
+      }
+    }
+    let checkedSources = 0;
+    for (const { text } of logicalLines) {
+      const m = text.match(/^\s*COPY\s+(.*)$/i);
+      if (!m) continue;
+      if (/--from=/i.test(m[1])) continue; // 源在镜像里，本机不可判
+      const tokens = m[1]
+        .split(/\s+/)
+        .filter((t) => t && !t.startsWith("--"));
+      if (tokens.length < 2) {
+        failures.push(`deploy/Dockerfile 的 \`${text.trim()}\` 不是合法的 COPY（至少要一个源与一个目标）`);
+        continue;
+      }
+      const sources = tokens.slice(0, -1);
+      for (const src of sources) {
+        checkedSources += 1;
+        const abs = path.join(ROOT, src);
+        if (!fs.existsSync(abs)) {
+          failures.push(
+            `deploy/Dockerfile 的 COPY 源不存在：${src}（宿主机上 ${abs} 找不到）。` +
+              `指向已删除的目录会让 \`docker compose build\` 在 COPY 步失败 —— 而本机没有 Docker，` +
+              `这条**只会在容器里暴露**。请同步删掉该行，或改指真实路径。`,
+          );
+        }
+      }
+    }
+    // 自证观测（Ruling 243 口径）：一个 COPY 源都没解析到 ⇒ 说明解析器失效，不许当"干净"
+    if (checkedSources === 0) failures.push("deploy/Dockerfile 的 COPY 源解析没跑起来（0 个源被检查）—— 本断言等于不存在，请核对解析规则");
+  }
 }
 if (api && !api.build) {
   failures.push("deploy/docker-compose.yml 的 api 服务缺少 build:（否则 docker compose build 没有构建对象，up 会去 registry 拉不存在的 miwo-api 镜像）");

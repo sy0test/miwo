@@ -1,3 +1,6 @@
+// ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
+//   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
 /**
  * Toonflow官方中转平台 供应商适配
  * @version 3.0
@@ -100,23 +103,6 @@ interface PollResult {
 // 全局声明
 // ============================================================
 
-declare const axios: any;
-declare const logger: (msg: string) => void;
-declare const jsonwebtoken: any;
-declare const zipImage: (base64: string, size: number) => Promise<string>;
-declare const zipImageResolution: (base64: string, w: number, h: number) => Promise<string>;
-declare const mergeImages: (base64Arr: string[], maxSize?: string) => Promise<string>;
-declare const urlToBase64: (url: string) => Promise<string>;
-declare const pollTask: (fn: () => Promise<PollResult>, interval?: number, timeout?: number) => Promise<PollResult>;
-declare const createOpenAI: any;
-declare const createDeepSeek: any;
-declare const createZhipu: any;
-declare const createQwen: any;
-declare const createAnthropic: any;
-declare const createOpenAICompatible: any;
-declare const createXai: any;
-declare const createMinimax: any;
-declare const createGoogleGenerativeAI: any;
 declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
@@ -264,11 +250,14 @@ const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3
       extraBody.reasoning_effort = effortMap[thinkLevel];
     }
 
+    // ⚠ Task 8 人工补的类型断言（重跑 vendor-to-module.cjs --force 会覆盖掉）：`extraBody` 不在
+    //   `DeepSeekProviderSettings` 的类型里（沙箱形态下 `createDeepSeek` 是 `declare const … : any`）。
+    //   运行时照旧透传（实测不抛错）⇒ `as any` 保留行为。
     return createDeepSeek({
       baseURL: vendor.inputValues.baseUrl,
       apiKey,
       extraBody,
-    }).chat(model.modelName);
+    } as any).chat(model.modelName);
   }
   return createOpenAI({ baseURL: vendor.inputValues.baseUrl, apiKey }).chat(model.modelName);
 };
@@ -740,12 +729,7 @@ const updateVendor = async (): Promise<string> => {
 // 导出
 // ============================================================
 
-exports.vendor = vendor;
-exports.textRequest = textRequest;
-exports.imageRequest = imageRequest;
-exports.videoRequest = videoRequest;
-exports.ttsRequest = ttsRequest;
-exports.checkForUpdates = checkForUpdates;
-exports.updateVendor = updateVendor;
 
-export {};
+
+
+export { vendor, textRequest, imageRequest, videoRequest, ttsRequest, checkForUpdates, updateVendor };

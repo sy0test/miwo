@@ -100,7 +100,7 @@ for (const p of [
   "apps/api/scripts",
   "apps/api/data/skills",
   "apps/api/data/modelPrompt",
-  "apps/api/data/vendor",
+  "apps/api/src/vendors",
   "apps/web/package.json",
   "apps/web/src/main.ts",
   "apps/web/index.html",
@@ -130,6 +130,10 @@ for (const p of [
   //    嵌套 .git 只在"误把整仓拷进来"时出现，属"放错位置就一定错"，归属必须是存在性断言。
   "apps/api/.git",
   "apps/web/.git",
+  // ⚠ Phase 1c Task 8：适配器从 `data/vendor/*.ts`（沙箱执行的资产）改成编译期内置的
+  //    `src/vendors/*.ts` ⇒ 这个目录**整体删除**。它是"运行期加载并执行用户代码"的入口，
+  //    留着它（或让它在某次合并里回来）等于把 Tier 0 #1 那条通道恢复了一半。
+  "apps/api/data/vendor",
 ]) mustNotExist(p);
 
 // ---- 不得被提交（运行/构建产物；查索引，不查磁盘）----
@@ -167,7 +171,12 @@ mustAtLeast("apps/api/src 下 .ts 文件数（git 跟踪）", countTrackedFiles(
 // ⚠ 必须用 git 跟踪计数：磁盘上是 434，但那 2 个多出来的是 vite 插件生成、被 .gitignore 忽略的
 //    src/types/{auto-imports,components}.d.ts，全新克隆只有 432 个 → 用磁盘计数会在 CI 上假失败。
 mustAtLeast("apps/web/src 下文件数（git 跟踪）", countTrackedFiles("apps/web/src"), 432);
-mustEqual("apps/api/data/vendor 下 .ts 适配器数", countFiles(path.join(ROOT, "apps/api/data/vendor"), (p) => p.endsWith(".ts")), 13);
+// ⚠ Phase 1c Task 8：这条断言原来数的是 `data/vendor` 下的 13 个沙箱适配器（它已整体删除）。
+//   口径换成"**编译期内置**的适配器 ≥13"：数的是 `src/vendors/*.ts`，用 **git 跟踪**计数
+//   （与上面 `src` 那两条同口径 —— clone 不变异性）。为什么必须换成 `>=`：13 个适配器 + 
+//   `runtime.ts` + `index.ts` = 15 个 `.ts`，其中 2 个是"接线"而不是适配器 ⇒ 用 `>=13` 表达
+//   "适配器一个都不能少"，同时不把接线文件算成适配器。
+mustAtLeast("apps/api/src/vendors 下 .ts 文件数（git 跟踪）", countTrackedFiles("apps/api/src/vendors", (p) => p.endsWith(".ts")), 13);
 
 /**
  * 交付物体积（MB）：`apps/api` 下**排除 `UNCOMMITTABLE`**（= 本 gate 自己已声明"本地可有、不得提交"

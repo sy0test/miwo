@@ -81,9 +81,11 @@ describe("generate-router", () => {
     //    即 +6 条 `/api/auth/*`；`/api/login/login` **保留**，所以不是 177-1+6）。
     //    ⚠【Phase 1c Task 4】183 → **180**：删掉 3 个危险接口（`/api/test/test`、
     //    `/api/other/deleteAllData`、`/api/setting/fileManagement/openFolder`）。
+    //    ⚠【Phase 1c Task 9】180 → **177**：再删 3 个"提交/执行代码"的接口
+    //    （`vendorConfig/{addVendor,updateCode,getCodeByLink}`，spec Tier 0 #2/#10）。
     //    它们是"路由表没被静默清空"的外部真值，改数字不是放宽判据（两侧仍然逐项相等）。
-    expect(mounts.length).toBe(180);
-    expect(routeFiles.length).toBe(180);
+    expect(mounts.length).toBe(177);
+    expect(routeFiles.length).toBe(177);
   });
 
   it("router.ts 的 hash 头格式正确，且与路由清单重算结果一致", () => {
@@ -96,7 +98,7 @@ describe("generate-router", () => {
     const pairRe = /app\.use\("\/api(\/[^"]*)", (route\d+)\)/g;
     const pairs: Array<{ routePath: string; varName: string }> = [];
     for (const mm of text.matchAll(pairRe)) pairs.push({ routePath: mm[1], varName: mm[2] });
-    expect(pairs.length).toBe(180);
+    expect(pairs.length).toBe(177);
     const hash = crypto.createHash("md5").update(JSON.stringify(pairs)).digest("hex");
     expect(m![1]).toBe(hash);
   });

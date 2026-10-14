@@ -1,19 +1,27 @@
 /**
  * 003_vendor_asset_sync —— 适配器文件的版本对账（**只报告，不写盘**）。
  *
- * 背景（Phase 0 的两条 deferred，本计划明确要求并入 Phase 1a）：
+ * ── Phase 1c Task 8 之后它的处境（重要，别照旧注释理解）──
+ * 本迁移的**两个输入资产都已删除**：`src/lib/vendor.json`（模板快照，唯一消费者 `fixDB.ts` 已随
+ * Task 5 删除）与 `data/vendor/*.ts`（适配器已改成编译期内置的 `src/vendors/*.ts`）。
+ * 于是：
+ *   · `up` 走 **missingJson / missingDir 分支**：打一行"找不到 …，跳过对账"然后返回
+ *     （**刻意不抛** —— 迁移纪律：一个已被删除的可选资产不该让启动失败）；
+ *   · 对账本体 `reconcileVendorAssets()` 仍保留并且**仍被单测覆盖**（临时目录造语镜）：它证明
+ *     "版本漂移 / 含 CR / 文件缺失"三种情况都会被如实报出来。
+ *   · **不删这个迁移**：它已经写进 `knex_migrations` 记账表，删掉会让"已应用列表"与代码对不上
+ *     （`verify-phase0` 的 `MIGRATION_ALLOWLIST` 也指着它）。
+ *
+ * ── 原始背景（Phase 0 的两条 deferred）──
  *   - `src/lib/vendor.json` 里存的适配器源码是**带 `\r\n` 转义的字符串**。
  *     旧 `fixDB.ts:275-286` 会在"适配器版本 < 阈值"时把模板 `writeCode` 回 `data/vendor/*.ts`，
  *     于是把 CR 字节写进仓库文件 → `tools/check-eol.cjs` 报红而 `git status` 仍干净（假红灯）。
- *     当前恰好不触发（版本相等、条件是 `<`），但这是**随时会被触发**的一颗雷。
  *   - `vendor.json` 的 `miwo.ts` 模板与 `data/vendor/miwo.ts` 有**既有漂移**。
  *
  * 本迁移的处置：**不自动重写任何文件**。
- * 启动期自动改仓库文件本身就是错的（spec §5.2 的迁移纪律："禁止在应用启动路径上执行 DDL/写盘"），
- * 而且它带来的收益（"版本旧了就刷成模板"）可以由"人看一眼对账结果再决定"完全覆盖。
- *
- * 于是：up = 读 vendor.json 的 13 个模板 + 读 data/vendor/*.ts 的实际 version，打印差异；down = no-op。
- * 这样 P2 的触发面被**构造性消除**：没有任何代码路径会在启动时写 `data/vendor/*.ts` 了。
+ * 启动期自动改仓库文件本身就是错的（spec §5.2 的迁移纪律："禁止在应用启动路径上执行 DDL/写盘"）。
+ * 这样 P2 的触发面被**构造性消除**：没有任何代码路径会在启动时写 `data/vendor/*.ts` 了
+ * （Task 8/9 之后连 `data/vendor` 目录都不存在）。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -91,6 +99,8 @@ export default {
 
   async up(_knex: Knex): Promise<void> {
     const { rows, jsonPath, dir, missingJson, missingDir } = reconcileVendorAssets();
+    // 日志里**必须带路径**：模板源缺失/目录缺失都会走"跳过"分支，不带路径的话
+    // 事后完全无法判断它当时读的是哪个文件（Task 8 迁移后这是常态分支，实测踩过）。
     if (missingJson) {
       console.log(`[vendor-sync] 找不到 ${jsonPath}，跳过对账`);
       return;

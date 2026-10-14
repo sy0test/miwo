@@ -1,3 +1,6 @@
+// ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
+//   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板 - MeToken AI
  * @version 1.0
@@ -92,15 +95,29 @@ interface PollResult {
   error?: string;
 }
 
+// ⚠ Phase 1c Task 8 人工补的两个接口（重跑 vendor-to-module.cjs --force 会覆盖掉）：
+//   本适配器只接视频生成（见文件头「仅接入视频生成」），它的 `declare const exports` 却引用了
+//   `ImageConfig` / `TTSConfig`。沙箱形态下整个 `data/vendor/` 被 tsconfig 排除
+//   （`"exclude": ["data/**/*.ts"]`）⇒ `tsc` 从来没看过这个文件，两处引用不上报（latent TS2304）。
+//   搬进 `src/` 后变得可见，于是如实报红。选择"补类型定义"而不是"删掉声明里的引用"：
+//   `o_vendorConfig.models` 的联合类型里本来就有 `TTSModel` / `ImageModel`，留着引用才与真实形状一致。
+//   这两个接口**不被任何运行时分支使用**（`videoRequest` 是唯一的实现），只影响类型。
+interface ImageConfig {
+  prompt: string;
+  imageBase64: string[];
+  size: "1K" | "2K" | "4K";
+  aspectRatio: `${number}:${number}`;
+}
+
+interface TTSConfig {
+  text: string;
+  voice: string;
+}
+
 // ============================================================
 // 全局声明
 // ============================================================
 
-declare const axios: any;
-declare const logger: (msg: string) => void;
-declare const urlToBase64: (url: string) => Promise<string>;
-declare const pollTask: (fn: () => Promise<PollResult>, interval?: number, timeout?: number) => Promise<PollResult>;
-declare const FormData: any;
 declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
@@ -356,12 +373,7 @@ const updateVendor = async (): Promise<string> => {
 // 导出
 // ============================================================
 
-exports.vendor = vendor;
-exports.textRequest = textRequest;
-exports.imageRequest = imageRequest;
-exports.videoRequest = videoRequest;
-exports.ttsRequest = ttsRequest;
-exports.checkForUpdates = checkForUpdates;
-exports.updateVendor = updateVendor;
 
-export {};
+
+
+export { vendor, textRequest, imageRequest, videoRequest, ttsRequest, checkForUpdates, updateVendor };

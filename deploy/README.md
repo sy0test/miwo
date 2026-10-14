@@ -57,9 +57,11 @@ pnpm --filter @miwo/api build
 # 4) 构建前端 —— ★ 不做这步，nginx 的 `/` 没有任何内容（/api、/oss 不受影响）
 pnpm --filter @miwo/web build        # 产出 apps/web/dist（不入库，见 .gitignore）
 
-# 5) 数据目录：{vendor,skills,modelPrompt} 必须真实存在，否则供应商/技能功能会**静默失效**
+# 5) 数据目录：{skills,modelPrompt} 必须真实存在，否则技能/提示词功能会**静默失效**
+#    ⚠ Phase 1c Task 8 起**不再需要 vendor/**：供应商适配器是编译期内置的（apps/api/src/vendors/*.ts），
+#      已经随 `pnpm --filter @miwo/api build` 打进 apps/api/data/serve/app.js。
 install -d -o miwo -g miwo /var/lib/miwo/data
-cp -a apps/api/data/vendor apps/api/data/skills apps/api/data/modelPrompt /var/lib/miwo/data/
+cp -a apps/api/data/skills apps/api/data/modelPrompt /var/lib/miwo/data/
 
 # 6) 环境变量（含 JWT 密钥，权限收紧）
 install -d -m 700 /etc/miwo
@@ -106,8 +108,9 @@ cp deploy/.env.example deploy/.env        # 填 MIWO_JWT_SECRET / MIWO_PUBLIC_BA
 # 4) 构建并启动（mysql + api；api 用 host 网络 → 绑宿主机 127.0.0.1:<MIWO_PORT>）
 cd deploy && docker compose build && docker compose up -d
 
-# 5) ★ 首次必须把运行时素材播种进 miwo-data 卷（卷为空时 vendor/skills/modelPrompt 都不存在，
-#    应用照常启动但供应商/技能会静默失效）
+# 5) ★ 首次必须把运行时素材播种进 miwo-data 卷（卷为空时 skills/modelPrompt 都不存在，
+#    应用照常启动但技能/提示词会静默失效）
+#    ⚠ Phase 1c Task 8：供应商适配器已编译期内置（打进 app.js），**没有** vendor/ 要播种。
 docker compose run --rm --no-deps --entrypoint sh api \
   -c 'cp -a /app/apps/api/data/. "$MIWO_DATA_DIR"/'
 

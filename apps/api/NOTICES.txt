@@ -190,6 +190,12 @@ Repository: https://github.com/dagrejs/graphlib
 
 -----------------------------
 
+Name: helmet
+License: MIT
+Repository: https://github.com/helmetjs/helmet
+
+-----------------------------
+
 Name: is-path-inside
 License: MIT
 Repository: https://github.com/sindresorhus/is-path-inside
@@ -280,12 +286,6 @@ Repository: https://github.com/TryGhost/node-sqlite3
 
 -----------------------------
 
-Name: sucrase
-License: MIT
-Repository: https://github.com/alangpierce/sucrase
-
------------------------------
-
 Name: tsx
 License: MIT
 Repository: https://github.com/privatenumber/tsx
@@ -319,12 +319,6 @@ Repository: https://github.com/MiniMax-AI/vercel-minimax-ai-provider
 Name: vitest
 License: MIT
 Repository: https://github.com/vitest-dev/vitest
-
------------------------------
-
-Name: vm2
-License: MIT
-Repository: https://github.com/patriksimek/vm2
 
 -----------------------------
 

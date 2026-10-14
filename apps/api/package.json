@@ -27,8 +27,7 @@
     "db:import": "node scripts/import-mysql.cjs",
     "db:compare": "node scripts/compare-db.cjs",
     "debug:ai": "npx @ai-sdk/devtools",
-    "license": "node scripts/license.ts",
-    "vendor2json": "node scripts/vendor2json.ts"
+    "license": "node scripts/license.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.35",
@@ -67,11 +66,9 @@
     "sharp": "^0.34.5",
     "socket.io": "^4.8.3",
     "sqlite3": "^6.0.1",
-    "sucrase": "^3.35.1",
     "undici": "^7",
     "uuid": "^13.0.0",
     "vercel-minimax-ai-provider": "^0.0.2",
-    "vm2": "^3.10.5",
     "zhipu-ai-provider": "^0.2.2",
     "zod": "^4.3.5"
   },

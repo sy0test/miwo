@@ -41,7 +41,7 @@
  *      toonflow-upstream）时单独归类，给出更精确的报错。
  *   2. `toonflow://`（Electron 自定义协议）本阶段**不动**（Phase 1e 处理），
  *      但必须仍然存在 —— 共 0 处说明被误删了。
- *   3. 供应商数据 id 三方一致（`apps/api/data/vendor/<id>.ts` ↔ 三个源码引用文件），
+ *   3. 供应商数据 id 三方一致（`apps/api/src/vendors/<id>.ts` ↔ 三个源码引用文件），
  *      以及两个包名（`@miwo/api`、`@miwo/web`）。
  *
  * 用法：node tools/check-brand.cjs
@@ -163,25 +163,37 @@ const EXEMPTIONS = [
   },
 
   // ── 供应商适配模板资产（上游原样继承的第三方集成资产） ──
+  // ⚠ Phase 1c Task 8：这 13 个适配器**搬了家** —— `apps/api/data/vendor/*.ts`（沙箱执行的资产）
+  //   → `apps/api/src/vendors/*.ts`（编译期内置的模块）。豁免的 **scope 必须跟着搬**：本门禁的
+  //   护栏 B 会检查"每条豁免真实命中 ≥min 处"，scope 若还指着已删除的目录会立刻报"豁免失效"。
+  //   搬家后的 scope 覆盖到 `runtime.ts` / `index.ts`（它们自己不含品牌 token ⇒ 不进 hits 计数，
+  //   min 仍按"适配器里的 Toonflow 处数"给）。
   {
-    scope: "apps/api/data/vendor/*.ts",
+    scope: "apps/api/src/vendors/*.ts",
     match: { re: "toonflow", flags: "gi" },
     min: 37,
     reason:
-      "13 个第三方 AI 供应商适配模板（atlascloud/deepseek/grsai/klingai/metoken/minimax/miwo/newapi/null/openai/vidu/volcengine/volcengineSd2）。其中的 Toonflow 有两个来源，都合法：(1) 模板署名与文件头「Toonflow AI供应商模板」指上游项目；(2) miwo.ts 指向**真实第三方中转服务**（baseUrl https://api.toonflow.net/v1，Task 12 明令不得改，改了功能就坏）；vidu.ts 的 devtools 提示、volcengineSd2.ts 的 author 是小写形态，同属此类。改动需同步 data/vendor/*.ts ↔ apps/api/src/lib/vendor.json ↔ apps/web/src/lib/vendorTemplate.ts ↔ 库内已落库的模板，属 Phase 1c 品牌/数据迁移范畴。",
-  },
-  {
-    scope: "apps/api/src/lib/vendor.json",
-    match: { re: "toonflow", flags: "gi" },
-    min: 38,
-    reason:
-      "上面 13 个适配器模板的**入库快照**（vendor2json 的产物，逐字包含模板源码），与 data/vendor/*.ts 必须保持一致；单独改一边会让模板源与快照分叉。",
+      "13 个第三方 AI 供应商适配模板（atlascloud/deepseek/grsai/klingai/metoken/minimax/miwo/newapi/null/openai/vidu/volcengine/volcengineSd2）。其中的 Toonflow 有两个来源，都合法：(1) 模板署名与文件头「Toonflow AI供应商模板」指上游项目；(2) miwo.ts 指向**真实第三方中转服务**（baseUrl https://api.toonflow.net/v1，Task 12 明令不得改，改了功能就坏）；vidu.ts 的 devtools 提示、volcengineSd2.ts 的 author 是小写形态，同属此类。⚠ Phase 1c Task 8 前它们是 `apps/api/data/vendor/*.ts`（同 min 37）；Task 9 后仓库里**不再有** `src/lib/vendor.json` 快照与 vendor2json 工具，改动的同步面只剩「适配器 ↔ 前端 vendorTemplate.ts ↔ 库内已落库的模板」，属 Phase 1c 品牌/数据迁移范畴。",
   },
   {
     scope: "apps/web/src/lib/vendorTemplate.ts",
     match: { re: "toonflow", flags: "gi" },
     min: 3,
-    reason: "前端内置的供应商适配模板（与 data/vendor/null.ts 同源），同上。",
+    reason: "前端内置的供应商适配模板（与内置适配器同源），同上；`apps/web/**` 本任务硬约束零改动。",
+  },
+  {
+    scope: "apps/api/tests/vendors-registry.test.ts",
+    match: { re: "toonflow", flags: "gi" },
+    min: 3,
+    reason:
+      "Phase 1c Task 8 的回归锚点用例：必须写出**真实第三方中转服务地址** `https://api.toonflow.net/v1`（以及描述里的 `https://api.toonflow.net/`）作为断言字面量 —— 那是内置适配器 `miwo.ts` 指向的第三方服务（Task 12 明令不得改），不是本项目品牌文案。写成变量/拼接就等于把「锚点」变成「可以被悄悄改掉的东西」。",
+  },
+  {
+    scope: "apps/api/tests/vendor-secrets.test.ts",
+    match: { re: "toonflow", flags: "gi" },
+    min: 4,
+    reason:
+      "Phase 1c Task 9 的凭据用例：种进 `o_vendorConfig.inputValues` 的 **baseUrl 必须写成真实值** `https://api.toonflow.net/v1`（就是 miwo 适配器的默认 baseUrl 形状），否则'非凭据键要原样回传'这条断言测的不是真实形状；同一个字面量在 A1/A2/C2 的夹具里各出现一次，共 4 处。",
   },
 
   // ── 机器标识（改了会破坏接口/构建/许可证扫描） ──
@@ -255,7 +267,7 @@ const EXEMPTIONS = [
     match: { re: "toonflow", flags: "gi" },
     min: 2,
     reason:
-      "供应商数据 id 迁移工具本身必须包含**旧 id**（`const OLD_ID = \"toonflow\"`）才能把 `data/vendor/toonflow.ts` 迁成 `miwo.ts`；删掉它迁移就失效。",
+      "供应商数据 id 迁移工具本身必须包含**旧 id**（`const OLD_ID = \"toonflow\"`）才能把 `data/vendor/toonflow.ts` 迁成 `miwo.ts`；删掉它迁移就失效。⚠ Phase 1c Task 8 后那个目录已不存在，本工具只用于**历史复现**（它自己的文件改名步骤会打印'找不到 … 跳过'；DB 侧的 `mergeVendorId` 才是现在仍有效的那半）。",
   },
   {
     scope: "apps/api/src/db/legacy/vendor-merge.ts",
@@ -278,7 +290,7 @@ const EXEMPTIONS = [
     match: { re: "\"(?:fillKeyHeader|keyValid|toonflowNotFound)\"\\s*:\\s*\"[^\"]*\"" },
     min: 23,
     reason:
-      "这三条 i18n 文案（填入官方 KEY / KEY 有效 / 官方中转站不存在）说的是**Toonflow 官方中转平台**——即 data/vendor/miwo.ts 指向的真实第三方中转服务（https://api.toonflow.net/v1）。Task 12 明令该服务的名字不得改。其中 `toonflowNotFound` 本身还是前端取值用的**键名**（改了文案就取不到）。",
+      "这三条 i18n 文案（填入官方 KEY / KEY 有效 / 官方中转站不存在）说的是**Toonflow 官方中转平台**——即内置适配器 `apps/api/src/vendors/miwo.ts` 指向的真实第三方中转服务（https://api.toonflow.net/v1）。Task 12 明令该服务的名字不得改。其中 `toonflowNotFound` 本身还是前端取值用的**键名**（改了文案就取不到）。",
   },
   {
     scope: "apps/web/src/locales/language/*.json",
@@ -491,8 +503,10 @@ if (uncoveredLegacy.length) {
 if (protocolTotal === 0) failures.push(`toonflow:// 共 0 处：Phase 0 不应删除它（Phase 1e 处理），请确认没有被误改`);
 
 // ── 规则 3：供应商数据 id 的三方一致性 ──
-// Task 5（改名）之后、Task 6（数据 id 迁移）之前必须是 `toonflow`；Task 6 之后必须是 `miwo`。
-// 两条都接受，但适配器文件名与上面三个源码引用文件必须一致，且不能既无也无。
+// ⚠ Phase 1c Task 8：适配器目录从 `apps/api/data/vendor/` 搬到 **`apps/api/src/vendors/`**
+//   （编译期内置）。判据本身不变（文件名必须恰好是候选之一，且三个源码引用文件里必须含该 id），
+//   只换目录 —— 旧目录已整体删除，`fs.existsSync` 会永远找不到任何 id ⇒ 这条规则会以
+//   "实际找到: 无" 报红（这正是它应该做的事：搬家不改门禁的话，门禁就静默失效了）。
 const ID_CANDIDATES = ["toonflow", "miwo"];
 const idRefFiles = [
   "apps/api/src/routes/setting/agentDeploy/agentSetKey.ts",
@@ -503,7 +517,7 @@ const idRefFiles = [
 ];
 const foundIds = new Set();
 for (const id of ID_CANDIDATES) {
-  if (fs.existsSync(path.join(ROOT, `apps/api/data/vendor/${id}.ts`))) foundIds.add(id);
+  if (fs.existsSync(path.join(ROOT, `apps/api/src/vendors/${id}.ts`))) foundIds.add(id);
 }
 if (foundIds.size !== 1) {
   failures.push(`供应商适配器文件名必须恰好是 ${ID_CANDIDATES.join(" 或 ")} 之一，实际找到: ${[...foundIds].join(", ") || "无"}`);
@@ -515,7 +529,7 @@ if (foundIds.size !== 1) {
       failures.push(`缺文件: ${rel}`);
       continue;
     }
-    if (!fs.readFileSync(p, "utf8").includes(id)) failures.push(`${rel} 里找不到供应商 id "${id}"（与 data/vendor/${id}.ts 不一致）`);
+    if (!fs.readFileSync(p, "utf8").includes(id)) failures.push(`${rel} 里找不到供应商 id "${id}"（与 apps/api/src/vendors/${id}.ts 不一致）`);
   }
 }
 

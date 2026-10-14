@@ -1,3 +1,6 @@
+// ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
+//   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
 //如需遥测AI请使用在toonflow安装目录运行npx @ai-sdk/devtools （要求在其他设置中打开遥测功能，且toonflow有权限在安装目录创建.devtools文件夹）
 // ==================== 类型定义 ====================
 // 文本模型
@@ -63,31 +66,10 @@ interface VendorConfig {
 // ==================== 全局工具函数 ====================
 //Axios实例
 //压缩图片大小(1MB = 1 * 1024 * 1024)
-declare const zipImage: (completeBase64: string, size: number) => Promise<string>;
 //压缩图片分辨率
-declare const zipImageResolution: (completeBase64: string, width: number, height: number) => Promise<string>;
 //多图拼接乘单图 maxSize  最大输出大小，默认为 10mb
-declare const mergeImages: (completeBase64: string[], maxSize?: string) => Promise<string>;
 //Url转Base64
-declare const urlToBase64: (url: string) => Promise<string>;
 //轮询函数
-declare const pollTask: (
-  fn: () => Promise<{ completed: boolean; data?: string; error?: string }>,
-  interval?: number,
-  timeout?: number,
-) => Promise<{ completed: boolean; data?: string; error?: string }>;
-declare const axios: any;
-declare const createOpenAI: any;
-declare const createDeepSeek: any;
-declare const createZhipu: any;
-declare const createQwen: any;
-declare const createAnthropic: any;
-declare const createOpenAICompatible: any;
-declare const createXai: any;
-declare const createMinimax: any;
-declare const createGoogleGenerativeAI: any;
-declare const logger: (logstring: string) => void;
-declare const jsonwebtoken: any;
 // ==================== 供应商数据 ====================
 const vendor: VendorConfig = {
   id: "vidu",
@@ -190,7 +172,6 @@ const vendor: VendorConfig = {
     },
   ],
 };
-exports.vendor = vendor;
 
 // ==================== 适配器函数 ====================
 
@@ -198,7 +179,6 @@ exports.vendor = vendor;
 const textRequest: (textModel: TextModel) => { url: string; model: string } = (textModel) => {
   throw new Error("当前供应商仅支持视频大模型，谢谢！");
 };
-exports.textRequest = textRequest;
 
 //图片请求函数
 interface ImageConfig {
@@ -253,7 +233,6 @@ const imageRequest = async (imageConfig: ImageConfig, imageModel: ImageModel) =>
   const list = JSON.parse(JSON.stringify(res.data));
   return list[0].url;
 };
-exports.imageRequest = imageRequest;
 
 interface VideoConfig {
   duration: number;
@@ -354,7 +333,6 @@ const videoRequest = async (videoConfig: VideoConfig, videoModel: VideoModel) =>
   const result = await checkTaskResult(taskId);
   return result.data;
 };
-exports.videoRequest = videoRequest;
 
 interface TTSConfig {
   text: string;
@@ -366,3 +344,6 @@ interface TTSConfig {
 const ttsRequest = async (ttsConfig: TTSConfig, ttsModel: TTSModel) => {
   throw new Error("Vidu 暂不支持语音合成（TTS）");
 };
+
+
+export { vendor, textRequest, imageRequest, videoRequest };

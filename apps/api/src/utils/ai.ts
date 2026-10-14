@@ -1,8 +1,8 @@
 import { generateText, streamText, wrapLanguageModel, stepCountIs, extractReasoningMiddleware } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
-import { transform } from "sucrase";
 import u from "@/utils";
+import { getVendorModule } from "@/vendors";
 
 type AiType =
   | "scriptAgent"
@@ -126,14 +126,18 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   const modelList = await u.vendor.getModelList(id);
   const selectedModel = modelList.find((i: any) => i.modelName == name);
   if (!selectedModel) throw new Error(`未找到模型 ${name} id=${id}`);
-  const code = u.vendor.getCode(id);
-  const jsCode = transform(code, { transforms: ["typescript"] }).code;
-  const running = u.vm(jsCode);
-  if (running.vendor) {
-    Object.assign(running.vendor.inputValues, JSON.parse(vendorConfigData.inputValues ?? "{}"));
-    running.vendor.models = modelList;
-  }
-  const fn = running[fnName];
+  // Phase 1c Task 8：适配器是**编译期内置**的模块（`src/vendors/index.ts` 的静态注册表），
+  // 不再"读 data/vendor/<id>.ts → sucrase 转译 → vm2 沙箱执行"。
+  // ⚠ 语义回归点：旧路径每次调用都重新执行一遍适配器代码，`vendor.inputValues` 是一份**新对象**；
+  //   内置化之后模块是**单例** —— 所以 `getVendorConfigFor`（两层浅拷贝）才是"被 DB 值覆盖过的
+  //   副本"，绝不能写 `Object.assign(mod.vendor.inputValues, …)`（那会把 A 用户的 key 留在模块上，
+  //   下一个用户/B 用户取到别人的凭据）。用例见 tests/vendors-registry.test.ts。
+  const mod = getVendorModule(id);
+  if (!mod) throw new Error(`供应商适配器不存在：${id}（内置适配器见 src/vendors/index.ts）`);
+  // `models` 是"模板 models + DB 手加 models"合并后的清单（旧路径也是在这里覆盖的）。
+  // 注：适配器的请求函数签名是 `fn(input, selectedModel)`，不接收 vendor 对象；
+  //     `vendor` 只在 `Ai.getModelInfo` 一类只读路径上被读，所以这里只取函数。
+  const fn = (mod as Record<string, any>)[fnName];
   if (!fn) throw new Error(`未找到供应商配置中的函数 ${fnName} id=${id}`);
   if (fnName == "textRequest")
     return (think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) => {

@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import u from "@/utils";
+import { listVendorIds } from "@/vendors";
 
 /**
  * 配置体检（只读）。
@@ -51,15 +52,17 @@ function countFiles(dir: string, ext?: string): number {
   return n;
 }
 
-/** `data/vendor/` 下可用的供应商模板 id（去扩展名） */
+/**
+ * **内置**的供应商适配器 id（Phase 1c Task 8 起）。
+ *
+ * ⚠ 改前这是 `readdirSync(u.getPath("vendor"))` —— 数**用户数据目录**里的 `.ts`。Task 8 把适配器
+ *   变成编译期内置的 `src/vendors/*.ts` 之后，数据目录里**没有**这个子目录了：再按目录数会永远
+ *   得 0，于是"每个 o_vendorConfig 行都是孤儿"的假告警会淹没真问题。所以这里改成读注册表
+ *   （`listVendorIds()`）—— 判据从"文件在不在"变成"**打包进产物的适配器有没有这个 id**"，
+ *   而这正是"模型调用会不会成功"的真实前提。
+ */
 export function listVendorTemplates(): string[] {
-  const dir = u.getPath("vendor");
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.toLowerCase().endsWith(".ts"))
-    .map((f) => f.replace(/\.ts$/i, ""))
-    .sort();
+  return [...listVendorIds()].sort();
 }
 
 export async function inspectConfig(db: any): Promise<ConfigHealthResult> {
@@ -68,7 +71,11 @@ export async function inspectConfig(db: any): Promise<ConfigHealthResult> {
   // ---------- 1. 文件类配置清单 ----------
   const files: ConfigHealthResult["files"] = {
     skills: countFiles(u.getPath("skills"), ".md"),
-    vendor: countFiles(u.getPath("vendor"), ".ts"),
+    // ⚠ Phase 1c Task 8 起适配器**不在数据目录里**：它们是编译期内置的 `src/vendors/*.ts`。
+    //   这里刻意**保留 `vendor` 这个键**（免登录摘要 `GET /api/other/configHealth?summary=1`
+    //   的消费者与 verify-phase0 都在读它），但值改成自证形状的 "builtin:<n>" —— 比"报 0 个"
+    //   诚实：旧的 `-1（目录不存在）` 会被读成"资产没装全"。
+    vendor: `builtin:${listVendorTemplates().length}`,
     modelPrompt: countFiles(u.getPath("modelPrompt"), ".md"),
     webFiles: countFiles(u.getPath("web")),
     serveApp: fs.existsSync(u.getPath(["serve", "app.js"])) ? 1 : 0,
@@ -92,7 +99,7 @@ export async function inspectConfig(db: any): Promise<ConfigHealthResult> {
         level: "error",
         where: `o_vendorConfig/${vid}`,
         message: `读取供应商「${vid}」的模型清单失败：${e?.message ?? e}`,
-        fix: "确认 data/vendor/" + vid + ".ts 存在且格式正确",
+        fix: "内置适配器清单见 src/vendors/index.ts（该 id 不在里面 ⇒ 它的配置行永远不会被用到）",
       });
     }
     modelsByVendor.set(vid, set);
@@ -148,7 +155,7 @@ export async function inspectConfig(db: any): Promise<ConfigHealthResult> {
       issues.push({
         level: "error",
         where: `o_agentDeploy/${key}`,
-        message: `指向的供应商「${vid}」没有适配器文件（data/vendor/${vid}.ts 不存在）。模型经 ${via} 解析`,
+        message: `指向的供应商「${vid}」没有内置适配器（src/vendors/${vid}.ts 不存在）。模型经 ${via} 解析`,
         fix: `改选一个存在的供应商：${[...vendorTemplates].join(", ")}`,
       });
       continue;
@@ -181,7 +188,7 @@ export async function inspectConfig(db: any): Promise<ConfigHealthResult> {
       issues.push({
         level: Number(v.enable) === 1 ? "warn" : "info",
         where: `o_vendorConfig/${vid}`,
-        message: `有配置行但没有适配器文件（data/vendor/${vid}.ts 不存在）${Number(v.enable) === 1 ? "，且处于启用状态" : ""}`,
+        message: `有配置行但没有内置适配器（src/vendors/${vid}.ts 不存在）${Number(v.enable) === 1 ? "，且处于启用状态" : ""}`,
         fix: `若不再使用可在「模型服务」里停用；这不影响当前 Agent 选用的供应商（现有适配器：${vendorTemplatesArr.join(", ")}）`,
       });
     }

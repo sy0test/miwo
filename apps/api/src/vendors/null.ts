@@ -1,3 +1,6 @@
+// ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
+//   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板
  * @version 2.0
@@ -100,23 +103,6 @@ interface PollResult {
 // 全局声明
 // ============================================================
 
-declare const axios: any; // HTTP请求库
-declare const logger: (msg: string) => void; // 日志函数
-declare const jsonwebtoken: any; // JWT处理库
-declare const zipImage: (base64: string, size: number) => Promise<string>; // 图片压缩函数，返回有头base64字符串
-declare const zipImageResolution: (base64: string, w: number, h: number) => Promise<string>; // 图片分辨率调整函数，返回有头base64字符串
-declare const mergeImages: (base64Arr: string[], maxSize?: string) => Promise<string>; // 图片合成函数，返回有头base64字符串
-declare const urlToBase64: (url: string) => Promise<string>; // URL转Base64函数，返回有头base64字符串
-declare const pollTask: (fn: () => Promise<PollResult>, interval?: number, timeout?: number) => Promise<PollResult>; // 轮询函数，fn为异步函数，interval为轮询间隔，timeout为超时时间，返回fn的结果
-declare const createOpenAI: any;
-declare const createDeepSeek: any;
-declare const createZhipu: any;
-declare const createQwen: any;
-declare const createAnthropic: any;
-declare const createOpenAICompatible: any;
-declare const createXai: any;
-declare const createMinimax: any;
-declare const createGoogleGenerativeAI: any;
 declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any; //文本模型
@@ -179,16 +165,8 @@ const updateVendor = async (): Promise<string> => {
 // 导出
 // ============================================================
 
-exports.vendor = vendor;
-exports.textRequest = textRequest;
-exports.imageRequest = imageRequest;
-exports.videoRequest = videoRequest;
-exports.ttsRequest = ttsRequest;
-exports.checkForUpdates = checkForUpdates;
-exports.updateVendor = updateVendor;
 
 // 这行代码用于确保当前文件被识别为模块，避免全局变量冲突
-export {};
 
 /**
  * ============================================================
@@ -332,3 +310,6 @@ export {};
  *   5. 仅实现用户需要的模型类型，未用到的函数保留空实现（return ""）。
  *   6. 生成完整可用的代码，确保无语法错误、无遗漏导出。
  */
+
+
+export { vendor, textRequest, imageRequest, videoRequest, ttsRequest, checkForUpdates, updateVendor };
