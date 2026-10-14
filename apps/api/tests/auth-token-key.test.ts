@@ -20,6 +20,16 @@
  *        that verify-phase0 only proves indirectly, through "the app boots and answers 200").
  *   (R2) DB has a tokenKey -> it wins: a token signed with THAT value is accepted, and a token
  *        signed with MIWO_JWT_SECRET is rejected. This is the side NOT covered before this file.
+ *   (R3, Phase 1c Task 3) DB has BOTH `o_setting.jwtSecret` (the NEW location introduced by the
+ *        auth rewrite) and `o_setting.tokenKey` (the legacy one) -> the new key wins over the
+ *        legacy one AND over the config fallback. Proves the "DB value first" semantic survived
+ *        the move to the new location, and pins the precedence order (new > legacy > config).
+ *
+ * ⚠ Token shapes: the middleware accepts BOTH the modern shape ({uid,role,tv,typ}, minted by
+ *   /api/auth/login) and the legacy {id,name} shape (Phase 1b fixtures sign this way:
+ *   scripts/verify-phase1b.cjs, ops-endpoints-auth.test.ts, socket-tenant.test.ts). These cases
+ *   sign the LEGACY shape on purpose - the point under test is *which secret verifies*, not the
+ *   claim set (the modern shape is covered by tests/auth-service.test.ts + tests/auth-http-e2e.test.ts).
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -40,6 +50,8 @@ afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 /** Arbitrary but >= 32 bytes: config.ts fail-fast rejects anything shorter. */
 const CONFIG_SECRET = "auth-priority-test-config-secret-32b!!";
 const DB_SECRET = "auth-priority-test-db-token-key-32bytes";
+/** Phase 1c Task 3 的新位置：`o_setting.jwtSecret`（Task 1 把 `tokenKey` 从库里删掉后的落点）。 */
+const NEW_SECRET = "auth-priority-test-new-jwt-secret-32b!";
 
 const READY_TIMEOUT_MS = 90000;
 const CAPTURE_TAIL = 1200;
@@ -220,6 +232,36 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
       const dbSigned = await get(`${base}${GUARDED}?token=${sign(DB_SECRET)}`);
       expect(dbSigned.status, `库里的 tokenKey 应通过：${dbSigned.body.slice(0, 200)}`).not.toBe(401);
       expect(dbSigned.status).not.toBe(444);
+    } finally {
+      await stopChild(srv.child);
+    }
+  }, 180000);
+
+  it("R3：新位置 o_setting.jwtSecret 优先于旧 tokenKey、也优先于配置密钥", async () => {
+    const srv = await startServer();
+    try {
+      const db = openDb(srv.dataDir, "r3");
+      try {
+        // 两个键**同时**存在：判据是"新位置赢"，而不是"随便哪个库值都行"
+        await db("o_setting").insert({ key: "jwtSecret", value: NEW_SECRET });
+        await db("o_setting").insert({ key: "tokenKey", value: DB_SECRET });
+        expect((await db("o_setting").where("key", "jwtSecret").first()).value).toBe(NEW_SECRET);
+        expect((await db("o_setting").where("key", "tokenKey").first()).value).toBe(DB_SECRET);
+      } finally {
+        await db.destroy();
+      }
+
+      const base = `http://127.0.0.1:${srv.port}`;
+      // 判别力前置①：有库值时**不再**接受配置密钥
+      const configSigned = await get(`${base}${GUARDED}?token=${sign(CONFIG_SECRET)}`);
+      expect(configSigned.status, `有库值就不该用配置密钥：${configSigned.body.slice(0, 120)}`).toBe(401);
+      // 判别力前置②：旧键也要被新键压过去（顺序是 新 > 旧 > 配置）
+      const legacySigned = await get(`${base}${GUARDED}?token=${sign(DB_SECRET)}`);
+      expect(legacySigned.status, `新键存在时旧键不该再生效：${legacySigned.body.slice(0, 120)}`).toBe(401);
+
+      const newSigned = await get(`${base}${GUARDED}?token=${sign(NEW_SECRET)}`);
+      expect(newSigned.status, `新位置的密钥应通过：${newSigned.body.slice(0, 200)}`).not.toBe(401);
+      expect(newSigned.status).not.toBe(444);
     } finally {
       await stopChild(srv.child);
     }

@@ -18,31 +18,41 @@
  *
  * ⚠ 密钥优先级与 HTTP 中间件**逐字对齐**（Ruling 220 #3 的裁定）：库值优先、
  *    `config.jwtSecret` 兜底（`config.ts` 的模块级 fail-fast ⇒ 兜底恒非空）、都拿不到才拒连。
- *    连接期读 `o_setting` 继续走 `u.db`（platform 表读**无 ctx 也放行**），
- *    **不**新增第 8 个 `systemDb` 使用者（Ruling 220 #4）。
+ *    Phase 1c Task 3 起这条链抽成 `@/auth/secret` 的 `resolveJwtSecret()`（**唯一实现**，
+ *    HTTP 侧与这里共用；Task 1 把 `tokenKey` 行从 `o_setting` 删掉后新增了 `o_setting.jwtSecret`
+ *    作为新位置，读取顺序见该文件头）。连接期读 `o_setting` 继续走 `u.db`
+ *    （platform 表读**无 ctx 也放行**），**不**新增第 8 个 `systemDb` 使用者（Ruling 220 #4）。
+ * ⚠ token 形状：新形状（`typ`/`tv`）与旧形状（`{id}`，Phase 1b 夹具在用）**都接受**
+ *    —— 与 `@/middleware/auth` 的判据一致（理由见 `@/auth/tokens` 文件头限制 2）。
  */
 import { randomUUID } from "node:crypto";
-import jwt from "jsonwebtoken";
 import type { Socket } from "socket.io";
 import u from "@/utils";
-import { config } from "@/config";
+import { resolveJwtSecret } from "@/auth/secret";
+import { verifyLegacyToken, verifyToken } from "@/auth/tokens";
+import { loadUserCtx } from "@/auth/service";
 import { roleOfUserId } from "@/db/policies";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
 
 /** 连接期验签 → 租户 ctx（失败一律 `null`，调用方据此 `socket.disconnect()`）。 */
 export async function decodeSocketToken(rawToken: unknown): Promise<TenantCtx | null> {
-  const setting: any = await u.db("o_setting").where("key", "tokenKey").select("value").first();
-  const tokenKey = (setting && setting.value) || config.jwtSecret;
-  if (!tokenKey) return null;
-  const token = String(rawToken ?? "").replace("Bearer ", "");
+  const token = String(rawToken ?? "").replace("Bearer ", "").trim();
   if (!token) return null;
+  let secret: string;
   try {
-    const decoded: any = jwt.verify(token, tokenKey as string);
-    const userId = Number(decoded?.id);
-    if (!Number.isInteger(userId) || userId <= 0) return null;
-    return { userId, role: roleOfUserId(userId), requestId: randomUUID(), source: "socket" };
+    secret = await resolveJwtSecret();
   } catch {
-    return null;
+    return null; // 库还没就绪等异常：一律拒连，不把连接挂在半成品状态
+  }
+  try {
+    const claims = verifyToken(token, "access", secret);
+    const user = await loadUserCtx(claims.uid);
+    if (!user || user.status !== "active" || user.tokenVersion !== claims.tv) return null;
+    return { userId: user.id, role: user.role, requestId: randomUUID(), source: "socket" };
+  } catch {
+    const legacy = verifyLegacyToken(token, secret);
+    if (!legacy) return null;
+    return { userId: legacy.userId, role: roleOfUserId(legacy.userId), requestId: randomUUID(), source: "socket" };
   }
 }
 

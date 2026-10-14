@@ -12,7 +12,9 @@ import path from "path";
 import fs from "fs";
 import u from "@/utils";
 import { dbReady } from "@/utils/db";
-import { tenantContextMiddleware, tenantErrorHandler } from "@/middleware/tenant";
+import { tenantErrorHandler } from "@/middleware/tenant";
+import { authenticate, authErrorHandler } from "@/middleware/auth";
+import { apiLimiter } from "@/middleware/rateLimit";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
@@ -152,13 +154,17 @@ export default async function startServe(randomPort: Boolean = false) {
     console.warn("静态网站目录不存在:", webDir);
   }
 
-  // 租户上下文的建立点（spec §6.4）。实现见 src/middleware/tenant.ts：
-  // 验签（**库里优先 + config.jwtSecret 兜底**，Phase 1a Task 5 的现状语义）→ 建 ctx（AsyncLocalStorage）
+  // 租户上下文的建立点（spec §6.4）。实现见 src/middleware/auth.ts（Phase 1c Task 3 起的唯一实现；
+  // 旧名 `tenantContextMiddleware` 由 src/middleware/tenant.ts 再导出）：
+  // 验签（**库值优先 + 配置兜底**，Phase 1a Task 5 的现状语义，见 src/auth/secret.ts）→ 建 ctx（AsyncLocalStorage）
   // → 在同一个 `run()` 里 next()，于是下游所有 handler（含它们内部的 await）都带 ctx。
-  // ⚠ 白名单两条路径（登录 / configHealth?summary=1）在验签之前 next()：**天然无 ctx**，不许塞假 ctx。
-  // ⚠ 这里是**唯一**一处"还没有 ctx 就要读库"的地方（bootstrap 读 `o_setting.tokenKey`；platform 表
-  //    读在守卫里无 ctx 也放行，所以它**不需要**、也**不许**走 `systemDb` 那个绕过口）。
-  app.use(tenantContextMiddleware);
+  // ⚠ 白名单路径（登录/注册/refresh / configHealth?summary=1）在验签之前 next()：**天然无 ctx**，不许塞假 ctx。
+  // ⚠ 新形状 token（typ/tv）会**每请求**从 DB 复核 status/tokenVersion，role 也只信 DB（spec §7.3）。
+  // ⚠ 这里曾是"唯一一处还没有 ctx 就要读库"的地方（bootstrap 读 `o_setting.tokenKey`）；
+  //    现在那一步在 `@/auth/secret` 里，仍然走 platform 表的"无 ctx 放行读"，**不**需要 systemDb。
+  // ⚠ `apiLimiter` 只在 prod 生效（dev 与回归脚本要跑几十上百个请求，见 `middleware/rateLimit.ts`）。
+  app.use(apiLimiter);
+  app.use(authenticate);
 
   const router = await import("@/router");
   await router.default(app);
@@ -168,9 +174,11 @@ export default async function startServe(randomPort: Boolean = false) {
     return res.status(404).send({ message: "API 404 Not Found" });
   });
 
-  // 隔离/策略错误 → 403/500（响应体只有 {code, message}）；其它错误原样交给下面的既有处理器。
-  // ⚠ 顺序重要：下面的既有错误中间件不调 `next(err)`，本行注册在它**之后**就永远轮不到。
+  // 隔离/策略错误 → 403/500（响应体只有 {code, message}）；认证类错误 → 401/403/409/400（Task 3）；
+  // 其它错误原样交给下面的既有处理器。
+  // ⚠ 顺序重要：两个处理器都在既有错误中间件**之前**（下面那个不调 `next(err)`，注册在它之后就永远轮不到）。
   app.use(tenantErrorHandler);
+  app.use(authErrorHandler);
   // 错误处理
   app.use((err: any, _: Request, res: Response, __: NextFunction) => {
     res.locals.message = err.message;
