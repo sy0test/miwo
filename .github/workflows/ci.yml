@@ -170,6 +170,14 @@ jobs:
       # MySQL 口径在本 job 里**未实测**（它显式打印 SKIP 原因，不静默跳过）；真跑在 mysql job。
       - name: Phase 1b 端到端（租户隔离）
         run: pnpm verify:phase1b
+      # Phase 1c / Task 12：**Phase 1c 的唯一验收命令**（A–H 组 + M 组）。
+      # 为什么必须接线（同一族教训，第三次）：`verify-phase1c-media.cjs` 存在过很久却从来没被
+      # 接进任何自动化环境；`verify-phase1b` 的接线也一样等到 Task 9 才做。没接线的验证 ≈ 没有验证。
+      # 它自己在 `%TEMP%`/runner.temp 下开一次性数据目录、跑真迁移链、跑真 `db:bootstrap-admin` CLI、
+      # 起真 `src/app.ts` 打真 HTTP，**绝不碰 apps/api/data**（CI 上那份库本来也不存在）。
+      # MySQL 口径在本 job 里**未实测**（脚本显式打印 SKIP 理由、**不计入通过数**）；真跑在 mysql job。
+      - name: Phase 1c 端到端（注册 / 登录 / 会话 / 跨租户隔离 / 收权 / 安全面）
+        run: pnpm run verify:phase1c
       - name: 后端打包（产物 data/serve/app.js 已被 .gitignore 忽略）
         run: pnpm --filter @miwo/api run build
       # Phase 1a / Task 11：Phase 1a 的唯一验收命令，**放在最后**。

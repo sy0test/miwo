@@ -214,6 +214,17 @@ if (apiJob) {
     "api job 缺少 `pnpm run verify:phase1c-media`：Phase 1c 媒体验收（Task 7/8/9 的判别力脚本）" +
       "必须在 CI 里真的跑到 —— 它存在过很久却从来没被接进任何自动化环境",
   );
+  // Phase 1c / Task 12：**Phase 1c 的唯一验收命令**（A–H 组：注册 / 登录 / 会话轮转与吊销 /
+  // 跨租户隔离 / 收权矩阵抽样 / 媒体签名与 Range / 错误脱敏 / 干净收尾；M 组是**显式未实测**的 MySQL 口径）。
+  // ⚠ 判据写成"必须出现 `pnpm run verify:phase1c`"，**不能**写成 `apiRuns.includes("verify:phase1c")`：
+  //   后者会被 `pnpm run verify:phase1c-media` 这一行**字符串包含**（它是前者的前缀）而恒真 ——
+  //   于是"有人把新命令删掉、只留媒体验收"这条就再也拦不住。`\s*$` + `m` 锚定整行才有效
+  //   （与上面 `verify:phase1a:ci` 的反向断言同一个理由）。
+  check(
+    /^\s*pnpm run verify:phase1c\s*$/m.test(apiRuns),
+    "api job 缺少 `pnpm run verify:phase1c`（Phase 1c 的唯一验收命令必须在 CI 里真的跑到；" +
+      "它自己开一次性数据目录、跑真迁移链与真 db:bootstrap-admin CLI、起真应用打真 HTTP）",
+  );
   // Phase 1b / Task 8：策略门禁不仅要"在 CI 里"，还必须**真跑**（不许被 continue-on-error / `|| true` 变成永不失败）。
   // ⚠ 判据刻意严于"值为 true"：**出现这个键/写法就算失败** —— 那两样都是掩盖，不是通过。
   //   （mysql job 的同类断言在下面单独一段；这里管 api/web 两个 job。）
