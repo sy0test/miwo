@@ -45,6 +45,13 @@
  *   · 因为 URL 里有 `exp`/`sig`，**同一份文件在不同请求期拿到的是不同 URL** ⇒ 浏览器缓存按完整 URL 分键，
  *     不会出现"缓存里那把过期的签名被复用"⇒ 这是"签名 TTL(24h) 与缓存 max-age(1h)"能共存的依据：
  *     max-age 必须 **< TTL**，否则缓存里可能留着一把已过期的签名 URL（本实现的 1h < 24h）。
+ *
+ * ── ⚠ 未处置项 N3（Phase 1c Task 10 登记，**本轮不改**）──
+ *   「媒体 24h TTL + `Cache-Control: public`」整体**偏宽**：签名链接一签就是 24 小时有效，
+ *   而 `public` 允许中间缓存（反代/CDN）存副本。硬约束（`max-age(1h) < TTL(24h)`）成立 ⇒
+ *   缓存**最多**把链接续 1 小时，不会长过签名寿命 —— 所以这不是漏洞，是**口径选择**。
+ *   收紧方向（Phase 2/后续）：TTL 降到分钟级 + `Cache-Control: private`（或按用户分区）。
+ *   归属与理由见根 `README.md` 的「已知问题」§2。
  */
 import crypto from "node:crypto";
 import path from "node:path";

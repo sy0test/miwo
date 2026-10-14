@@ -225,6 +225,13 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
   );
 
   // ── /assets：用户的片尾素材等产物。与 /oss 同一守卫、同一缓存口径 ──
+  // ⚠⚠ 未处置项 N4（Phase 1c Task 10 登记，**本轮不改**）：`/assets` 这个挂载点会**遮蔽** SPA 产物里
+  //   同名的目录 —— 如果 Phase 3 的前端构建把产物输出到 `web/assets/`（Vite 的默认 `assetsDir` 正是
+  //   `assets`！），那么所有 `/assets/*.js|css` 请求会先命中**这个**守卫（用户产物的签名口径）⇒ 无签名
+  //   **403** ⇒ 页面**白屏**（而且症状是"接口全正常、只有 JS/CSS 403"，与 1b-11 的"图片全裂"同族）。
+  //   现在没炸是因为 `data/web` 目前只有 `index.html`（本轮 e2e 的 SPA 壳夹具也是手写的）。
+  //   Phase 3 前端重绘时必须先决定：① 前端改 `build.assetsDir`（推荐），或 ② `/assets` 让位于 SPA。
+  //   注意**不能**靠"把 `/assets` 挂到 SPA 之后"来回避：那等于让用户产物裸奔（1b-11 的本体）。
   const assetsDir = u.getPath("assets");
   if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
   log(`文件目录: ${assetsDir}`);
