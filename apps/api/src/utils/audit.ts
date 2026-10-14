@@ -45,6 +45,11 @@ export const AUDIT_ACTIONS = Object.freeze({
   DB_CLEAR_TABLE: "db.clearTable",
   DB_INFO: "db.info",
   SKILL_WRITE: "setting.skill.write",
+  /** Phase 1c Task 9：供应商凭据面（新增/删除供应商行、改 `inputValues`、一键填 key）。 */
+  VENDOR_CREATE: "setting.vendor.create",
+  VENDOR_DELETE: "setting.vendor.delete",
+  VENDOR_INPUTS_UPDATE: "setting.vendor.inputs.update",
+  VENDOR_SET_KEY: "setting.vendor.setKey",
   /** 所有经特权原语（`src/db/noContext.ts`）代行的 platform 写。 */
   PLATFORM_WRITE: "platform.write",
 });

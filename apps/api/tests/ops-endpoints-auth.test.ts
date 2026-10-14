@@ -556,10 +556,12 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
   }, 90000);
 
   /**
-   * Phase 1c Task 4 的新增族：`vendorConfig` 整族 13 个端点全部收权（spec §7.3）。
+   * Phase 1c Task 4 的新增族：`vendorConfig` 整族收权（spec §7.3）。
+   * Phase 1c Task 9：`addVendor` / `updateCode` / `getCodeByLink` 三条**整体删除** ⇒ 本清单从 14 条
+   *   收到 11 条（它们在真应用里是 404，由 `tests/vendor-secrets.test.ts` 断言）。
    *
    * 判据：无 token 401 / 普通 token 403 / admin 正向对照非 403 / 普通 token 打完**直读零写入**。
-   * ⚠ `getVendorList` 是其中最敏感的一个（它把 `inputValues` 原样回传 ⇒ 供应商 key 明文）。
+   * ⚠ `getVendorList` 是其中最敏感的一个（Task 9 之前它把 `inputValues` 明文回传）。
    * ⚠ 请求体必须**通过 zod**（中间件顺序是 `validateFields` → `requireAdmin`，见 brief Step 2 的
    *   "每个文件在 validateFields 之后插 requireAdmin"）—— 否则看到的是 400 而不是 403。
    *   这些 body 全部对真实数据无害（假 id / 不存在的 modelName / 校验必败的类型）。
@@ -567,14 +569,11 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
   const MODEL_TEXT = { name: "n", modelName: "m", type: "text", think: false };
   const VENDOR_CONFIG_ENDPOINTS: ReadonlyArray<{ method: "GET" | "POST"; path: string; body?: unknown }> = [
     { method: "POST", path: "/api/setting/vendorConfig/getVendorList" },
-    { method: "POST", path: "/api/setting/vendorConfig/addVendor", body: { tsCode: "export default {}" } },
     { method: "POST", path: "/api/setting/vendorConfig/addVendorModel", body: { id: "ops-auth-absent-vendor", model: MODEL_TEXT } },
     { method: "POST", path: "/api/setting/vendorConfig/deleteVendor", body: { id: "ops-auth-absent-vendor" } },
     { method: "POST", path: "/api/setting/vendorConfig/delVendorModel", body: { id: "ops-auth-absent-vendor", modelName: "m" } },
     { method: "POST", path: "/api/setting/vendorConfig/enableVendor", body: { id: "ops-auth-absent-vendor", enable: 0 } },
-    { method: "POST", path: "/api/setting/vendorConfig/getCodeByLink", body: { link: "https://example.invalid/x" } },
     { method: "POST", path: "/api/setting/vendorConfig/modelTest", body: { modelName: "m", type: "text", id: "ops-auth-absent-vendor" } },
-    { method: "POST", path: "/api/setting/vendorConfig/updateCode", body: { id: "ops-auth-absent-vendor", tsCode: "export default {}" } },
     { method: "POST", path: "/api/setting/vendorConfig/updateVendorInputs", body: { id: "ops-auth-absent-vendor", inputValues: { apiKey: "HACKED-VENDOR-KEY" } } },
     { method: "POST", path: "/api/setting/vendorConfig/upVendorModel", body: { id: "ops-auth-absent-vendor", modelName: "m", model: MODEL_TEXT } },
     { method: "POST", path: "/api/setting/vendorConfig/modelTest/imageTest", body: { modelName: "m", id: "ops-auth-absent-vendor", prompt: "p", imageBase64: "" } },
@@ -604,7 +603,7 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
         hacked: Number(((await db("o_vendorConfig").where("inputValues", "like", "%HACKED-VENDOR-KEY%").count({ n: "*" }).first()) as any)?.n ?? 0),
         vendorRows: Number(((await db("o_vendorConfig").count({ n: "*" }).first()) as any)?.n ?? 0),
       };
-      expect(after, "普通 token 的 14 次尝试必须零写入（尤其 HACKED-VENDOR-KEY 不许落库）").toEqual(before);
+      expect(after, "普通 token 的 11 次尝试必须零写入（尤其 HACKED-VENDOR-KEY 不许落库）").toEqual(before);
 
       // admin 正向对照：读端点必须**非 403**（证明 403 是收权，不是接口坏了）
       const admin = await signAs(db, ADMIN_USER);

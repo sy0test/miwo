@@ -3,8 +3,11 @@
  *
  * ── 这个文件要钉的五件事（brief Step 4 + 控制器裁定 §2/§4）──
  *   1. **收权矩阵**：spec §7.3 的每条接口 —— 无 token **401** / 普通 token **403** / admin 非 401·403。
- *      逐条参数化（26 条），**不是**"某一条 403 就宣称矩阵通过"；另有一条用例用 `fs` 复核
+ *      逐条参数化（23 条），**不是**"某一条 403 就宣称矩阵通过"；另有一条用例用 `fs` 复核
  *      每个源文件里都真的挂了 `requireAdmin`（防止"用例绿但代码没改"）。
+ *      ⚠ Phase 1c Task 9 删掉 `addVendor` / `updateCode` / `getCodeByLink` 三条（26 → 23）：
+ *        路由**不存在**了，"普通 token 403"这条判据无从谈起；"它们真的是 404"由
+ *        `tests/vendor-secrets.test.ts` 打真应用断言（那里才是"接口不存在"的正确判据）。
  *   2. **`?token=` 查询串已取消**（裁定 §2.3）：查询串带 token ⇒ **401**；头带 token ⇒ 200。
  *   3. **`loginConfig` 的"本人 + 管理员"语义** + **L3**（改用户名撞唯一键 ⇒ 409，不是 500）。
  *   4. **审计日志真的落库**：直读 `o_auditLog` 断言有对应行（不是只看 API 返回）。
@@ -35,14 +38,11 @@ import { signToken } from "@/auth/tokens";
 import { resolveJwtSecret } from "@/auth/secret";
 
 import vendorGetVendorList from "@/routes/setting/vendorConfig/getVendorList";
-import vendorAddVendor from "@/routes/setting/vendorConfig/addVendor";
 import vendorAddVendorModel from "@/routes/setting/vendorConfig/addVendorModel";
 import vendorDeleteVendor from "@/routes/setting/vendorConfig/deleteVendor";
 import vendorDelVendorModel from "@/routes/setting/vendorConfig/delVendorModel";
 import vendorEnableVendor from "@/routes/setting/vendorConfig/enableVendor";
-import vendorGetCodeByLink from "@/routes/setting/vendorConfig/getCodeByLink";
 import vendorModelTest from "@/routes/setting/vendorConfig/modelTest";
-import vendorUpdateCode from "@/routes/setting/vendorConfig/updateCode";
 import vendorUpdateVendorInputs from "@/routes/setting/vendorConfig/updateVendorInputs";
 import vendorUpVendorModel from "@/routes/setting/vendorConfig/upVendorModel";
 import vendorImageTest from "@/routes/setting/vendorConfig/modelTest/imageTest";
@@ -151,16 +151,15 @@ const ADMIN_ONLY_ROUTES: ReadonlyArray<{
   mount: string;
   body?: unknown;
 }> = [
-  // ---- vendorConfig 整族 13 条 ----
+  // ---- vendorConfig 整族 11 条（Phase 1c Task 9 删掉 addVendor / updateCode / getCodeByLink 三条；
+  //      "那三条已不存在"由 tests/vendor-secrets.test.ts 的真 HTTP 404 断言守着 —— 收权矩阵里
+  //      留 404 行没有意义：路由都没了，"普通 token 403"这条判据无从谈起）----
   { source: "src/routes/setting/vendorConfig/getVendorList.ts", method: "POST", mount: "/api/setting/vendorConfig/getVendorList" },
-  { source: "src/routes/setting/vendorConfig/addVendor.ts", method: "POST", mount: "/api/setting/vendorConfig/addVendor", body: { tsCode: "export default {}" } },
   { source: "src/routes/setting/vendorConfig/addVendorModel.ts", method: "POST", mount: "/api/setting/vendorConfig/addVendorModel", body: { id: "authz-absent", model: MODEL_TEXT } },
   { source: "src/routes/setting/vendorConfig/deleteVendor.ts", method: "POST", mount: "/api/setting/vendorConfig/deleteVendor", body: { id: "authz-absent" } },
   { source: "src/routes/setting/vendorConfig/delVendorModel.ts", method: "POST", mount: "/api/setting/vendorConfig/delVendorModel", body: { id: "authz-absent", modelName: "m" } },
   { source: "src/routes/setting/vendorConfig/enableVendor.ts", method: "POST", mount: "/api/setting/vendorConfig/enableVendor", body: { id: "authz-absent", enable: 0 } },
-  { source: "src/routes/setting/vendorConfig/getCodeByLink.ts", method: "POST", mount: "/api/setting/vendorConfig/getCodeByLink", body: { link: "https://example.invalid/x" } },
   { source: "src/routes/setting/vendorConfig/modelTest.ts", method: "POST", mount: "/api/setting/vendorConfig/modelTest", body: { modelName: "m", type: "text", id: "authz-absent" } },
-  { source: "src/routes/setting/vendorConfig/updateCode.ts", method: "POST", mount: "/api/setting/vendorConfig/updateCode", body: { id: "authz-absent", tsCode: "export default {}" } },
   { source: "src/routes/setting/vendorConfig/updateVendorInputs.ts", method: "POST", mount: "/api/setting/vendorConfig/updateVendorInputs", body: { id: "authz-absent", inputValues: { apiKey: "AUTHZ-HACKED-KEY" } } },
   { source: "src/routes/setting/vendorConfig/upVendorModel.ts", method: "POST", mount: "/api/setting/vendorConfig/upVendorModel", body: { id: "authz-absent", modelName: "m", model: MODEL_TEXT } },
   { source: "src/routes/setting/vendorConfig/modelTest/imageTest.ts", method: "POST", mount: "/api/setting/vendorConfig/modelTest/imageTest", body: { modelName: "m", id: "authz-absent", prompt: "p", imageBase64: "" } },
@@ -189,14 +188,11 @@ async function serve() {
   app.use(express.json());
   app.use(authenticate);
   app.use("/api/setting/vendorConfig/getVendorList", vendorGetVendorList);
-  app.use("/api/setting/vendorConfig/addVendor", vendorAddVendor);
   app.use("/api/setting/vendorConfig/addVendorModel", vendorAddVendorModel);
   app.use("/api/setting/vendorConfig/deleteVendor", vendorDeleteVendor);
   app.use("/api/setting/vendorConfig/delVendorModel", vendorDelVendorModel);
   app.use("/api/setting/vendorConfig/enableVendor", vendorEnableVendor);
-  app.use("/api/setting/vendorConfig/getCodeByLink", vendorGetCodeByLink);
   app.use("/api/setting/vendorConfig/modelTest", vendorModelTest);
-  app.use("/api/setting/vendorConfig/updateCode", vendorUpdateCode);
   app.use("/api/setting/vendorConfig/updateVendorInputs", vendorUpdateVendorInputs);
   app.use("/api/setting/vendorConfig/upVendorModel", vendorUpVendorModel);
   app.use("/api/setting/vendorConfig/modelTest/imageTest", vendorImageTest);
@@ -304,7 +300,7 @@ afterAll(async () => {
 });
 
 describe("§7.3 收权矩阵（无 token 401 / 普通 token 403 / admin 非 401·403）", () => {
-  it("★ 每条接口三列逐条断言（26 条，失败时列出全部不满足项）", async () => {
+  it("★ 每条接口三列逐条断言（23 条，失败时列出全部不满足项）", async () => {
     const failures: string[] = [];
     for (const row of ADMIN_ONLY_ROUTES) {
       const noToken = await request(srv.port, row.method, row.mount, row.body, { ip: nextIp() });
@@ -317,7 +313,7 @@ describe("§7.3 收权矩阵（无 token 401 / 普通 token 403 / admin 非 401�
       }
     }
     expect(failures, `收权矩阵有 ${failures.length} 条不满足：\n  - ${failures.join("\n  - ")}`).toEqual([]);
-    expect(ADMIN_ONLY_ROUTES.length, "矩阵条数（防清单被误删）").toBe(26);
+    expect(ADMIN_ONLY_ROUTES.length, "矩阵条数（防清单被误删）").toBe(23);
   }, 240000);
 
   it("★ 矩阵清单与源码一致：每个源文件都真的挂了 requireAdmin（防'用例绿但代码没改'）", () => {

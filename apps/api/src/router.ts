@@ -1,4 +1,4 @@
-// @routes-hash 0d7477be61ef950fef772ac3e40f125e
+// @routes-hash 2167be248a386635e308c5e686cb9ec6
 import { Express } from "express";
 
 import route1 from "./routes/agents/clearMemory";
@@ -163,24 +163,21 @@ import route159 from "./routes/setting/promptManage/updatePrompt";
 import route160 from "./routes/setting/skillManagement/getSkillContent";
 import route161 from "./routes/setting/skillManagement/getSkillList";
 import route162 from "./routes/setting/skillManagement/saveSkillContent";
-import route163 from "./routes/setting/vendorConfig/addVendor";
-import route164 from "./routes/setting/vendorConfig/addVendorModel";
-import route165 from "./routes/setting/vendorConfig/deleteVendor";
-import route166 from "./routes/setting/vendorConfig/delVendorModel";
-import route167 from "./routes/setting/vendorConfig/enableVendor";
-import route168 from "./routes/setting/vendorConfig/getCodeByLink";
-import route169 from "./routes/setting/vendorConfig/getVendorList";
-import route170 from "./routes/setting/vendorConfig/modelTest";
-import route171 from "./routes/setting/vendorConfig/modelTest/imageTest";
-import route172 from "./routes/setting/vendorConfig/modelTest/textTest";
-import route173 from "./routes/setting/vendorConfig/modelTest/videoTest";
-import route174 from "./routes/setting/vendorConfig/updateCode";
-import route175 from "./routes/setting/vendorConfig/updateVendorInputs";
-import route176 from "./routes/setting/vendorConfig/upVendorModel";
-import route177 from "./routes/task/getProject";
-import route178 from "./routes/task/getTaskApi";
-import route179 from "./routes/task/getTaskCategories";
-import route180 from "./routes/task/taskDetails";
+import route163 from "./routes/setting/vendorConfig/addVendorModel";
+import route164 from "./routes/setting/vendorConfig/deleteVendor";
+import route165 from "./routes/setting/vendorConfig/delVendorModel";
+import route166 from "./routes/setting/vendorConfig/enableVendor";
+import route167 from "./routes/setting/vendorConfig/getVendorList";
+import route168 from "./routes/setting/vendorConfig/modelTest";
+import route169 from "./routes/setting/vendorConfig/modelTest/imageTest";
+import route170 from "./routes/setting/vendorConfig/modelTest/textTest";
+import route171 from "./routes/setting/vendorConfig/modelTest/videoTest";
+import route172 from "./routes/setting/vendorConfig/updateVendorInputs";
+import route173 from "./routes/setting/vendorConfig/upVendorModel";
+import route174 from "./routes/task/getProject";
+import route175 from "./routes/task/getTaskApi";
+import route176 from "./routes/task/getTaskCategories";
+import route177 from "./routes/task/taskDetails";
 
 export default async (app: Express) => {
   app.use("/api/agents/clearMemory", route1);
@@ -345,22 +342,19 @@ export default async (app: Express) => {
   app.use("/api/setting/skillManagement/getSkillContent", route160);
   app.use("/api/setting/skillManagement/getSkillList", route161);
   app.use("/api/setting/skillManagement/saveSkillContent", route162);
-  app.use("/api/setting/vendorConfig/addVendor", route163);
-  app.use("/api/setting/vendorConfig/addVendorModel", route164);
-  app.use("/api/setting/vendorConfig/deleteVendor", route165);
-  app.use("/api/setting/vendorConfig/delVendorModel", route166);
-  app.use("/api/setting/vendorConfig/enableVendor", route167);
-  app.use("/api/setting/vendorConfig/getCodeByLink", route168);
-  app.use("/api/setting/vendorConfig/getVendorList", route169);
-  app.use("/api/setting/vendorConfig/modelTest", route170);
-  app.use("/api/setting/vendorConfig/modelTest/imageTest", route171);
-  app.use("/api/setting/vendorConfig/modelTest/textTest", route172);
-  app.use("/api/setting/vendorConfig/modelTest/videoTest", route173);
-  app.use("/api/setting/vendorConfig/updateCode", route174);
-  app.use("/api/setting/vendorConfig/updateVendorInputs", route175);
-  app.use("/api/setting/vendorConfig/upVendorModel", route176);
-  app.use("/api/task/getProject", route177);
-  app.use("/api/task/getTaskApi", route178);
-  app.use("/api/task/getTaskCategories", route179);
-  app.use("/api/task/taskDetails", route180);
+  app.use("/api/setting/vendorConfig/addVendorModel", route163);
+  app.use("/api/setting/vendorConfig/deleteVendor", route164);
+  app.use("/api/setting/vendorConfig/delVendorModel", route165);
+  app.use("/api/setting/vendorConfig/enableVendor", route166);
+  app.use("/api/setting/vendorConfig/getVendorList", route167);
+  app.use("/api/setting/vendorConfig/modelTest", route168);
+  app.use("/api/setting/vendorConfig/modelTest/imageTest", route169);
+  app.use("/api/setting/vendorConfig/modelTest/textTest", route170);
+  app.use("/api/setting/vendorConfig/modelTest/videoTest", route171);
+  app.use("/api/setting/vendorConfig/updateVendorInputs", route172);
+  app.use("/api/setting/vendorConfig/upVendorModel", route173);
+  app.use("/api/task/getProject", route174);
+  app.use("/api/task/getTaskApi", route175);
+  app.use("/api/task/getTaskCategories", route176);
+  app.use("/api/task/taskDetails", route177);
 }

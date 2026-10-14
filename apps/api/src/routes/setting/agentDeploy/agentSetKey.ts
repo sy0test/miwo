@@ -4,6 +4,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { requireAdmin } from "@/middleware/tenant"; // Phase 1b 收尾轮：本家族 6 个端点全未收权（含写供应商 key 的 agentSetKey）
+import { audit, AUDIT_ACTIONS, actorFromCtx } from "@/utils/audit";
 const router = express.Router();
 
 export default router.post(
@@ -25,6 +26,8 @@ export default router.post(
       .update({
         inputValues: JSON.stringify(inputValue),
       });
+    // Phase 1c Task 9：写供应商凭据 ⇒ 落审计。`detail` 只记**键名**（不记 key 本身）。
+    await audit(actorFromCtx(req.ip), AUDIT_ACTIONS.VENDOR_SET_KEY, "miwo", { keys: ["apiKey"] });
     try {
       const resText = await u.Ai.Text(`miwo:claude-haiku-4-5-20251001`).invoke({
         prompt: "1+1等于几？,请直接回答2，不要解释",
@@ -45,6 +48,7 @@ export default router.post(
           modelName: "miwo:claude-haiku-4-5-20251001",
           vendorId: "miwo",
         });
+        // 响应**只有固定文案**（不回显 key，也不回显掩码 —— 调用方刚把它发上来，回显无信息量）。
         res.status(200).send(success("一键填入成功"));
       }
     } catch (err) {
@@ -54,6 +58,7 @@ export default router.post(
         .db("o_vendorConfig")
         .where("id", "miwo")
         .update({ inputValues: JSON.stringify(inputValue) });
+      // 失败响应同样**不回显 key**（改前也不回显；这条是"自己 try/catch 的接口也不得泄漏"的守卫）。
       res.status(400).send(error("KEY无效，请重新输入"));
     }
   },
