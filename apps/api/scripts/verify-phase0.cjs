@@ -48,6 +48,12 @@ const SEED_DIR = path.join(API_ROOT, "src", "db", "migrations", "seed");
 const SEED_EXPECT = { "o_prompt.ndjson": 4, "o_agentDeploy.ndjson": 19, "o_setting.platform.ndjson": 4, "o_vendorConfig.templates.ndjson": 8 };
 
 /**
+ * `005_accounts`（Phase 1c Task 1）有意新增的**平台级** `o_setting` 键。
+ * 逐个点名（而不是只比数量）——"多一个键"与"少一个键"都必须能报出**是哪个**。
+ */
+const TASK1_SETTING_KEYS = ["registrationMode", "allowDbAdminOps"];
+
+/**
  * 迁移名册的**真相**：`src/db/migrations/index.ts` 的 `MIGRATIONS` 数组。
  *
  * ⚠ 解析**不能**单独当判据（Task 11 / 控制器裁定 C = ★Ruling 132，与 Ruling 63 同族）：
@@ -61,6 +67,12 @@ const SEED_EXPECT = { "o_prompt.ndjson": 4, "o_agentDeploy.ndjson": 19, "o_setti
  *      追加迁移只需往 allowlist 加一行（**有意的**行为）；删掉既有迁移会**立刻红**。
  *   ② 解析名册非空 + 与库里 `knex_migrations` 的名字集合**逐个相等**（含顺序的历史断言在
  *      `tests/migrations.test.ts` 的 `n1).toEqual(NAMES)`）。
+ *
+ * ⚠ **`o_setting` 的平台键数**（Phase 1c Task 1）：下面的断言原来写"恰好 4 个（= 种子文件行数，
+ *   且没有 tokenKey）"。`005_accounts` 有意**新增**两个平台开关（§15 O1 的 `registrationMode`、
+ *   §7.3 的 `allowDbAdminOps`），所以口径改成"种子 4 个 + Task 1 的 2 个 = 6 个"，并把新键**逐个点名**。
+ *   这不是放宽：`settingKeys.length === wantSettings + TASK1_SETTING_KEYS.length` 仍是**精确**相等，
+ *   同时"没有 tokenKey"这条判据原样保留（tokenKey 由 005 从库里删掉、改由 MIWO_JWT_SECRET 提供）。
  */
 function expectedMigrationNames() {
   const src = fs.readFileSync(path.join(API_ROOT, "src", "db", "migrations", "index.ts"), "utf8");
@@ -89,7 +101,7 @@ function expectedMigrationNames() {
  *    后者在"删一个旧的、加一个新的"时仍然不红（数量守恒），而这两件事的语义完全相反。
  *    **逐名**写死才能同时锁住"没被删"和"没被换"。
  */
-const MIGRATION_ALLOWLIST = ["001_schema", "002_platform_seed", "003_vendor_asset_sync"];
+const MIGRATION_ALLOWLIST = ["001_schema", "002_platform_seed", "003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants"];
 
 
 const G_FREEZE = "A 旧仓库冻结";
@@ -390,8 +402,11 @@ function inspectMigratedDb(dbFile) {
     const wantSettings = seedLines["o_setting.platform.ndjson"];
     record(
       G_BOOT,
-      `o_setting 只有 ${wantSettings} 个平台键、且**没有 tokenKey**（JWT 密钥走配置）`,
-      seedOk && settingKeys.length === wantSettings && !settingKeys.includes("tokenKey"),
+      `o_setting 只有 ${wantSettings} 个种子平台键 + Task 1 的 ${TASK1_SETTING_KEYS.length} 个开关（共 ${wantSettings + TASK1_SETTING_KEYS.length}）、且**没有 tokenKey**（JWT 密钥走配置）`,
+      seedOk &&
+        settingKeys.length === wantSettings + TASK1_SETTING_KEYS.length &&
+        !settingKeys.includes("tokenKey") &&
+        TASK1_SETTING_KEYS.every((k) => settingKeys.includes(k)),
       `实际 ${JSON.stringify(settingKeys)}`,
     );
 

@@ -4,10 +4,19 @@
  *
  *  ① `apps/api/src/db/policies.ts` 的 `TABLE_POLICIES` / `TENANT_TABLES` / `DROPPED_TABLES` / `INFRA_TABLES`
  *     —— 经 `tools/tenant-policy-facts.ts`（**真 tsx 进程**）导入，**不再正则解析、不再手写第二份清单**；
- *  ② `apps/api/src/db/migrations/001_schema.ts` 的 `createTable` / `dropTableIfExists`（源码级，唯一无法导入的部分）；
+ *  ② **全部迁移文件**的 `createTable` / `dropTableIfExists`（源码级，唯一无法导入的部分）——
+ *     解析器是 `tools/migration-tables.cjs`（**单一来源**，`tests/tenant-policies.test.ts` 用的是同一份）。
+ *     ⚠ **【Phase 1c Task 1】** 1b 时期这里**硬编码只解析 `001_schema.ts`** ⇒ 新增迁移建的表对门禁
+ *     **完全不可见**（一给它们登记策略就报"策略表里的表不在建表清单里"）。现在改为扫描
+ *     `src/db/migrations/*.ts` 全部迁移，"最终落地的表"= 建表名 − 被 `renameTable` 改掉的暂存表
+ *     （`*_new` / `*_old`，见 `005_accounts.ts`）。
  *  ③ `apps/api/src/db/tenant-exceptions.json` 的 `joins[].tables`（被 join 的表必须已声明、且未退役）；
- *  ④ `apps/api/src/db/legacy/backfill-userid.ts` 导出的 `BACKFILL_TARGET_TABLES`(19) / `SELF_CHECK_TABLES`(20)
- *     —— **与 ① 的租户表集合逐项相等**（Lead 的 Task 8 输入 ②：禁止第三份手写清单）。
+ *  ④ `apps/api/src/db/legacy/backfill-userid.ts` 导出的
+ *     `BACKFILL_TARGET_TABLES`(19) / `SELF_CHECK_TABLES`(20) / `BACKFILL_EXEMPT_TABLES`(2)
+ *     —— **三方一致的不变量**（Phase 1c Task 1 改写）：
+ *       `TENANT_TABLES == BACKFILL_TARGET_TABLES ∪ {o_project} ∪ BACKFILL_EXEMPT_TABLES`
+ *     （豁免表 = "迁移之后才新建的租户空表"，没有历史行可回填；**豁免清单只有这一份来源**，
+ *      禁止在门禁里再手写一遍 —— 1b 反复出事的形状）。
  *
  * 为什么需要独立脚本：`check-tenant-exceptions.cjs` 只管"特例清单 ↔ 代码"，管不到"策略表 ↔ 建表"；
  * 这两者一旦漂移，症状是"新表第一次被访问就 500（PolicyNotFoundError）"或"退役表被当成正常表"。
@@ -24,9 +33,10 @@ const { spawnSync } = require("child_process");
 const ROOT = path.resolve(__dirname, "..");
 const API = path.join(ROOT, "apps", "api");
 const POLICIES = path.join(API, "src/db/policies.ts");
-const SCHEMA = path.join(API, "src/db/migrations/001_schema.ts");
 const INV = path.join(API, "src/db/tenant-exceptions.json");
 const FACTS = path.join(__dirname, "tenant-policy-facts.ts");
+// ⚠ 建表清单的解析器是**单一来源**（`tools/migration-tables.cjs`），单测用的是同一份 —— 见其文件头。
+const { collectMigrationTables } = require(path.join(__dirname, "migration-tables.cjs"));
 
 const failures = [];
 
@@ -51,22 +61,40 @@ if (
   !facts.tablePolicies ||
   !Array.isArray(facts.tenantTables) ||
   !Array.isArray(facts.backfillTargetTables) ||
+  !Array.isArray(facts.backfillExemptTables) ||
   !Array.isArray(facts.selfCheckTables)
 ) {
   console.error("check-tenant-policies 无法完成：探针自证不足（observed/字段缺失）。" + JSON.stringify(facts).slice(0, 400));
   process.exit(3);
 }
 
-// ---------- ② schema 侧（源码级）----------
-const schemaSrc = fs.readFileSync(SCHEMA, "utf8");
-const created = [...new Set([...schemaSrc.matchAll(/createTable\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1]))].sort();
-const droppedInSchema = [...new Set([...schemaSrc.matchAll(/dropTableIfExists\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1]))].sort();
-if (created.length < 20 || droppedInSchema.length === 0) {
+// ---------- ② 建表清单（源码级，全部迁移；解析器是 tools/migration-tables.cjs 单一来源）----------
+const tables = collectMigrationTables();
+const created = tables.deployedTables;
+const droppedInSchema = tables.retiredTables;
+const staging = tables.stagingTables;
+if (created.length < 27 || droppedInSchema.length === 0 || tables.files.length < 5) {
   console.error(
-    `check-tenant-policies 无法完成：从 001_schema.ts 解析到的表数不合理（createTable ${created.length}、dropTableIfExists ${droppedInSchema.length}）` +
-      ` —— 观测不到就 exit 3，不放行。`,
+    `check-tenant-policies 无法完成：从 ${tables.files.length} 个迁移文件解析到的表数不合理` +
+      `（最终落地 ${created.length}、dropTableIfExists ${droppedInSchema.length}）—— 观测不到就 exit 3，不放行。`,
   );
   process.exit(3);
+}
+// ⚠ 暂存表（`*_new` / `*_old`）**不得**出现在策略表里：迁移结束时它们并不存在，
+//   "给暂存表登记策略"= 给一张不存在的表声明策略（真实症状是启动期/查询期 500）。
+for (const t of staging) {
+  if (t in facts.tablePolicies) failures.push(`暂存表 ${t}（被 renameTable 改掉的中间表）不得登记策略 —— 迁移结束时它并不存在`);
+}
+// ⚠ `dropTableIfExists` 只用来表达**退役表**（spec §5.4），不用来做"重建中转"：
+//   中转删除一律用 `dropTable`（不带 IfExists），所以这里不会出现"某张表既被建出来又被 IfExists 删掉"
+//   的正常情形。真的出现就说明有人把重建写成了 `dropTableIfExists` —— 那会让它被误判成退役表。
+for (const t of droppedInSchema) {
+  if (created.includes(t)) {
+    failures.push(
+      `表 ${t} 同时出现在"建表清单"与"dropTableIfExists 退役清单"里 —— 这是重建中转删除的形状。` +
+        ` 退役表只能出现在 DROPPED_TABLES（spec §5.4）；迁移内的重建请用 \`dropTable\`（不带 IfExists）。`,
+    );
+  }
 }
 
 // ---------- 一致性判据 ----------
@@ -78,12 +106,12 @@ const tenant = facts.tenantTables.slice().sort();
 const declaredBusiness = Object.keys(policies).filter((t) => !infra.has(t)).sort();
 if (JSON.stringify(declaredBusiness) !== JSON.stringify(created)) {
   failures.push(
-    `策略表 ↔ 001_schema 不一致：\n      只有策略 ${declaredBusiness.filter((t) => !created.includes(t)).join(", ") || "（无）"}\n      只有建表 ${created.filter((t) => !declaredBusiness.includes(t)).join(", ") || "（无）"}`,
+    `策略表 ↔ 迁移建表清单不一致（全部迁移，不含被 renameTable 改掉的暂存表）：\n      只有策略 ${declaredBusiness.filter((t) => !created.includes(t)).join(", ") || "（无）"}\n      只有建表 ${created.filter((t) => !declaredBusiness.includes(t)).join(", ") || "（无）"}`,
   );
 }
 if (JSON.stringify(facts.droppedTables.slice().sort()) !== JSON.stringify(droppedInSchema)) {
   failures.push(
-    `DROPPED_TABLES ↔ 001_schema 的 dropTableIfExists 不一致：策略 ${facts.droppedTables.join(", ")}；schema ${droppedInSchema.join(", ")}`,
+    `DROPPED_TABLES ↔ 迁移的 dropTableIfExists 不一致：策略 ${facts.droppedTables.join(", ")}；迁移 ${droppedInSchema.join(", ")}`,
   );
 }
 for (const t of ["knex_migrations", "knex_migrations_lock"]) {
@@ -95,19 +123,46 @@ if (JSON.stringify(policyTenant) !== JSON.stringify(tenant)) {
     `TENANT_TABLES ↔ TABLE_POLICIES(tenant) 不一致：\n      只有 TENANT_TABLES ${tenant.filter((t) => !policyTenant.includes(t)).join(", ") || "（无）"}\n      只有策略 ${policyTenant.filter((t) => !tenant.includes(t)).join(", ") || "（无）"}`,
   );
 }
-if (tenant.length !== 20) failures.push(`tenant 表应为 20 张（Phase 1a 账本 Ruling 32），实际 ${tenant.length}：${tenant.join(", ")}`);
-if (facts.userColumn !== "userId") failures.push(`策略层的 USER_COLUMN 必须是 "userId"（守卫与回填都按它注入），实际 ${String(facts.userColumn)}`);
-
-// ④ 回填/自检常量**复用**（禁止第三份手写清单）：与策略表的租户集合逐项相等。
-if (JSON.stringify(facts.selfCheckTables.slice().sort()) !== JSON.stringify(tenant)) {
+// ⚠【Phase 1c Task 1】20 → 22：`006_quota_grants` 新建了 2 张租户表（`o_account` / `o_modelGrant`）；
+//   同批的 `o_userSetting` / `o_invite` / `o_loginAttempt` / `o_auditLog` 是 **platform**
+//   （登录发生在建租户 ctx 之前 ⇒ 必须无 ctx 可读）。
+//   数字变了必须回来核对 —— 这是**提高**判别力（表体仍与建表清单逐项相等），不是放宽。
+if (tenant.length !== 22) {
   failures.push(
-    `SELF_CHECK_TABLES（backfill-userid.ts 导出）↔ TENANT_TABLES 不一致：\n      只有 SELF_CHECK ${facts.selfCheckTables.filter((t) => !tenant.includes(t)).join(", ") || "（无）"}\n      只有 TENANT ${tenant.filter((t) => !facts.selfCheckTables.includes(t)).join(", ") || "（无）"}`,
+    `tenant 表应为 22 张（Phase 1a Ruling 32 的 20 张 + Phase 1c Task 1 的 o_account/o_modelGrant），` +
+      `实际 ${tenant.length}：${tenant.join(", ")}`,
   );
 }
-const expectedBackfill = tenant.filter((t) => t !== "o_project").sort();
-if (JSON.stringify(facts.backfillTargetTables.slice().sort()) !== JSON.stringify(expectedBackfill)) {
+if (facts.userColumn !== "userId") failures.push(`策略层的 USER_COLUMN 必须是 "userId"（守卫与回填都按它注入），实际 ${String(facts.userColumn)}`);
+
+// ④ 回填/自检/豁免常量**复用**（禁止第三份手写清单）：
+//   不变量（Phase 1c Task 1）：TENANT == BACKFILL_TARGETS ∪ {o_project} ∪ EXEMPT
+const exempt = facts.backfillExemptTables.slice().sort();
+const selfCheck = facts.selfCheckTables.slice().sort();
+const backfill = facts.backfillTargetTables.slice().sort();
+if (exempt.length === 0) failures.push(`BACKFILL_EXEMPT_TABLES 为空 —— 本任务已新增 2 张"迁移后新建的租户空表"，豁免集不该是空的（检查 backfill-userid.ts 的导出）`);
+for (const t of exempt) {
+  if (!tenant.includes(t)) failures.push(`BACKFILL_EXEMPT_TABLES 里的 ${t} 不是租户表（不在 TENANT_TABLES 里）—— 豁免只对租户表有意义`);
+}
+// ① SELF_CHECK == TENANT − EXEMPT（自检表 = 真的会被回填的那批；豁免表没有历史行，不进自检）
+const expectedSelf = tenant.filter((t) => !exempt.includes(t)).sort();
+if (JSON.stringify(selfCheck) !== JSON.stringify(expectedSelf)) {
   failures.push(
-    `BACKFILL_TARGET_TABLES ↔ TENANT_TABLES - {o_project} 不一致：\n      只有回填目标 ${facts.backfillTargetTables.filter((t) => !expectedBackfill.includes(t)).join(", ") || "（无）"}\n      只有租户表 ${expectedBackfill.filter((t) => !facts.backfillTargetTables.includes(t)).join(", ") || "（无）"}`,
+    `SELF_CHECK_TABLES ↔ TENANT_TABLES − BACKFILL_EXEMPT_TABLES 不一致：\n      只有 SELF_CHECK ${selfCheck.filter((t) => !expectedSelf.includes(t)).join(", ") || "（无）"}\n      只有 TENANT−EXEMPT ${expectedSelf.filter((t) => !selfCheck.includes(t)).join(", ") || "（无）"}`,
+  );
+}
+// ② BACKFILL_TARGET == TENANT − EXEMPT − {o_project}（链源头单独处理）
+const expectedBackfill = expectedSelf.filter((t) => t !== "o_project").sort();
+if (JSON.stringify(backfill) !== JSON.stringify(expectedBackfill)) {
+  failures.push(
+    `BACKFILL_TARGET_TABLES ↔ TENANT_TABLES − BACKFILL_EXEMPT_TABLES − {o_project} 不一致：\n      只有回填目标 ${backfill.filter((t) => !expectedBackfill.includes(t)).join(", ") || "（无）"}\n      只有租户表 ${expectedBackfill.filter((t) => !backfill.includes(t)).join(", ") || "（无）"}`,
+  );
+}
+// ③ 三组并集**恰好**覆盖全部租户表（"多一张租户表但没归类"必红 —— 这是本门禁的核心判据）
+const union = [...new Set(["o_project", ...backfill, ...exempt])].sort();
+if (JSON.stringify(union) !== JSON.stringify(tenant)) {
+  failures.push(
+    `三方并集 {o_project} ∪ BACKFILL_TARGET_TABLES ∪ BACKFILL_EXEMPT_TABLES ↔ TENANT_TABLES 不一致：\n      只有并集 ${union.filter((t) => !tenant.includes(t)).join(", ") || "（无）"}\n      只有 TENANT ${tenant.filter((t) => !union.includes(t)).join(", ") || "（无）"}`,
   );
 }
 if (facts.selfCheckTables.length !== facts.backfillTargetTables.length + 1) {
@@ -136,5 +191,7 @@ if (failures.length) {
 const platformN = Object.values(policies).filter((p) => p === "platform").length;
 console.log(
   `check-tenant-policies 通过：策略表 ${Object.keys(policies).length} 条（tenant ${tenant.length} / platform ${platformN}）；退役 ${facts.droppedTables.length} 张；` +
-    `与 001_schema 的 ${created.length} 张建表逐项一致；回填目标 ${facts.backfillTargetTables.length} + 自检 ${facts.selfCheckTables.length}（复用 backfill-userid.ts 的导出常量）`,
+    `与 ${tables.files.length} 个迁移文件的 ${created.length} 张建表逐项一致（暂存表 ${staging.length} 张已排除：${staging.join(", ") || "（无）"}）；` +
+    `回填目标 ${facts.backfillTargetTables.length} + 自检 ${facts.selfCheckTables.length} + 豁免 ${exempt.length}` +
+    `（三者并集 == TENANT_TABLES，全部复用 backfill-userid.ts 的导出常量）`,
 );

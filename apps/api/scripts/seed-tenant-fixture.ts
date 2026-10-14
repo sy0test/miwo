@@ -19,20 +19,42 @@ const ARG_TOKEN_KEY = "--token-key=";
 const TOKEN_KEY =
   process.argv.find((a) => a.startsWith(ARG_TOKEN_KEY))?.slice(ARG_TOKEN_KEY.length) ?? "miwo-phase1b-e2e-token-key-0123456789";
 
+/** 幂等插入一行 `o_user`（Phase 1c Task 1 的新结构：username/role/status/…）。
+ *
+ * ⚠ 为什么不再写 `{ id, name, password }`：`005_accounts` 已把 `o_user` 重建成
+ *   §7.1 的 9 列（`passwordHash` / `role` / `status` / `tokenVersion` / `mustChangePassword` / …），
+ *   旧的 `name` / `password` 列**不存在了**。本脚本在迁移**之后**跑，所以必须按新结构写。
+ *   （旧结构下会以 `no such column: name` 失败，而 `verify-phase1b` 的 A 组会因此整组红。）
+ */
+async function upsertUser(id: number, username: string, role: "admin" | "user"): Promise<void> {
+  await systemDb("o_user")
+    .insert({
+      id,
+      username,
+      email: null,
+      passwordHash: "",       // 夹具账号**不可登录**（空哈希过不了 argon2）；验收只用 JWT
+      role,
+      status: "active",       // 夹具账号是"已开通"的；老库迁上来的行才是 disabled
+      tokenVersion: 0,
+      mustChangePassword: 0,
+      createdAt: 1,
+      lastLoginAt: null,
+    })
+    .onConflict("id")
+    .merge();
+}
+
 /** A=7 → project 7001；B=8 → project 8001（与 `tests/tenant-isolation-http.test.ts` 同一套 id 语义）。 */
 async function main(): Promise<void> {
   // ⚠ **必须先等启动链完成**（`@/utils/db` 的模块级 IIFE 会 `connect()` + `migrate.latest()`，但它是**异步**的）：
   //   不等它就会出现"表还没建好就开始 insert"的竞态（实测：`no such table: o_setting`，brief 里"模块加载即跑迁移"的说法不成立）。
   await dbReady;
   await systemDb("o_setting").insert({ key: "tokenKey", value: TOKEN_KEY }).onConflict("key").merge();
-  await systemDb("o_user")
-    .insert([
-      { id: 1, name: "admin", password: "x" },
-      { id: 7, name: "a", password: "x" },
-      { id: 8, name: "b", password: "x" },
-    ])
-    .onConflict("id")
-    .merge();
+  // ⚠ 夹具账号：id=1 必须是 admin（`policies.roleOfUserId` 的临时桥接按 id=1 判 admin，
+  //   `verify-phase1b` 的 D 组用它的 token 断言"管理员 GET dbInfo → 200"）。
+  await upsertUser(1, "admin", "admin");
+  await upsertUser(7, "a", "user");
+  await upsertUser(8, "b", "user");
   await systemDb("o_project")
     .insert([
       { id: 7001, userId: 7, name: "p1b-A", createTime: 1 },

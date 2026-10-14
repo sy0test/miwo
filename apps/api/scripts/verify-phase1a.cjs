@@ -171,13 +171,27 @@ function targetEnv(dataDir) {
     MIWO_DATA_DIR: dataDir,
   };
 }
-/** 27 张业务表（`001_schema` 的 createTable 集合；与 `src/db/migrations/001_schema.ts` 一致）。 */
+/**
+ * **1a 的口径**：27 张业务表（`001_schema` 的 createTable 集合）。
+ *
+ * ⚠ 它现在有**两个**用途，别混：
+ *   ① `tests/fixtures` 那条"导出表集合与 001_schema 的 27 张业务表逐名相等"—— 比的是
+ *      **老库导出物**（`scripts/export-sqlite.cjs` 的搬迁范围 = 老库那 27 张），与 001_schema 一致；
+ *   ② 全新一次**性库**里的业务表集合 —— 那是**全部迁移**跑完之后的结构，
+ *      Phase 1c Task 1 的 `005_accounts` / `006_quota_grants` 又建了 6 张（`o_user` 是重建，不增数量）。
+ *      ⇒ 下面那条 G_DB 断言必须用 `EXPECT_TABLES_ALL_MIGRATIONS`，不能用这一个。
+ */
 const EXPECT_TABLES = [
   "memories", "o_agentDeploy", "o_agentWorkData", "o_artStyle", "o_assets", "o_assets2Storyboard",
   "o_assetsRole2Audio", "o_event", "o_eventChapter", "o_image", "o_imageFlow", "o_modelPrompt",
   "o_novel", "o_project", "o_prompt", "o_script", "o_scriptAssets", "o_segment", "o_setting",
   "o_shot", "o_shotAssets", "o_storyboard", "o_tasks", "o_user", "o_vendorConfig", "o_video",
   "o_videoTrack",
+];
+/** 全部迁移跑完之后，**全新库**里的业务表 = 1a 的 27 张 + Phase 1c Task 1 的 6 张（005 四张 + 006 两张）。 */
+const EXPECT_TABLES_ALL_MIGRATIONS = [
+  ...EXPECT_TABLES,
+  "o_account", "o_modelGrant", "o_invite", "o_loginAttempt", "o_auditLog", "o_userSetting",
 ];
 /** 退役表（spec §5.4）：新库里**不许**出现。 */
 const RETIRED_TABLES = ["o_skillList", "o_skillAttribution"];
@@ -403,10 +417,13 @@ db.close();
   if (!names) {
     fail(G_DB, "能读到一次性库的表清单", probeErr || "探针没有输出可解析的 JSON（库没建出来？）");
   } else {
-    const missing = EXPECT_TABLES.filter((x) => !names.includes(x));
-    const extra = names.filter((x) => !EXPECT_TABLES.includes(x));
-    if (!missing.length && names.length === EXPECT_TABLES.length) pass(G_DB, `27 张业务表齐（${names.length}）`);
-    else fail(G_DB, "27 张业务表齐", `缺 ${missing.join(",") || "无"}；多 ${extra.join(",") || "无"}；总数 ${names.length}`);
+    // ⚠ 2026-10-12 / Phase 1c Task 1：口径从"001_schema 的 27 张"改成"**全部迁移**跑完后的 33 张"
+    //   （005_accounts / 006_quota_grants 又建了 6 张）。判据强度不变：仍是**逐名相等 + 不多不少**。
+    const EXPECT_FRESH = EXPECT_TABLES_ALL_MIGRATIONS;
+    const missing = EXPECT_FRESH.filter((x) => !names.includes(x));
+    const extra = names.filter((x) => !EXPECT_FRESH.includes(x));
+    if (!missing.length && names.length === EXPECT_FRESH.length) pass(G_DB, `${EXPECT_FRESH.length} 张业务表齐（${names.length}）`);
+    else fail(G_DB, `${EXPECT_FRESH.length} 张业务表齐`, `缺 ${missing.join(",") || "无"}；多 ${extra.join(",") || "无"}；总数 ${names.length}`);
     const retired = RETIRED_TABLES.filter((x) => names.includes(x));
     if (!retired.length) pass(G_DB, "退役表未创建（spec §5.4）");
     else fail(G_DB, "退役表未创建", retired.join(","));
@@ -416,7 +433,7 @@ db.close();
   // ⚠ 与 `verify-phase0.cjs` 里那一条是**同一个判据的两处落点**，故意都留：
   //   `verify-phase0` 会在没有 dev 库的环境里也跑，本脚本则总是跑 —— 谁被跳过都不至于让
   //   "删掉一个迁移"这件事漏过去。
-  const ALLOW = ["001_schema", "002_platform_seed", "003_vendor_asset_sync"];
+  const ALLOW = ["001_schema", "002_platform_seed", "003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants"];
   const idx = fs.existsSync(path.join(API_ROOT, "src", "db", "migrations", "index.ts"))
     ? fs.readFileSync(path.join(API_ROOT, "src", "db", "migrations", "index.ts"), "utf8")
     : "";

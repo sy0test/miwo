@@ -11,7 +11,7 @@
  *   cd apps/api && node --import=tsx ../../tools/tenant-policy-facts.ts
  * 输出：单行 `POLICY_FACTS=<JSON>`。
  */
-import { BACKFILL_TARGET_TABLES, SELF_CHECK_TABLES } from "@/db/legacy/backfill-userid";
+import { BACKFILL_EXEMPT_TABLES, BACKFILL_TARGET_TABLES, SELF_CHECK_TABLES } from "@/db/legacy/backfill-userid";
 import { DROPPED_TABLES, INFRA_TABLES, TABLE_POLICIES, TENANT_TABLES, USER_COLUMN } from "@/db/policies";
 
 const facts = {
@@ -22,15 +22,21 @@ const facts = {
   infraTables: [...INFRA_TABLES].sort(),
   tenantTables: [...TENANT_TABLES].sort(),
   backfillTargetTables: [...BACKFILL_TARGET_TABLES].sort(),
+  // ⚠【Phase 1c Task 1】豁免表也是**导出常量**（`backfill-userid.ts`），不是门禁里的第二份清单：
+  //   三方一致的不变量 = `TENANT == BACKFILL_TARGETS ∪ {o_project} ∪ EXEMPT`。
+  backfillExemptTables: [...BACKFILL_EXEMPT_TABLES].sort(),
   selfCheckTables: [...SELF_CHECK_TABLES].sort(),
 };
 
-// 自证：这四组必须都非空，否则就是"探针没真正读到模块"（调用方据此 exit 3）。
+// 自证：这几组必须都非空，否则就是"探针没真正读到模块"（调用方据此 exit 3）。
+// ⚠ `backfillExemptTables` **允许为空**（豁免集合法地可以是空的）：只要求"字段存在且是数组"，
+//   由调用方那侧的判据断言它非空（当前实现里它必然有 2 项）。
 if (
   Object.keys(facts.tablePolicies).length === 0 ||
   facts.tenantTables.length === 0 ||
   facts.backfillTargetTables.length === 0 ||
-  facts.selfCheckTables.length === 0
+  facts.selfCheckTables.length === 0 ||
+  !Array.isArray(facts.backfillExemptTables)
 ) {
   console.error("POLICY_FACTS_INCOMPLETE=" + JSON.stringify({ ...facts, tablePolicies: Object.keys(facts.tablePolicies).length }));
   process.exit(3);
