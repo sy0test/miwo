@@ -20,10 +20,12 @@ import { JOB_POLICY, type JobPolicy } from "@/jobs/policy";
 import { createJobRegistry, type JobRegistry } from "@/jobs/registry";
 import { createJobStore, type JobStore } from "@/jobs/store";
 import { mentionsId, reconcileAbandoned } from "@/jobs/reconcile";
-import type { JobDefinition } from "@/jobs/types";
+import { startWorkerLoop } from "@/jobs/worker";
+import type { JobContext, JobDefinition } from "@/jobs/types";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-job-reconcile-"));
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function cfg(file: string): MiwoConfig {
   return {
@@ -68,8 +70,9 @@ async function setup(policy: Partial<JobPolicy> = {}, extraDefs: Array<JobDefini
   const db = createKnex(cfg(path.join(TMP, `r${seq}.sqlite`)));
   await runMigrations(db);
   const registry: JobRegistry = createJobRegistry([def, ...extraDefs]);
-  const store: JobStore = createJobStore({ db, registry, policy: { ...JOB_POLICY, ...policy } });
-  return { db, store, registry };
+  const merged = { ...JOB_POLICY, ...policy };
+  const store: JobStore = createJobStore({ db, registry, policy: merged });
+  return { db, store, registry, policy: merged };
 }
 
 describe("产物对账（Phase 1a §5.2 ② 的终点方案）", () => {
@@ -183,9 +186,11 @@ describe("产物对账·修复轮（review-B F1–F4）", () => {
     }) as unknown as Knex;
 
     const report = await reconcileAbandoned({ db: broken, store, registry, dryRun: false, olderThanMs: 60_000 });
-    // 不 rejects，且报告如实反映两张表的判定
+    // 不 rejects；**真实写入数**：好表写了、坏表 0（F9 之后这两个字段语义分开）
     expect(report.abandonedRows.videos).toBe(1);
-    expect(report.abandonedRows.storyboards).toBe(1);
+    expect(report.abandonedRows.storyboards).toBe(0);      // 一行都没写
+    expect(report.wouldAbandonRows.storyboards).toBe(1);   // 但判定要改 1 行
+    expect(report.failedTables).toContain("o_storyboard");
     // o_video 已被改判（隔离生效：坏表不影响好表）
     expect((await realDb("o_video").where("state", "生成失败").first())).toBeTruthy();
     // o_storyboard 仍是"生成中"（它那张表确实失败了）——但**没有**半提交的静默假绿
@@ -268,6 +273,138 @@ describe("产物对账·修复轮（review-B F1–F4）", () => {
     expect(report.abandonedRows.videos).toBe(12); // 旧实现是 11（id=1 被 "videoId":12 前缀误保护）
     expect((await db("o_video").where("id", 12).first<any>()).state).toBe("生成中");
     expect((await db("o_video").where("id", 1).first<any>()).state).toBe("生成失败");
+    await db.destroy();
+  });
+});
+
+/**
+ * ── 复核轮遗留（review-B F8/F9）──
+ */
+describe("产物对账·复核轮遗留（F8 TOCTOU / F9 报告失真）", () => {
+  /** 注入式"只有某张表的 update 抛错"的 db 代理（独立一份，不复用 F1b 的写法）。 */
+  function dbWithFailingTable(realDb: Knex, failingTable: string): Knex {
+    return new Proxy(realDb as unknown as (...a: any[]) => any, {
+      apply(target, thisArg, args: any[]) {
+        const qb = Reflect.apply(target, thisArg, args);
+        if (args[0] !== failingTable) return qb;
+        return new Proxy(qb as object, {
+          get(t, prop, recv) {
+            if (prop !== "update") return Reflect.get(t, prop, recv);
+            return async () => {
+              throw new Error(`injected failure: ${failingTable} update`);
+            };
+          },
+        });
+      },
+    }) as unknown as Knex;
+  }
+
+  it("★ F9：`--apply` 的 `abandonedRows` 必须是**真实写入行数**（写失败的表计 0，并登记 failedTables）", async () => {
+    const { db, store, registry } = await setup();
+    await db("o_video").insert({ filePath: "/1/video/f9.mp4", time: Date.now() - 3_600_000, state: "生成中", scriptId: 1, projectId: 1 });
+    await db("o_image").insert({ filePath: "/1/image/f9.png", state: "生成中" });
+    await db("o_storyboard").insert({ scriptId: 1, projectId: 1, state: "生成中", createTime: Date.now() - 3_600_000 });
+
+    const report = await reconcileAbandoned({ db: dbWithFailingTable(db, "o_storyboard"), store, registry, dryRun: false, olderThanMs: 60_000 });
+
+    // 旧实现：三张表都在 UPDATE **之前**赋值 ⇒ storyboards=1，但实际一行都没写（夸大改判量）
+    expect(report.abandonedRows.storyboards).toBe(0); // 真实 affected = 0
+    expect(report.failedTables).toContain("o_storyboard");
+    // 判定数另开字段，不与"写入数"混淆
+    expect(report.wouldAbandonRows.storyboards).toBe(1);
+    // 另外两张表真的写了 ⇒ 计数与 DB 实况一致
+    expect(report.abandonedRows.videos).toBe(1);
+    expect(report.abandonedRows.images).toBe(1);
+    expect((await db("o_video").where("id", 1).first<any>()).state).toBe("生成失败");
+    expect((await db("o_storyboard").where("id", 1).first<any>()).state).toBe("生成中");
+    await db.destroy();
+  });
+
+  it("★ F9b：报告计数必须与 DB 实况**逐表**相等（成功路径）", async () => {
+    const { db, store, registry } = await setup();
+    await db("o_video").insert({ filePath: "/1/video/f9b.mp4", time: Date.now() - 3_600_000, state: "生成中", scriptId: 1, projectId: 1 });
+    await db("o_image").insert({ filePath: "/1/image/f9b.png", state: "生成中" });
+    await db("o_storyboard").insert({ scriptId: 1, projectId: 1, state: "生成中", createTime: Date.now() - 3_600_000 });
+
+    const report = await reconcileAbandoned({ db, store, registry, dryRun: false, olderThanMs: 60_000 });
+    const actual = {
+      videos: Number((await db("o_video").where("state", "生成失败").count({ n: "*" }).first<any>()).n),
+      images: Number((await db("o_image").where("state", "生成失败").count({ n: "*" }).first<any>()).n),
+      storyboards: Number((await db("o_storyboard").where("state", "生成失败").count({ n: "*" }).first<any>()).n),
+    };
+    expect(report.abandonedRows).toEqual(actual);
+    expect(report.failedTables).toEqual([]);
+    await db.destroy();
+  });
+
+  it("★ F9c：`dryRun` 下 `abandonedRows` 恒为 0（没写就是 0），判定数在 `wouldAbandonRows`", async () => {
+    const { db, store, registry } = await setup();
+    await db("o_video").insert({ filePath: "/1/video/f9c.mp4", time: Date.now() - 3_600_000, state: "生成中", scriptId: 1, projectId: 1 });
+
+    const report = await reconcileAbandoned({ db, store, registry, dryRun: true, olderThanMs: 60_000 });
+    expect(report.abandonedRows.videos).toBe(0);        // 没写 ⇒ 不许报"改了 1 条"
+    expect(report.wouldAbandonRows.videos).toBe(1);     // 但要说清"会改 1 条"
+    expect((await db("o_video").where("id", 1).first<any>()).state).toBe("生成中");
+    await db.destroy();
+  });
+
+  /**
+   * ★ F8：`verifyLease` 与 `store.heartbeat()` 之间的 **TOCTOU 窗口**。
+   *
+   * 两条分支**语义不等价**（reviewer 复核轮裁定）：
+   *   · `verifyLease()` 是**乐观读**（查 `state+workerId+leaseUntil`）；
+   *   · `store.heartbeat()` 是**带条件的原子 UPDATE**（`id+workerId+state='running'`，**无租约条件**）。
+   * 窗口内并发的 `cancel()` 或别的 worker 的 `reclaimExpired()` 会落地 ⇒ `heartbeat` 的 `affected=0`。
+   * 这条护栏在生产里可达（reviewer 探针 `PROBED/PROBED2`：`verifyLeasePassed=true cancelled=true
+   * store.heartbeat()=false`），但此前**无任何测试覆盖** ⇒ 拆掉它全量测试仍绿。
+   *
+   * 覆盖手法（确定性，不靠真并发）：包一层 store，`get()` 照旧返回"仍是我的 running + 有效租约"
+   * （让 `verifyLease` **通过**），而 `heartbeat()` **恒返回 false**（模拟窗口内被取消/被回收）。
+   * ⇒ 只有第二条分支能把 `aborted` 置真。
+   */
+  it("★ F8：`verifyLease` 通过但 `heartbeat()` 返回 false（TOCTOU 窗口）⇒ 必须 abort", async () => {
+    let aborted = false;
+    const def2: JobDefinition<{ ms: number }> = {
+      type: "t.toctou", timeoutMs: 10_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as { ms: number },
+      dedupeKey: () => null,
+      handle: async (ctx: JobContext, p: { ms: number }) => {
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, p.ms);
+          ctx.signal.addEventListener("abort", () => { aborted = true; clearTimeout(t); resolve(); });
+        });
+        return { ok: true };
+      },
+    };
+    // ⚠ 必须用**短心跳**（默认 `heartbeatMs` 是 15s，3s 的 handler 里一次都不会触发 ⇒
+    //    断言 `heartbeatCalls > 0` 会失败，那正是"观测不到这条分支"的形态）。
+    const { db, store, registry, policy } = await setup(
+      { leaseMs: 5_000, heartbeatMs: 100, idlePollMs: 50, busyPollMs: 20, shutdownGraceMs: 500 },
+      [def2],
+    );
+    // 包装：verifyLease 走真实 get()（窗口前一切正常）；heartbeat 恒 false（窗口内被取消）
+    let heartbeatCalls = 0;
+    let verifyLeasePassed = false;
+    const wrapped: JobStore = {
+      ...store,
+      get: async (id) => {
+        const row = await store.get(id);
+        if (row && row.state === "running" && (row.leaseUntil ?? 0) > Date.now()) verifyLeasePassed = true;
+        return row;
+      },
+      heartbeat: async () => { heartbeatCalls += 1; return false; },
+    };
+
+    await store.enqueue({ type: "t.toctou", userId: 1, payload: { ms: 3_000 } });
+    const runner = startWorkerLoop({ store: wrapped, registry, workerId: "w-test", policy, log: () => {} });
+    for (let i = 0; i < 60 && !aborted; i += 1) await sleep(50);
+    const abortedBeforeStop = aborted; // stop() 的强 abort 会掩盖事实，先取快照
+    await runner.stop();
+
+    // 观测不到这条分支 ⇒ 观测失败（这里用显式断言表达"必须真的走到"）
+    expect(heartbeatCalls).toBeGreaterThan(0);   // 心跳确实跑过
+    expect(verifyLeasePassed).toBe(true);        // 且 verifyLease 确实**通过**过（窗口前）
+    expect(abortedBeforeStop).toBe(true);        // ⇒ 只有 heartbeat=false 这条分支能达成
     await db.destroy();
   });
 });

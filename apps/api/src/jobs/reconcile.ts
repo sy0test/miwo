@@ -29,7 +29,20 @@ import type { JobRow } from "@/jobs/types";
 export interface ReconcileReport {
   dryRun: boolean;
   deadJobs: number;
+  /**
+   * **真实写入的行数**（`UPDATE` 的 `affected` 之和）—— 运维据此判断"残留清完了没"。
+   * ⚠ 【复核轮 F9】它**不是**"判定要改的行数"：写失败的表计 0。早先的实现把判定数写进这里，
+   *   于是 `job:admin --reconcile --apply` 会**夸大**改判量（声称改了 1 条、实际 0 条）。
+   *   `dryRun` 下恒为 0（没写就是 0）。
+   */
   abandonedRows: { videos: number; images: number; storyboards: number };
+  /**
+   * **判定**要改判的行数（不论有没有写成功；`dryRun` 下也如实报告）。
+   * ⚠ 与 `abandonedRows` 分开是 F9 的核心：报告要能同时回答"会改多少"与"真的改了多少"。
+   */
+  wouldAbandonRows: { videos: number; images: number; storyboards: number };
+  /** 改判时抛错的表（逐表隔离的可见性：运维要知道哪张表没被处理）。 */
+  failedTables: string[];
 }
 
 /** B 用：把**活跃** job 的 payload 收出来（只扫活跃行，量小）。 */
@@ -123,7 +136,13 @@ export async function reconcileAbandoned(deps: {
   const ts = now();
   const grace = deps.olderThanMs ?? JOB_POLICY.stuckGraceMs;
   const cutoff = ts - grace;
-  const report: ReconcileReport = { dryRun, deadJobs: 0, abandonedRows: { videos: 0, images: 0, storyboards: 0 } };
+  const report: ReconcileReport = {
+    dryRun,
+    deadJobs: 0,
+    abandonedRows: { videos: 0, images: 0, storyboards: 0 },
+    wouldAbandonRows: { videos: 0, images: 0, storyboards: 0 },
+    failedTables: [],
+  };
 
   // A. 死信 / 取消的 job
   const deadJobs = (await db("o_job")
@@ -160,16 +179,28 @@ export async function reconcileAbandoned(deps: {
       if (useTime) q.andWhere(o.timeCol as string, "<=", cutoff);
       const rows = (await q) as Array<{ id: number }>;
       const hit = rows.filter((r) => !mentionsId(payloads, o.key, Number(r.id)));
-      if (o.table === "o_video") report.abandonedRows.videos = hit.length;
-      if (o.table === "o_image") report.abandonedRows.images = hit.length;
-      if (o.table === "o_storyboard") report.abandonedRows.storyboards = hit.length;
+      // ⚠ 【复核轮 F9】这里记的是**判定数**（不论写没写成功），写进 `wouldAbandonRows`。
+      if (o.table === "o_video") report.wouldAbandonRows.videos = hit.length;
+      if (o.table === "o_image") report.wouldAbandonRows.images = hit.length;
+      if (o.table === "o_storyboard") report.wouldAbandonRows.storyboards = hit.length;
       if (dryRun || hit.length === 0) continue;
       const patch: Record<string, unknown> = { state: "生成失败" };
       patch[o.reasonCol] = ORPHAN_REASON; // ⚠ 列名逐表不同（`o_storyboard` 是 `reason`）
-      await db(o.table)
+      // ⚠ 【复核轮 F9】`abandonedRows` 记**真实 affected**（驱动如实回报的行数），不是 `hit.length`。
+      const affected = (await db(o.table)
         .whereIn("id", hit.map((r) => r.id))
-        .update(patch);
+        .update(patch)) as number;
+      const written = Number(affected) || 0;
+      if (o.table === "o_video") report.abandonedRows.videos = written;
+      if (o.table === "o_image") report.abandonedRows.images = written;
+      if (o.table === "o_storyboard") report.abandonedRows.storyboards = written;
+      // 驱动回报的行数与判定数不符 ⇒ 如实登记（不静默）
+      if (written !== hit.length) {
+        console.warn(`[reconcile] 表 ${o.table}：判定 ${hit.length} 行、实际写入 ${written} 行（驱动回报不一致）`);
+      }
     } catch (e) {
+      // 该表一行都没写 ⇒ `abandonedRows` 保持 0（不夸大），但把表名登记出来供运维排查
+      report.failedTables.push(o.table);
       console.error(`[reconcile] 表 ${o.table} 的孤儿改判失败（跳过该表，不影响其余表）：`, e);
     }
   }
