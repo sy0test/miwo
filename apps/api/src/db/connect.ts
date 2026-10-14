@@ -114,6 +114,32 @@ export function connectionConfig(c: MiwoConfig = config): Record<string, unknown
   return { filename: c.db.file };
 }
 
+/**
+ * SQLite 的**连接级**设置（Phase 1c Task 4）。
+ *
+ * ⚠ 为什么必须显式给：`better-sqlite3` 的默认 `busy_timeout` 是 **0** ⇒ 只要另一条连接
+ *   （另一个 knex 实例、或别的进程/测试 worker）正在写同一个库文件，本连接**立刻**抛
+ *   `SQLITE_BUSY: database is locked`，而不是等一会儿重试。症状是本任务实测到的：审计写入
+ *   让"认证路径的写"变多之后，`tests/authorization.test.ts` 的邀请码事务偶发地被锁红
+ *   （`update o_invite set usedCount = 1 … - database is locked`）。
+ * 5000 ms 与 MySQL 侧 `DBCONFIG.connectTimeout` 同量级：**够等一次短事务写完，又不会把
+ * "真的有死锁"变成无限等待**（超时后仍然抛错，不是静默成功）。
+ *
+ * ⚠ 刻意**不开 WAL**：WAL 会改库文件的落盘形态并生成 `-wal`/`-shm` 边车文件 —— 那属于
+ *   "改用户数据目录里的文件形状"的决定，不该夹在一个权限任务里顺手做（要做得单独拍板 + 验证）。
+ */
+export const SQLITE_BUSY_TIMEOUT_MS = 5000;
+
+/** knex `pool.afterCreate` 钩子（sqlite）：给每条新连接设 busy_timeout。 */
+export function sqliteAfterCreate(conn: unknown, done: (err: Error | null, conn?: unknown) => void): void {
+  try {
+    (conn as { pragma?: (sql: string) => unknown })?.pragma?.(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    done(null, conn);
+  } catch (err) {
+    done(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
 /** 建一个 knex 实例（不发起连接；knex 是惰性连接）。 */
 export function createKnex(c: MiwoConfig = config): Knex {
   if (c.db.driver === "mysql") {
@@ -127,6 +153,7 @@ export function createKnex(c: MiwoConfig = config): Knex {
     client: SQLITE_CLIENT,
     connection: connectionConfig(c),
     useNullAsDefault: true,
+    pool: { afterCreate: sqliteAfterCreate },
   });
 }
 

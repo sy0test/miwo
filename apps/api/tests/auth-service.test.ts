@@ -31,7 +31,7 @@ import { currentTenant } from "@/db/tenant-context";
 import { policyOf } from "@/db/policies";
 import { AUTH_TABLES } from "@/db/noContext";
 import { LOCK_MS, MAX_FAILED } from "@/auth/attempts";
-import { loadUserCtx, logout } from "@/auth/service";
+import { loadUserCtx, logout, registerWithInvite } from "@/auth/service";
 import registerRoute from "@/routes/auth/register";
 import authLoginRoute from "@/routes/auth/login";
 import refreshRoute from "@/routes/auth/refresh";
@@ -219,7 +219,14 @@ describe("注册（spec §15 O1：closed / invite / open 三模式）", () => {
     }
   });
 
-  it("invite：无码 / 错码 / 过期码都 403；正确码 200 且 usedCount 消费 1 次", async () => {
+  /**
+   * ⚠【Phase 1c Task 4 / L2 改写】旧断言用 `toContain("过期")` / `toContain("用尽")` 钉住了
+   * **对外文案的内部差异** —— 那正是可枚举"哪些码存在"的泄漏源（拿字典扫一遍：无效码一种措辞、
+   * 过期码另一种、用尽码再一种 ⇒ 后两类命中就说明"这个码存在"）。
+   * 现在改为断言**三者的 message 逐字节相同**（且等于统一文案），同时断言**内部 code 仍然不同**
+   * （排障要用）；判别力：把任一分支的 message 改回带差异的措辞 ⇒ 本用例立刻红。
+   */
+  it("invite：无码 / 错码 / 过期码 / 用尽码都 403，且**对外文案完全一致**（不可枚举哪些码存在）；正确码 200 且 usedCount 消费 1 次", async () => {
     const ip = nextIp();
     const srv = await serve();
     try {
@@ -239,7 +246,40 @@ describe("注册（spec §15 O1：closed / invite / open 三模式）", () => {
         { ip },
       );
       expect(expired.status).toBe(403);
-      expect(expired.body?.message).toContain("过期");
+
+      const disabledCode = `${TAG}-disabled`;
+      await addInvite(disabledCode, 1);
+      await systemDb("o_invite").where("code", disabledCode).update({ disabled: 1 });
+      const disabled = await request(
+        srv.port,
+        "POST",
+        "/api/auth/register",
+        { username: `${TAG}_n4`, password: PW, inviteCode: disabledCode },
+        { ip },
+      );
+      expect(disabled.status).toBe(403);
+
+      // ★ 四个"**提供了码**但不可用"的分支，对外 message 必须逐字节相同（拿不到任何"这个码存在吗"的信号）。
+      //   ⚠ 无码那一条（`INVITE_REQUIRED` / "需要邀请码"）**刻意不并入**：它不携带任何"码存在与否"的信息，
+      //     而"你还没填邀请码"是必须给用户的操作提示 —— 把它也抹平只会让人填不进去。
+      const messages = [badCode, expired, disabled].map((r) => String(r.body?.message));
+      for (const m of messages) expect(m).toBe("邀请码不可用");
+      expect(new Set(messages).size, `提供码的三个分支文案必须完全一致，实际 ${JSON.stringify(messages)}`).toBe(1);
+      expect(String(noCode.body?.message), "无码分支保持操作提示（不含存在性信息）").toContain("需要邀请码");
+      // 反向对照：**内部 code 仍然有差异**（否则排障时"过期"和"用尽"就分不出来了）。
+      // ⚠ 只能从 **service 层**观测：`AuthHttpError` 的 `code` 刻意**不出现在 HTTP 响应体**里
+      //   （`AuthHttpError` 只把 `httpStatus` 当 `code` 回传 —— 内部 code 若回传就是又一条枚举面）。
+      const codeOf = async (inviteCode: string): Promise<string> => {
+        try {
+          await registerWithInvite({ username: `${TAG}_probe_${crypto.randomUUID().slice(0, 8)}`, password: PW, inviteCode, ip });
+          return "<no-error>";
+        } catch (err: any) {
+          return String(err?.code);
+        }
+      };
+      expect(await codeOf("nope"), "不存在的码").toBe("INVITE_INVALID");
+      expect(await codeOf(expiredCode), "过期码").toBe("INVITE_EXPIRED");
+      expect(await codeOf(disabledCode), "被停用的码").toBe("INVITE_INVALID");
 
       const good = `${TAG}-good`;
       await addInvite(good, 1);
@@ -248,10 +288,11 @@ describe("注册（spec §15 O1：closed / invite / open 三模式）", () => {
       const invite = await systemDb("o_invite").where("code", good).first();
       expect(Number(invite.usedCount)).toBe(1);
 
-      // 用完 1 次（maxUses=1）⇒ 第二个用户必须被拒
+      // 用完 1 次（maxUses=1）⇒ 第二个用户必须被拒，且文案与前面四个分支**完全一致**
       const second = await request(srv.port, "POST", "/api/auth/register", { username: `${TAG}_ok2`, password: PW, inviteCode: good }, { ip });
       expect(second.status).toBe(403);
-      expect(second.body?.message).toContain("用尽");
+      expect(String(second.body?.message), "用尽码的对外文案必须与其它分支一致（不可枚举）").toBe("邀请码不可用");
+      expect(await codeOf(good), "内部 code 仍要能区分'用尽'").toBe("INVITE_EXHAUSTED");
       expect(await systemDb("o_user").where("username", `${TAG}_ok2`).first()).toBeUndefined();
     } finally {
       await srv.close();

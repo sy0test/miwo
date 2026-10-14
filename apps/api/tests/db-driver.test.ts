@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { MiwoConfig } from "@/config";
-import { clientConfig, connectionConfig, createKnex, describeTarget, dialectOfConfig, MYSQL_SESSION_SETUP, applyMysqlSessionSettings, mysqlAfterCreate } from "@/db/connect";
+import { clientConfig, connectionConfig, createKnex, describeTarget, dialectOfConfig, MYSQL_SESSION_SETUP, applyMysqlSessionSettings, mysqlAfterCreate, sqliteAfterCreate, SQLITE_BUSY_TIMEOUT_MS } from "@/db/connect";
 import { sqldialect, types } from "@/db/dialect";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-db-driver-"));
@@ -360,17 +360,41 @@ describe("MySQL 连接级会话设置（Task 7）", () => {
     expect(String((failed!.err as Error).message)).toMatch(/ECONNREFUSED/);
   });
 
-  it("接线：createKnex 的 mysql 分支把 afterCreate 接进池；sqlite 分支不带它", () => {
+  /**
+   * ⚠【Phase 1c Task 4 更新】sqlite 分支现在**也有** `pool.afterCreate` —— 但接的是
+   *   `sqliteAfterCreate`（设 `busy_timeout`，见 `connect.ts`），**不是** mysql 的
+   *   `mysqlAfterCreate`（设会话变量）。判据从"sqlite 没有这个钩子"改成
+   *   "**两个分支各接自己的钩子**"（更强的判据：接错钩子会当场红）。
+   */
+  it("接线：createKnex 的两个分支各接自己的 pool.afterCreate（mysql→会话设置 / sqlite→busy_timeout）", () => {
     const mysql = createKnex(cfgMysql());
     const sqlite = createKnex(cfgSqlite());
     try {
       // ⚠ 先断言"确实是 mysql 分支"（否则下面可能整块静默跳过 —— Task 7 前踩过的假绿形状）
       expect(mysql.client.config.client).toBe("mysql2");
       expect(typeof (mysql.client.config.pool as any)?.afterCreate).toBe("function");
-      expect((sqlite.client.config as any)?.pool?.afterCreate).toBeUndefined();
+      expect((mysql.client.config.pool as any).afterCreate).toBe(mysqlAfterCreate);
+      const sqliteHook = (sqlite.client.config as any)?.pool?.afterCreate;
+      expect(typeof sqliteHook, "sqlite 分支必须接 busy_timeout 钩子（否则并发写会立刻 SQLITE_BUSY）").toBe("function");
+      expect(sqliteHook).toBe(sqliteAfterCreate);
+      expect(sqliteHook, "sqlite 分支**不得**接 mysql 的会话设置钩子").not.toBe(mysqlAfterCreate);
     } finally {
       void mysql.destroy();
       void sqlite.destroy();
     }
+  });
+
+  it("sqlite 的 busy_timeout 钩子真的给连接设了 pragma（假连接自证，取值与常量一致）", () => {
+    const calls: string[] = [];
+    const fakeConn = { pragma: (sql: string) => calls.push(sql) };
+    let doneErr: unknown = "not-called";
+    let doneConn: unknown = null;
+    sqliteAfterCreate(fakeConn, (err, conn) => {
+      doneErr = err;
+      doneConn = conn;
+    });
+    expect(doneErr, "护栏：钩子必须回调 done(null, conn)，否则连接池会永久挂起").toBeNull();
+    expect(doneConn).toBe(fakeConn);
+    expect(calls).toEqual([`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`]);
   });
 });

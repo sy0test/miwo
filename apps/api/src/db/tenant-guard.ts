@@ -99,6 +99,35 @@ export class PlatformWriteDeniedError extends Error {
   }
 }
 
+/**
+ * **platform 表写只有两条合法路径**（Phase 1c Task 4；控制器裁定 §2.1）。
+ *
+ *   ① `ctx.role === "admin"` —— 真管理员请求（HTTP/socket 的 role 一律来自 DB 的 `o_user.role`，
+ *      见 `src/middleware/auth.ts`：**不信 token 里的 role**）。`source` 是**来源标签，不是权限开关**：
+ *      socket 侧同样用 DB 的 role 建 ctx（`src/socket/tenant.ts`），把它算成"第三条路"会让同一个
+ *      管理员在两种传输上行为不同；
+ *   ② 认证系统身份原语（`src/db/noContext.ts`）—— `source === "system"` **且** `role === "admin"`
+ *      **且** `userId === 0`（`AUTH_SYSTEM_USER_ID`）。三者缺一不可：
+ *        · 只认 `role === "admin"` 的话，任何一条"用 http 来源造一个 admin ctx"的代码都能写 platform
+ *          （判别力用例正是钉这一条：`source:"http" + role:"admin" + userId:0` 的**伪造** ctx 必须被拒）；
+ *        · 只认 `source === "system"` 的话，将来多一个 system 来源的 ctx（定时任务/迁移）会**默认**获得
+ *          platform 写权限 —— 那正是本任务要关掉的事。
+ *
+ * ⚠ 这条判据是**运行时**的那一半；静态那一半是 `tools/check-authenticated-writers.cjs`
+ *   （特权原语的调用文件集合 == 登记清单，未登记即红）。两半缺一不可：静态只认名字，动态只认形状。
+ * ⚠ 本文件刻意不**出现**那个原语的名字与调用形态：`check-authenticated-writers.cjs` 按**出现**计数，
+ *   写出来就会被算成"这个文件也是调用方"。名字在 `tools/auth-writer-registry.json` 里。
+ * ⚠ 判别力用例：`tests/platform-write-paths.test.ts`。
+ */
+export function isPlatformWriteCtx(ctx: TenantCtx | undefined): boolean {
+  if (!ctx) return false;
+  if (ctx.role !== "admin") return false;
+  // http / socket：真实的 DB role 已经由 authenticate() / bindSocketTenant() 复核过 ⇒ 放行。
+  if (ctx.source !== "system") return true;
+  // system：只认那个原语的形状（userId 0 = 不属于任何用户；租户条件注入后什么都查不到）。
+  return Number(ctx.userId) === 0;
+}
+
 /** join 族里"参数形式可解析"的方法（不含 `joinRaw`，它单独处置）。 */
 export const JOIN_METHODS: ReadonlySet<string> = new Set([
   "join", "innerJoin", "leftJoin", "leftOuterJoin", "rightJoin", "rightOuterJoin", "outerJoin", "fullOuterJoin",
@@ -469,7 +498,7 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
 
   /**
    * 平台/全局表的写权限：
-   *  - `platform` → 仅 admin（spec §6.2 的"写：仅 ctx.role === 'admin' 放行"）
+   *  - `platform` → 仅 `isPlatformWriteCtx()`（见下方"两条合法路径"）
    *  - `global`   → **任何角色都抛**（spec §6.2 的"全平台只读"）
    */
   function assertPlatformWriteAllowed(self: { policy: string | null; alias: string | null }): void {
@@ -478,8 +507,11 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
       throw new TenantIsolationError(`全局只读表 ${self.alias} 不接受任何写操作（global 策略）`);
     }
     const ctx = needCtx();
-    if (ctx.role !== "admin") {
-      throw new PlatformWriteDeniedError(`平台表 ${self.alias} 只允许管理员写（ctx.role=${ctx.role}, ctx.userId=${ctx.userId}）`);
+    if (!isPlatformWriteCtx(ctx)) {
+      throw new PlatformWriteDeniedError(
+        `平台表 ${self.alias} 只允许管理员写、或由特权原语 ` +
+          `noContext.ts 的系统身份代行（ctx.role=${ctx.role}, ctx.userId=${ctx.userId}, ctx.source=${ctx.source}）`,
+      );
     }
   }
 
