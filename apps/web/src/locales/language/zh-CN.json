@@ -1690,7 +1690,7 @@
   },
   "login": {
     "slogan": "智能短剧创作平台",
-    "tips": "默认账号：admin / admin123",
+    "tips": "没有默认账号：请用部署时创建的管理员账号登录，或向管理员索取邀请码后注册",
     "settings": "服务器设置",
     "requestAddress": "请求地址",
     "username": "用户名",
