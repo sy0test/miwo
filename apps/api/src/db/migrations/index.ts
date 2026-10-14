@@ -19,6 +19,8 @@ import vendorAssetSync from "@/db/migrations/003_vendor_asset_sync";
 import backfillUserId from "@/db/migrations/004_backfill_userid";
 import accounts from "@/db/migrations/005_accounts";
 import quotaGrants from "@/db/migrations/006_quota_grants";
+import jobQueue from "@/db/migrations/007_job_queue";
+import vendorGate from "@/db/migrations/008_vendor_gate";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -53,6 +55,12 @@ export const MIGRATIONS: Migration[] = [
   // Task 1（Phase 1c）产出 006_quota_grants（`o_account` 余额/冻结 + `o_modelGrant` 模型授权骨架；
   // **本阶段不计费**，Phase 2 才建 o_usage / o_ledger / o_order / o_price）。
   quotaGrants,
+  // Phase 1d Task 1 产出 007_job_queue（`o_job`：生成任务队列；可空唯一列 `dedupeActive` 做幂等锁，
+  // 毫秒时间列一律 `bigint unsigned`；四个索引分别服务领取/回收/按用户计数/按类型运维）。
+  jobQueue,
+  // Phase 1d Task 1 产出 008_vendor_gate（`o_gate`：厂商/类型分池的并发槽位；同名租约语义，
+  // 与 `o_job` 同一套"过期即可回收"的思想；无 payload/state 语义，故独立成表）。
+  vendorGate,
 ];
 
 /**

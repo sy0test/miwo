@@ -30,6 +30,12 @@
  *     于是 27 + 6 = **33 张在库表**（11 platform + 22 tenant），租户表由 20 → **22**，
  *     `tools/check-tenant-policies.cjs` 的计数断言同步（**改的是单一来源的判据，不是放宽门槛**：
  *     表体与建表清单仍由该门禁逐项相等断言）。
+ *     ⚠ **【Phase 1d Task 1 更新】** 再 +2 张 **platform** 表（`o_job` / `o_gate`，迁移 007/008：
+ *     任务队列与分池槽位）。**租户表仍是 22 张**（`check-tenant-policies.cjs` 的 `tenant.length !== 22`
+ *     判据不动），平台的表体清单断言（`tests/tenant-policies.test.ts`）随之 +2 —— 同样是
+ *     "改登记、不改判据"：门禁仍要求策略表与迁移建表清单**逐项相等**。
+ *     为什么这两张必须是 platform（而不是 tenant）：worker 的领取/回收要**跨租户扫描**，
+ *     而 worker 的系统身份是 `userId = 0`，注入租户条件后一条都查不到。详见下方 `o_job` 的登记注释。
  */
 export type TablePolicy = "tenant" | "platform" | "global";
 
@@ -76,6 +82,18 @@ export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.free
   o_prompt: "platform",        // 提示词模板（运营资产）
   o_modelPrompt: "platform",   // 模型↔提示词附件
   o_vendorConfig: "platform",  // 供应商配置（key 加密/不回传归 Phase 1c；策略在本阶段就收成"仅 admin 可写"）
+  // ---------- platform：Phase 1d 的任务队列基础设施（spec §9.2 / §9.3）----------
+  // ⚠ 为什么是 **platform** 而不是 tenant（这是本组必须论证的一处裁定）：
+  //   ① worker 的 `claim` / `reclaimExpired` **必须跨租户扫描**（"领取任意租户的待办任务"）。
+  //      若登记成 tenant，守卫会注入 `userId = ctx.userId`，而 worker 的系统身份是
+  //      `userId = 0`（`src/db/noContext.ts`）⇒ 一条都查不到，队列直接瘫痪。
+  //   ② 这两张表是**平台内部基础设施**（spec §6.2 口径）：`o_gate` 连 `userId` 列都没有。
+  //   ③ 归属口径（`o_job.userId`）：**不靠守卫自动回填**（platform 表不注入），
+  //      由入队方在 `payload` 之外**显式写 `userId`**（`src/jobs/store.ts` 的 enqueue 直接落列）。
+  //      代价必须写清：用户可见的"我的任务"查询**必须自己**按 ctx.userId 过滤 ——
+  //      路由层（Phase 1d Task 7）是唯一出口，`src/jobs/store.ts` 只提供不带租户条件的管理面。
+  o_job: "platform",           // 生成任务队列（Phase 1d Task 1 的 007_job_queue）
+  o_gate: "platform",          // 厂商/类型分池的并发槽位（Phase 1d Task 1 的 008_vendor_gate）
   // ---------- knex 基础设施（不是业务表，必须显式声明） ----------
   knex_migrations: "platform",
   knex_migrations_lock: "platform",

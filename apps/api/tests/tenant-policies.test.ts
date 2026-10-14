@@ -79,7 +79,9 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     const declared = Object.keys(TABLE_POLICIES).filter((t) => !INFRA_TABLES.has(t)).sort();
     expect(declared).toEqual(created); // 双向相等：少一张 / 多一张都红
     // ⚠ 阶段口径：1a 的 27 张 + Task 1 的 7 张（005 的 6 张 + 006 的 2 张 − 1 张是 o_user 重建）= 33
-    expect(created).toHaveLength(33);
+    //   + Phase 1d Task 1 的 2 张 **platform** 表（`o_job` / `o_gate`，迁移 007/008）= **35**。
+    //   租户表仍是 22 张（下面的用例钉住它）—— 队列表是跨租户的 platform 基础设施。
+    expect(created).toHaveLength(35);
     // ⚠ 退役表口径 = "被 dropTableIfExists 删过 **且从没被创建过**"（005/006 的 down 也删自建表，
     //   把那些算成"退役"会让这条断言永久对不上 —— 解析器里有详细说明）
     expect(parsed.retiredTables).toEqual(["o_skillAttribution", "o_skillList"]);
@@ -121,16 +123,23 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     expect(policyOf("knex_migrations_lock")).toBe("platform");
   });
 
-  it("平台表集合与附录 A 一致（Task 1 新增 4 张账号族表）", () => {
+  it("平台表集合与附录 A 一致（Task 1 新增 4 张账号族表；Phase 1d Task 1 再 +2 张队列表）", () => {
     const platform = Object.entries(TABLE_POLICIES).filter(([, p]) => p === "platform").map(([t]) => t).sort();
     expect(platform).toEqual(
       [
-        "knex_migrations", "knex_migrations_lock", "o_agentDeploy", "o_artStyle", "o_auditLog", "o_invite",
-        "o_loginAttempt", "o_modelPrompt", "o_prompt", "o_setting", "o_user", "o_userSetting", "o_vendorConfig",
+        "knex_migrations", "knex_migrations_lock", "o_agentDeploy", "o_artStyle", "o_auditLog", "o_gate",
+        "o_invite", "o_job", "o_loginAttempt", "o_modelPrompt", "o_prompt", "o_setting", "o_user",
+        "o_userSetting", "o_vendorConfig",
       ].sort(),
     );
     // ⚠ 登录发生在建租户 ctx 之前 ⇒ 账号族的承载表**必须**是 platform（无 ctx 可读）
     for (const t of ["o_user", "o_invite", "o_loginAttempt", "o_userSetting", "o_auditLog"]) {
+      expect(policyOf(t), t).toBe("platform");
+    }
+    // ⚠ Phase 1d Task 1：队列表/槽位表必须是 platform —— 若被改成 tenant，worker 的
+    //   `claim`/`reclaim` 在系统身份（userId=0）下会注入 `userId = 0`，一条候选都查不到。
+    //   判别力由 `tests/job-store.test.ts` 的"守卫 + 系统身份"组承担（真跑一次 claim）。
+    for (const t of ["o_job", "o_gate"]) {
       expect(policyOf(t), t).toBe("platform");
     }
   });
