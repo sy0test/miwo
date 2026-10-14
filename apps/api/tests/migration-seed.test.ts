@@ -18,6 +18,9 @@
  *       sqlite 的 TEXT `=` 本身就是 BINARY 语义，同一用例在 sqlite 上加固前后**都绿** ——
  *       零判别力，写在这里只会是一条假门禁。
  *   8. 单份种子文件**缺失或 0 行**时 `up` 当场抛错、错误信息指名文件（Task 5 独立审查修复 1）。
+ *      ⚠ 这条用例必须**就地改仓库里的种子文件**（候选路径里 `__dirname/seed` 永远第一个命中），
+ *        因此带**跨进程锁** + **前置自检**（见下方 `withSeedMutationLock` 的头注）——
+ *        否则两套测试并发跑会把那份被跟踪的源文件留成 0 字节。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -52,6 +55,57 @@ function freshDb(): Knex {
 }
 const SEED_DIR = path.resolve(__dirname, "..", "src", "db", "migrations", "seed");
 const SEED_FILES = ["o_prompt.ndjson", "o_agentDeploy.ndjson", "o_setting.platform.ndjson", "o_vendorConfig.templates.ndjson"];
+
+/**
+ * ── 为什么下面第 8 条用例需要一把**跨进程锁**（Phase 1d review-D F-4 的实测延伸）──
+ * 那条用例要验"单份种子缺失/0 行 ⇒ up 当场抛错"，而 `002_platform_seed` 的种子目录候选里
+ * `__dirname/seed`（= 仓库里的真实 `src/db/migrations/seed/`）**永远第一个命中** ⇒ 想制造
+ * "缺失/空"就只能**就地改这个被 git 跟踪的源文件**，再在 `finally` 里还原。
+ *
+ * 单跑没问题；**两套测试并发跑**时两个进程会互相踩这把"就地改—还原"：
+ *   进程 A `rmSync(src)` → 进程 B `copyFileSync(src, stash)`（stash 到空/缺失）→ B 还原时把**空文件**写回
+ *   ⇒ 仓库里那份 `o_vendorConfig.templates.ndjson` 被留成 **0 字节**（`git status` 变脏），
+ *   且此后**任何**"在全新数据目录上跑迁移"的用例/验收（002 的前置闸门）都会整片变红
+ *   —— 本会话实测：并发两套独占目录也各出 4 / 48 个 failed，全是这条引起的，**不是**产品缺陷。
+ *
+ * ⇒ 两件事一起做：
+ *   ① **机级互斥**（锁文件放 `os.tmpdir()`，不放在每套测试自己的 TMP 里）：同一时刻只有一个进程
+ *      处在"改—还原"窗口内。锁被 kill 留下超过 10 分钟按陈旧锁清掉。
+ *   ② **前置自检**：进来就发现源文件已被上一位留成缺失/0 字节时，**明确报错并给出 `git restore` 命令**，
+ *      而不是 stash 一个坏副本后级联出几十个红（那种红会掩盖真正的原因）。
+ */
+const SEED_MUTATION_LOCK = path.join(os.tmpdir(), "miwo-seed-mutation.lock");
+const SEED_LOCK_STALE_MS = 10 * 60_000;
+const SEED_LOCK_WAIT_MS = 45_000;
+
+async function withSeedMutationLock<T>(fn: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      fs.closeSync(fs.openSync(SEED_MUTATION_LOCK, "wx")); // 原子创建：已存在 ⇒ EEXIST
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - fs.statSync(SEED_MUTATION_LOCK).mtimeMs > SEED_LOCK_STALE_MS) {
+          fs.rmSync(SEED_MUTATION_LOCK, { force: true }); // 陈旧锁（上个进程被 kill）
+          continue;
+        }
+      } catch {
+        /* 刚被别的进程删掉，下一轮重试即可 */
+      }
+      if (Date.now() - t0 > SEED_LOCK_WAIT_MS) {
+        throw new Error(`[migration-seed.test] 等种子文件锁超时（${SEED_LOCK_WAIT_MS}ms，锁=${SEED_MUTATION_LOCK}）：另一个进程可能卡在同类用例里。`);
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    fs.rmSync(SEED_MUTATION_LOCK, { force: true });
+  }
+}
 
 /** 已迁移到最新（001_schema + 002_platform_seed）的一次性库。调用方负责 destroy。 */
 async function migratedDb(): Promise<Knex> {
@@ -280,54 +334,65 @@ describe("002_platform_seed", () => {
   /** 修复 1 的**可执行**回归网：单文件缺失 / 空文件必须抛错（错误信息要指名文件），不是静默 seed 0 行。 */
   it("种子文件缺失或为空时 up 抛错（错误信息指名文件）", async () => {
     const src = path.join(SEED_DIR, "o_vendorConfig.templates.ndjson");
-    const stash = path.join(TMP, "o_vendorConfig.templates.ndjson.stash");
-    fs.copyFileSync(src, stash);
-    // ⚠ 这两个库**只跑 001_schema**（不跑 002）：若跑过 002，`o_vendorConfig` 里已经有 8 行，
-    //    "0 行"就证明不了"抛错发生在真的什么都没插的时候"。只建表 → up 一失败，四张表必须全空。
-    const db1 = freshDb();
-    const db2 = freshDb();
-    const schemaOnly = makeMigrationSource(MIGRATIONS.filter((m) => m.name === "001_schema"));
-    await db1.migrate.latest({ migrationSource: schemaOnly });
-    await db2.migrate.latest({ migrationSource: schemaOnly });
-    const countAll = async (db: Knex) => {
-      const out: number[] = [];
-      for (const t of ["o_prompt", "o_agentDeploy", "o_setting", "o_vendorConfig"]) {
-        out.push(Number(((await db(t).count({ n: "*" }).first()) as any).n));
-      }
-      return out;
-    };
-    try {
-      // ① 缺失：up 必须抛错，且错误信息指名是哪一份文件
-      fs.rmSync(src);
-      await expect(
-        (async () => {
-          const mod = (await import("@/db/migrations/002_platform_seed")).default;
-          await mod.up(db1);
-        })(),
-      ).rejects.toThrow(/o_vendorConfig\.templates\.ndjson/);
-
-      // ② 空文件（0 行）：同样必须抛错 —— 这正是"静默 seed 0 行"的那条通道
-      fs.writeFileSync(src, "");
-      await expect(
-        (async () => {
-          const mod = (await import("@/db/migrations/002_platform_seed")).default;
-          await mod.up(db2);
-        })(),
-      ).rejects.toThrow(/o_vendorConfig\.templates\.ndjson/);
-
-      // ③ 两种情况下四张表都必须**一行都没有**：证明 up 不是"插了一半再炸"
-      expect(await countAll(db1)).toEqual([0, 0, 0, 0]);
-      expect(await countAll(db2)).toEqual([0, 0, 0, 0]);
-    } finally {
-      // 逐字节还原（用 copy 而不是写回字符串，避免行尾/BOM 被测试改写）
-      fs.copyFileSync(stash, src);
-      fs.rmSync(stash);
-      await db1.destroy();
-      await db2.destroy();
+    // ① 前置自检：上一位（被 kill / 并发）若把它留成缺失或 0 字节，这里**明确报错**，不要去 stash 一个坏副本
+    if (!fs.existsSync(src) || fs.statSync(src).size === 0) {
+      throw new Error(
+        `[migration-seed.test] 种子文件已被上一次运行留成"缺失/0 字节"：${src}\n` +
+          `  ⇒ 先跑：git restore apps/api/src/db/migrations/seed/o_vendorConfig.templates.ndjson\n` +
+          `  （本用例会在 __TEMP__/miwo-seed-mutation.lock 上加跨进程锁；这里报错说明上一次是在持锁期间被强杀的）`,
+      );
     }
-    // 还原后必须一切照旧（证明本用例没有留下副作用）
-    const db3 = await migratedDb();
-    expect(Number(((await db3("o_vendorConfig").count({ n: "*" }).first()) as any).n)).toBe(8);
-    await db3.destroy();
+    // ② 整个"改源文件—还原"窗口放进**跨进程锁**里（见文件头注释：并发跑会互相踩）
+    await withSeedMutationLock(async () => {
+      const stash = path.join(TMP, "o_vendorConfig.templates.ndjson.stash");
+      fs.copyFileSync(src, stash);
+      // ⚠ 这两个库**只跑 001_schema**（不跑 002）：若跑过 002，`o_vendorConfig` 里已经有 8 行，
+      //    "0 行"就证明不了"抛错发生在真的什么都没插的时候"。只建表 → up 一失败，四张表必须全空。
+      const db1 = freshDb();
+      const db2 = freshDb();
+      const schemaOnly = makeMigrationSource(MIGRATIONS.filter((m) => m.name === "001_schema"));
+      await db1.migrate.latest({ migrationSource: schemaOnly });
+      await db2.migrate.latest({ migrationSource: schemaOnly });
+      const countAll = async (db: Knex) => {
+        const out: number[] = [];
+        for (const t of ["o_prompt", "o_agentDeploy", "o_setting", "o_vendorConfig"]) {
+          out.push(Number(((await db(t).count({ n: "*" }).first()) as any).n));
+        }
+        return out;
+      };
+      try {
+        // ① 缺失：up 必须抛错，且错误信息指名是哪一份文件
+        fs.rmSync(src);
+        await expect(
+          (async () => {
+            const mod = (await import("@/db/migrations/002_platform_seed")).default;
+            await mod.up(db1);
+          })(),
+        ).rejects.toThrow(/o_vendorConfig\.templates\.ndjson/);
+
+        // ② 空文件（0 行）：同样必须抛错 —— 这正是"静默 seed 0 行"的那条通道
+        fs.writeFileSync(src, "");
+        await expect(
+          (async () => {
+            const mod = (await import("@/db/migrations/002_platform_seed")).default;
+            await mod.up(db2);
+          })(),
+        ).rejects.toThrow(/o_vendorConfig\.templates\.ndjson/);
+
+        // ③ 两种情况下四张表都必须**一行都没有**：证明 up 不是"插了一半再炸"
+        expect(await countAll(db1)).toEqual([0, 0, 0, 0]);
+        expect(await countAll(db2)).toEqual([0, 0, 0, 0]);
+      } finally {
+        // 逐字节还原（用 copy 而不是写回字符串，避免行尾/BOM 被测试改写）
+        fs.copyFileSync(stash, src);
+        fs.rmSync(stash);
+        await db1.destroy();
+        await db2.destroy();
+      }
+      // 还原后必须一切照旧（证明本用例没有留下副作用）
+      const db3 = await migratedDb();
+      expect(Number(((await db3("o_vendorConfig").count({ n: "*" }).first()) as any).n)).toBe(8);
+      await db3.destroy();
+    });
   }, 60000);
 });
