@@ -141,12 +141,20 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
    *
    * 为什么原用例对"心跳路径"没有判别力：原用例的 `maxAttempts:2` 在强夺租约后会走
    * **回收 → 重领 → supersede** 那条路，于是三条 abort 路径（`verifyLease` / `heartbeat` /
-   * supersede）任一条存活都能让它绿。reviewer 四档篡改实测：单拆任一条**仍绿**，全拆才红。
+   * supersede）任一条存活都能让它绿。
    *
-   * 隔离手法（reviewer 已验证可行）：`maxAttempts: 1` ⇒ 租约一到期回收方就把它判成 `dead`
-   * （终态），**永远不会被重领** ⇒ supersede 路径不可达 ⇒ 只剩心跳的两条分支能 abort。
-   * 这样"拆掉心跳的任一条分支"就必须红（实测：只拆一条仍绿 —— 两条分支互为兜底，属设计内的
-   * 冗余；**两条一起拆必红**，见 groupB-report.md 修复轮证据）。
+   * 隔离手法：`maxAttempts: 1` ⇒ 租约一到期回收方就把它判成 `dead`（终态），
+   * **永远不会被重领** ⇒ supersede 路径不可达 ⇒ 只剩心跳的两条分支能 abort。
+   *
+   * ⚠ **判别门槛（reviewer 复核轮裁定 + 本组独立复现）**：拆 **`verifyLease`** 那一条分支
+   *   ⇒ **本用例即红**（`expected false to be true`，`Tests 1 failed | 5 passed`）。
+   *   而只拆 `heartbeat` 分支**仍绿** —— 因为 `verifyLease` 已经先拦下了这种场景。
+   *   两条分支**语义不等价、都不该删**：
+   *     · `verifyLease()` 是**乐观读**（`state+workerId+leaseUntil`）；
+   *     · `store.heartbeat()` 是**带条件的原子 UPDATE**（`id+workerId+state='running'`，**无租约条件**）
+   *       ⇒ 它能捕获 `verifyLease` 通过之后、窗口内发生的并发 `cancel()`/`reclaimExpired()`
+   *       （**TOCTOU**，reviewer 探针 `PROBED/PROBED2` 实测该分支可达）。
+   *   `heartbeat` 那条分支的覆盖见 `tests/job-reconcile.test.ts` 的 **F8** 用例（注入式、确定性）。
    */
   it("★ 心跳路径隔离（maxAttempts=1，supersede 不可达）：租约丢失必须由心跳 abort", async () => {
     let aborted = false;
