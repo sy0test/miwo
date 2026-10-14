@@ -22,6 +22,7 @@
     "verify:dead-ddl": "node tools/check-dead-ddl.cjs",
     "verify:brand": "node tools/check-brand.cjs",
     "verify:deploy": "node tools/check-deploy-config.cjs",
+    "verify:auth-writers": "node tools/check-authenticated-writers.cjs",
     "verify:phase0": "node apps/api/scripts/verify-phase0.cjs",
     "verify:phase1a": "node apps/api/scripts/verify-phase1a.cjs",
     "verify:phase1a:ci": "node apps/api/scripts/verify-phase1a.cjs --ci",

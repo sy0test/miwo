@@ -1,0 +1,25 @@
+{
+  "note": "runAsAuth()（apps/api/src/db/noContext.ts）的调用方登记清单 —— 「未认证路径写 platform 表」的唯一合法入口。口径 = 精确集合：调用文件集合必须与本清单逐项相等（多一个红、少一个也红），且每文件的调用处数必须与 count 相等。由 tools/check-authenticated-writers.cjs（门禁）与 apps/api/tests/auth-writer-gate.test.ts（确定性用例）共同读取。",
+  "primitive": "runAsAuth",
+  "primitiveFile": "apps/api/src/db/noContext.ts",
+  "callers": [
+    {
+      "path": "apps/api/src/auth/service.ts",
+      "count": 6,
+      "note": "认证服务本身（唯一有资格代行的模块）：注册建号（registerWithInvite 的事务）、登录失败计数（saveAttempt）、登录成功清计数 + 写 lastLoginAt + 升级口令哈希、登出 tokenVersion++（logout）、改密 tokenVersion++（changePassword）。全部是「登录发生在建租户 ctx 之前」这条时序决定的：这些写不可能由请求 ctx 完成（此时还没有用户身份），也不该另开绕过口。",
+      "evidence": "tests/auth-service.test.ts#系统身份只碰 platform 表"
+    },
+    {
+      "path": "apps/api/src/routes/setting/loginConfig/updateUserPwd.ts",
+      "count": 1,
+      "note": "「设置 → 登录配置」改用户名/口令（旧前端唯一的改密入口）。写 o_user 是 platform 写，而调用者的 ctx 可能是 role=user ⇒ 走 runAsAuth 代行。⚠ 前置条件由本文件自己钉住：`Number(id) === Number(ctx.userId)` **或** 调用者是 admin，否则 403（否则这一行就是「任何人改任何账号」的全站账号接管）。⚠ **读**（取目标行、查重用户名）刻意走受守卫的 u.db ⇒ 本文件的调用点只有**写**这一处。",
+      "evidence": "tests/authorization.test.ts#★ L3：改用户名撞唯一键 ⇒ 409（不是 500、不回显约束名），且原行没被改 + 有审计"
+    },
+    {
+      "path": "apps/api/src/utils/audit.ts",
+      "count": 1,
+      "note": "审计写入（spec Tier 1 #17）。`o_auditLog` 是 **platform** 策略的表，而审计必须能从**未认证路径**写（登录失败/锁定/邀请码消费都发生在建租户 ctx 之前）⇒ 统一经 runAsAuth 的系统身份落库。**调用点只有 1 处**：`audit()` 里那一个 `runAsAuth(async () => …)`（`auditPlatformWrite` 只是转发到 `audit`，不自己调原语）。⚠ 这是「未认证路径怎么落审计」的**唯一实现点** —— 别在业务文件里各写一遍。",
+      "evidence": "tests/authorization.test.ts#★ 登录成功 / 登录失败（账号不存在）/ 锁定 ⇒ 各有对应的审计行"
+    }
+  ]
+}
