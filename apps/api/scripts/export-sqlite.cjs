@@ -54,9 +54,23 @@ const argOf = (p, d) => {
 const SRC = path.resolve(API_ROOT, argOf("--db=", path.join("data", "db2.sqlite")));
 const OUT = path.resolve(API_ROOT, argOf("--out=", path.join(".tmp-migrate", "export")));
 
-/** 与 spec 附录 A 的 29 张表一致；退役的两张（o_skillList / o_skillAttribution）不搬。 */
+/**
+ * 搬迁范围（与 spec 附录 A 的 29 张表相比：退役的两张不搬，**`o_user` 也不搬**）。
+ *
+ * ⚠⚠ **【Phase 1c Task 1】`o_user` 已从搬迁范围移除**，理由不是"少搬一张"：
+ *   老库的 `o_user` 是**明文口令**的 3 列表（`id` / `name` / `password`；`lib/initDB.ts:24`
+ *   种的是 `admin/admin123`）。`005_accounts` 把它重建成 §7.1 的 10 列
+ *   （`username` / `passwordHash` / `role` / `status` / …），**列名与语义都变了**：
+ *     · 按"同名同列"搬迁会**一条都插不进去**（`username` / `passwordHash` 是 NOT NULL 且无默认值
+ *       → `SQLITE_CONSTRAINT_NOTNULL`；实测：`verify:phase1a` 的"真·闭环"正是在 import 这一步红）；
+ *     · 就算强插成功，也等于把**明文口令**带进新系统 —— 恰恰是 `005_accounts` / spec §7.1
+ *       明令避免的事。
+ *   账号的迁移路径是 `005_accounts` 自己的 up（老行 → `status='disabled'` + 空哈希），
+ *   再由运营走 bootstrap 管理员流程重新开通（Phase 1c 的后续任务）。**不是**导出/导入链路。
+ *   ⇒ 搬迁范围 27 → **26 张**；`verify-phase1a.cjs` 的 C 组断言同步（判据强度不变：仍是逐名相等）。
+ */
 const TABLES = [
-  "o_user", "o_project", "o_artStyle", "o_agentDeploy", "o_setting", "o_tasks", "o_prompt", "o_modelPrompt",
+  "o_project", "o_artStyle", "o_agentDeploy", "o_setting", "o_tasks", "o_prompt", "o_modelPrompt",
   "o_novel", "o_event", "o_eventChapter", "o_script", "o_assets", "o_image", "o_storyboard",
   "o_agentWorkData", "o_video", "o_videoTrack", "o_vendorConfig", "o_imageFlow",
   "o_assets2Storyboard", "o_scriptAssets", "memories", "o_assetsRole2Audio", "o_segment", "o_shot", "o_shotAssets",

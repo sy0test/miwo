@@ -74,9 +74,19 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Knex } from "knex";
 
-/** 与 spec 附录 A 的 29 张表一致；退役的两张（`o_skillList` / `o_skillAttribution`）不搬。 */
+/**
+ * 搬迁范围（与 spec 附录 A 的 29 张表相比：退役的两张不搬，**`o_user` 也不搬**）。
+ *
+ * ⚠⚠ **【Phase 1c Task 1】`o_user` 已从搬迁范围移除**（与 `scripts/export-sqlite.cjs` 的
+ *   `TABLES` 逐名一致，两边由测试钉住）：老库的 `o_user` 是明文口令的 3 列表
+ *   （`id` / `name` / `password`），而 `005_accounts` 之后它是 §7.1 的 10 列
+ *   （`username` / `passwordHash` / `role` / …）。按"同名同列"导入会因
+ *   `username` / `passwordHash` 是 NOT NULL 且无默认值而**整表插不进去**
+ *   （实测 `SQLITE_CONSTRAINT_NOTNULL`）；而"强插成功"更糟 —— 那等于把明文口令带进新系统。
+ *   账号的迁移归 `005_accounts` 的 up（老行 → disabled + 空哈希）+ bootstrap 流程。
+ */
 export const LEGACY_TABLES = [
-  "o_user", "o_project", "o_artStyle", "o_agentDeploy", "o_setting", "o_tasks", "o_prompt", "o_modelPrompt",
+  "o_project", "o_artStyle", "o_agentDeploy", "o_setting", "o_tasks", "o_prompt", "o_modelPrompt",
   "o_novel", "o_event", "o_eventChapter", "o_script", "o_assets", "o_image", "o_storyboard",
   "o_agentWorkData", "o_video", "o_videoTrack", "o_vendorConfig", "o_imageFlow",
   "o_assets2Storyboard", "o_scriptAssets", "memories", "o_assetsRole2Audio", "o_segment", "o_shot", "o_shotAssets",
@@ -1311,7 +1321,7 @@ function isTextType(type: string): boolean {
  * 那是"抽样覆盖不足的假绿"，不是"数据一致"。
  *
  * 取数用 SQL 而不是把整表读进内存：只 `SELECT col ORDER BY LENGTH(col) DESC LIMIT 1` /
- * `MAX(col)` / `MIN(col)`，每列 3 条常量级查询（本项目**搬迁范围** 27 张表 / **207** 列实测秒级；整库口径 29 表 / 219 列 —— 差是退役两表。⚠ 别用目标 schema 的 226 列，那是第三个口径）。
+ * `MAX(col)` / `MIN(col)`，每列 3 条常量级查询（本项目**搬迁范围** 26 张表 / **204** 列实测秒级；整库口径 29 表 / 219 列 —— 差是退役两表 + `o_user`。⚠ 别用目标 schema 的 226 列，那是第三个口径）。
  * `MAX/MIN` 在 SQLite 的**列亲和性**下按数值比较（TEXT 列里混的数字串会被当数字比）；
  * 那对"抽边界"这个目的无害：抽中的必须是**真实存在的行**，而取行用主键回来取，不做任何转换。
  *

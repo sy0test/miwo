@@ -21,7 +21,7 @@
  *
  * 断言分组：
  *   A 构件：迁移机制与工具链的产物存在
- *   B 库层：sqlite 空目录能起、迁移幂等、27 张表齐、退役表不存在
+ *   B 库层：sqlite 空目录能起、迁移幂等、33 张表齐、退役表不存在
  *   C 数据层：导出 → 导入(dry-run) → 比对 三个脚本可执行且对 dev 库 EXIT 0
  *   D 静态 MySQL DDL：不连服务器也能证明 mysql 侧的 DDL 合法（自增/varchar 主键/唯一键）
  *   E 仓库卫生：门禁脚本全绿、无启动期写盘、旧仓库零改动
@@ -172,14 +172,12 @@ function targetEnv(dataDir) {
   };
 }
 /**
- * **1a 的口径**：27 张业务表（`001_schema` 的 createTable 集合）。
+ * **1a 的业务表清单**：27 张（`001_schema` 的 createTable 集合）。
  *
  * ⚠ 它现在有**两个**用途，别混：
- *   ① `tests/fixtures` 那条"导出表集合与 001_schema 的 27 张业务表逐名相等"—— 比的是
- *      **老库导出物**（`scripts/export-sqlite.cjs` 的搬迁范围 = 老库那 27 张），与 001_schema 一致；
- *   ② 全新一次**性库**里的业务表集合 —— 那是**全部迁移**跑完之后的结构，
- *      Phase 1c Task 1 的 `005_accounts` / `006_quota_grants` 又建了 6 张（`o_user` 是重建，不增数量）。
- *      ⇒ 下面那条 G_DB 断言必须用 `EXPECT_TABLES_ALL_MIGRATIONS`，不能用这一个。
+ *   ① **全新一次性库**里跑完全部迁移后的业务表集合 —— 那是 33 张（Phase 1c Task 1 又建了 6 张），
+ *      见 `EXPECT_TABLES_ALL_MIGRATIONS`；
+ *   ② 与**老库导出物**比对时的口径 —— 见 `LEGACY_EXPORT_TABLES`（26 张，**不含 `o_user`**）。
  */
 const EXPECT_TABLES = [
   "memories", "o_agentDeploy", "o_agentWorkData", "o_artStyle", "o_assets", "o_assets2Storyboard",
@@ -193,6 +191,19 @@ const EXPECT_TABLES_ALL_MIGRATIONS = [
   ...EXPECT_TABLES,
   "o_account", "o_modelGrant", "o_invite", "o_loginAttempt", "o_auditLog", "o_userSetting",
 ];
+/**
+ * **老库搬迁范围**（= `scripts/export-sqlite.cjs` 的 `TABLES` 与 `src/db/legacy/import.ts` 的
+ * `LEGACY_TABLES`，两处逐名一致）。
+ *
+ * ⚠【Phase 1c Task 1】27 → **26**：`o_user` 被移出搬迁范围 —— 老库那张表是明文口令的 3 列
+ *   （`id`/`name`/`password`），而 `005_accounts` 之后目标是 §7.1 的 10 列
+ *   （`username`/`passwordHash`/…）；按同名同列导入会因 NOT NULL 无默认值整表插不进去
+ *   （实测 `SQLITE_CONSTRAINT_NOTNULL`），强插成功更糟（= 把明文口令带进新系统）。
+ *   账号迁移归 `005_accounts` 的 up + bootstrap 流程。
+ *   ⚠ 下面的断言用 `EXPECT_TABLES = LEGACY_EXPORT_TABLES + {o_user}` 把这条差**钉死**：
+ *   多一张、少一张都红，而不是"随手改个数字"。
+ */
+const LEGACY_EXPORT_TABLES = EXPECT_TABLES.filter((t) => t !== "o_user");
 /** 退役表（spec §5.4）：新库里**不许**出现。 */
 const RETIRED_TABLES = ["o_skillList", "o_skillAttribution"];
 
@@ -527,18 +538,27 @@ db.close();
           mf.sourceSha256Before === mf.sourceSha256After && !!mf.sourceSha256After,
           `before=${mf.sourceSha256Before} after=${mf.sourceSha256After}`,
         );
-        // 27 张表的集合必须与 001_schema 的清单**逐名相等**（含"不多不少"）。
+        // 搬迁范围的表集合必须**逐名相等**（含"不多不少"）。
+        // ⚠【Phase 1c Task 1】口径从"001_schema 的 27 张"改成"搬迁范围 26 张"（不含 `o_user`），
+        //   并同时断言 `搬迁范围 ∪ {o_user} == 001_schema 的 27 张` —— 于是"谁多搬/少搬一张"
+        //   与"001_schema 变了"这两种情况都能被分开报出来。
         const got = mf.tables.map((t) => t.name).sort();
-        const want = [...EXPECT_TABLES].sort();
+        const want = [...LEGACY_EXPORT_TABLES].sort();
         pass(
           G_DATA,
-          `导出表集合与 001_schema 的 27 张业务表逐名相等`,
+          `导出表集合与搬迁范围的 ${LEGACY_EXPORT_TABLES.length} 张表逐名相等（不含 o_user：见 export-sqlite.cjs 的说明）`,
           JSON.stringify(got) === JSON.stringify(want),
           `缺 ${JSON.stringify(want.filter((x) => !got.includes(x)))} / 多 ${JSON.stringify(got.filter((x) => !want.includes(x)))}`,
         );
+        pass(
+          G_DATA,
+          `搬迁范围 ∪ {o_user} == 001_schema 的 ${EXPECT_TABLES.length} 张业务表（差集只有 o_user，逐名）`,
+          JSON.stringify([...LEGACY_EXPORT_TABLES, "o_user"].sort()) === JSON.stringify([...EXPECT_TABLES].sort()),
+          `搬迁范围 ${LEGACY_EXPORT_TABLES.length} 张 + o_user = ${LEGACY_EXPORT_TABLES.length + 1} 张；001_schema ${EXPECT_TABLES.length} 张`,
+        );
 
         // ---- Ruling 93 对账（权威口径在**同一个** manifest 里现算，不手抄数字）----
-        // ⚠ 为什么必须"现算"：报告里出现的 27/207/2373 与 fixture 里的 29/219/2408
+        // ⚠ 为什么必须"现算"：报告里出现的 26/204/2372 与 fixture 里的 29/219/2408
         //    是**两个不同口径**（见 D 组），而人写的数字会漂移。这里把"导出物口径"钉成断言。
         //    fixture 口径的核对在 D 组（那边会断言两份清单**恰好差那两张退役表**）。
         {
@@ -551,7 +571,7 @@ db.close();
 
         // ---- Ruling 93 对账：导出物口径 vs `tests/fixtures/legacy-column-stats.json` 口径 ----
         // 两个口径的差必须**恰好**是那两张退役表（`o_skillList` / `o_skillAttribution`）：
-        //   · `export-sqlite.cjs` 的 `TABLES` 是"搬迁范围"（27 张，退役表不搬）；
+        //   · `export-sqlite.cjs` 的 `TABLES` 是"搬迁范围"（26 张；退役表与 `o_user` 都不搬）；
         //   · `gen-legacy-column-stats.cjs` 扫**整库** `sqlite_master`（29 张，因为老库里它们还在）。
         //   断言"差集恰好是这两张"就把"计数口径差异"与"数据漂移"分开了 ——
         //   漂移会让差集变成别的东西，而口径差异不会。
@@ -573,11 +593,15 @@ db.close();
               const fxTables = Object.keys(doc.stats || {});
               const expTables = mf.tables.map((t) => t.name);
               const onlyInFixture = fxTables.filter((t) => !expTables.includes(t)).sort();
+              // ⚠【Phase 1c Task 1】期望差集 = 两张**退役表** + `o_user`：
+              //   fixture（`gen-legacy-column-stats.cjs`）扫**整库**，而 `o_user` 已移出搬迁范围。
+              //   三个名字**逐个写死**（不是"差集长度 == 3"）——多一个少一个都要报出是谁。
+              const EXPECT_ONLY_IN_FIXTURE = [...RETIRED_TABLES, "o_user"].sort();
               pass(
                 G_DATA,
-                `Ruling93 口径对账：fixture 比导出物多出的表**恰好**是 ${RETIRED_TABLES.slice().sort().join(" + ")}（口径差异，不是漂移）`,
-                JSON.stringify(onlyInFixture) === JSON.stringify([...RETIRED_TABLES].sort()),
-                `fixture=${fxTables.length} 表 / 导出物=${expTables.length} 表；只多出 ${JSON.stringify(onlyInFixture)}`,
+                `Ruling93 口径对账：fixture 比导出物多出的表**恰好**是 ${EXPECT_ONLY_IN_FIXTURE.join(" + ")}（口径差异，不是漂移）`,
+                JSON.stringify(onlyInFixture) === JSON.stringify(EXPECT_ONLY_IN_FIXTURE),
+                `fixture=${fxTables.length} 表 / 导出物=${expTables.length} 表；只多出 ${JSON.stringify(onlyInFixture)}（期望 ${JSON.stringify(EXPECT_ONLY_IN_FIXTURE)}）`,
               );
               pass(
                 G_DATA,
@@ -618,7 +642,7 @@ db.close();
         // ⚠ 退出码口径（**实测**，`import-mysql.cjs` 的约定写在它文件头）：
         //    · 0 = dry-run 跑通（目标库已迁移时）；
         //    · 2 = **preflight 拒绝**（阻断项非空）—— 本组给的目标是**一次性空目录**，
-        //      里面还没有迁移过的表，所以 27 条 `missing-target-table` 是**预期**结论。
+        //      里面还没有迁移过的表，所以 26 条 `missing-target-table` 是**预期**结论。
         //      它恰恰证明"preflight 真的在拦"（而不是"空目标也放过去写"）。
         //    所以判据是 `{0,2}` **且**输出里明确出现 DRY-RUN 或被 preflight 拒绝，
         //    并且**另外**用 import-report 的 `applied === false` 钉住"一行都没写"。
@@ -626,7 +650,7 @@ db.close();
           pass(
             G_DATA,
             `导入（dry-run，目标=一次性未迁移空库）EXIT ${i.status} 且明确未写库`,
-            `预期判据：preflight 拦住 27 张缺表（不是"空库也放过去"）；${(iOut.match(/\[import\][^\n]*/g) || []).slice(-1)[0] || ""}`,
+            `预期判据：preflight 拦住 26 张缺表（不是"空库也放过去"）；${(iOut.match(/\[import\][^\n]*/g) || []).slice(-1)[0] || ""}`,
           );
         } else {
           fail(G_DATA, "导入（dry-run）跑通且明确未写库", tail(iOut, 900));
