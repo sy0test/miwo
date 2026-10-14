@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
 import { transform } from "sucrase";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 
 export default router.post(
@@ -12,6 +13,7 @@ export default router.post(
     id: z.string(),
     inputValues: z.record(z.string(), z.string()),
   }),
+  requireAdmin,
   async (req, res) => {
     const { id, inputValues } = req.body;
 

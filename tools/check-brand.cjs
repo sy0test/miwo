@@ -225,17 +225,11 @@ const EXEMPTIONS = [
       "`TOONFLOW_PROXY` 环境变量名（含注释里的同名提及）。它的重命名已排 **Phase 1c**（Task 12 必做 7 记载）；本轮改它会让现网代理配置失效。",
   },
   {
-    scope: "apps/api/src/routes/setting/dbConfig/exportData.ts",
-    match: "toonflow-backup-",
-    min: 1,
-    reason:
-      "导出的备份文件名前缀（`toonflow-backup-<ts>.json`）。属 apps/api/src 业务源码，本轮硬约束不动；且必须与前端 dbConfig.vue 的同名前缀保持一致，属 Phase 1c 品牌收口。",
-  },
-  {
     scope: "apps/web/src/components/setting/components/dbConfig.vue",
     match: "toonflow-backup-",
     min: 1,
-    reason: "前端下载用的同一备份文件名前缀，必须与后端 exportData.ts 一致（见上一条）。",
+    reason:
+      "前端下载用的旧备份文件名前缀（`a.download` 的默认名）。后端已在 Phase 1c Task 4 改成 `miwo-backup-`（⇒ 后端那条豁免按本门禁的规矩**删除**，不是放宽：该文件已不再含任何品牌 token）；前端这一行归 **Task 11**（本任务硬约束禁改 apps/web/**，故在此显式登记）。",
   },
   {
     scope: "apps/api/src/routes/assets/getMaterialData.ts",

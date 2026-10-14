@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 
 // 检查语言模型
@@ -15,6 +16,7 @@ export default router.post(
     imageBase64: z.string().optional(),
     prompt: z.string(),
   }),
+  requireAdmin,
   async (req, res) => {
     const { modelName, imageBase64, id, prompt } = req.body;
 

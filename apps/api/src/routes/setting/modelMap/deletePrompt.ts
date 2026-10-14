@@ -5,6 +5,7 @@ import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import fs from "fs/promises";
 import path from "path";
+import { requireAdmin } from "@/middleware/tenant";
 
 const router = express.Router();
 
@@ -13,6 +14,7 @@ export default router.post(
   validateFields({
     path: z.string(),
   }),
+  requireAdmin,
   async (req, res) => {
     const { path: filePath } = req.body;
 

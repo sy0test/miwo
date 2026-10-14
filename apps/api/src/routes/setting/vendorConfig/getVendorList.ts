@@ -1,9 +1,10 @@
 import express from "express";
 import { success } from "@/lib/responseFormat";
 import u from "@/utils";
+import { requireAdmin } from "@/middleware/tenant"; // Phase 1c Task 4：整族 13 个端点收权（本文件是最敏感的一个 —— 它把供应商 inputValues 回传出去）
 const router = express.Router();
 
-export default router.post("/", async (req, res) => {
+export default router.post("/", requireAdmin, async (req, res) => {
   const data = await u.db("o_vendorConfig").select("*");
 
   const list = (

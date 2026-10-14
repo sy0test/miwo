@@ -3,12 +3,14 @@ import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 export default router.post(
   "/",
   validateFields({
     link: z.string(),
   }),
+  requireAdmin,
   async (req, res) => {
     const { link } = req.body;
     const text = await fetch(link).then((res) => res.text());

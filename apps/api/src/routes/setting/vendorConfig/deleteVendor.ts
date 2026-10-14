@@ -5,12 +5,14 @@ import path from "path";
 import fs from "fs";
 import u from "@/utils";
 import { z } from "zod";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 export default router.post(
   "/",
   validateFields({
     id: z.string(),
   }),
+  requireAdmin,
   async (req, res) => {
     const { id } = req.body;
     await u.db("o_vendorConfig").where("id", id).del();

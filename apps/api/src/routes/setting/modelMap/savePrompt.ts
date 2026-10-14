@@ -5,6 +5,7 @@ import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import fs from "fs/promises";
 import path from "path";
+import { requireAdmin } from "@/middleware/tenant";
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ export default router.post(
     data: z.string(),
     type: z.enum(["image", "video"]),
   }),
+  requireAdmin,
   async (req, res) => {
     const { name, data, type } = req.body;
 

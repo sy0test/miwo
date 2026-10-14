@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 
 // 检查语言模型
@@ -19,6 +20,7 @@ export default router.post(
       }),
     ),
   }),
+  requireAdmin,
   async (req, res) => {
     const { modelName, messages, id } = req.body;
 

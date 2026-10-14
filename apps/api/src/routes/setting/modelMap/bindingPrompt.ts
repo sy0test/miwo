@@ -3,6 +3,7 @@ import { error, success } from "@/lib/responseFormat";
 import u from "@/utils";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 
 export default router.post(
@@ -13,6 +14,7 @@ export default router.post(
     path: z.string(),
     fileName: z.string(),
   }),
+  requireAdmin,
   async (req, res) => {
     const { vendorId, model, path, fileName } = req.body;
     const data = await u.db("o_modelPrompt").where("model", model).andWhere("vendorId", vendorId).select("*").first();

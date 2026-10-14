@@ -3,6 +3,7 @@ import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
+import { requireAdmin } from "@/middleware/tenant";
 const router = express.Router();
 
 export default router.post(
@@ -11,6 +12,7 @@ export default router.post(
     id: z.string(),
     modelName: z.string(),
   }),
+  requireAdmin,
   async (req, res) => {
     const { id, modelName } = req.body;
 
