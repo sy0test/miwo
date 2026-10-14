@@ -10,6 +10,12 @@
  *   而不是让**整个 worker 进程**崩掉（一条脏数据不该让所有租户的队列停摆）。
  */
 import type { AnyJobDefinition } from "@/jobs/types";
+import { selftestSleep } from "@/jobs/handlers/selftest";
+import { videoBatchGenerate, videoGenerate } from "@/jobs/handlers/videoGenerate";
+import { imageAssetsBatch } from "@/jobs/handlers/imageAssets";
+import { imageStoryboardBatch } from "@/jobs/handlers/imageStoryboard";
+import { imageProductionAssetsBatch } from "@/jobs/handlers/imageProductionAssets";
+import { promptBatch } from "@/jobs/handlers/promptBatch";
 
 export interface JobRegistry {
   /** 未知类型返回 null（见文件头；**不抛**）。 */
@@ -32,13 +38,20 @@ export function createJobRegistry(defs: AnyJobDefinition[]): JobRegistry {
 }
 
 /**
- * 本阶段登记的任务类型。
- * ⚠ **现在是空的**：Phase 1d Task 7 追加 6 个业务处理器、Task 9 追加 `selftest.sleep`。
- *   新增类型必须同时做两件事：
- *     ① 加进这个数组；② 在 `tests/job-types.test.ts` 的期望集合里加一项
- *        （那条断言是"注册表 ↔ 实现"的机械守卫，故意要求人工过目）。
+ * 本阶段登记的任务类型（Phase 1d Task 7 落地：6 个业务 handler + selftest）。
+ * 新增类型必须同时做两件事：
+ *   ① 加进这个数组；② 在 `tests/job-registry.test.ts` 的期望集合里加一项
+ *      （那条断言是"注册表 ↔ 实现"的机械守卫，故意要求人工过目）。
  */
-export const JOB_DEFINITIONS: AnyJobDefinition[] = [];
+export const JOB_DEFINITIONS: AnyJobDefinition[] = [
+  videoGenerate,
+  videoBatchGenerate,
+  imageAssetsBatch,
+  imageStoryboardBatch,
+  imageProductionAssetsBatch,
+  promptBatch,
+  selftestSleep,
+];
 
 /** 全局注册表（api 与 worker 共用同一份定义）。 */
 export const jobRegistry: JobRegistry = createJobRegistry(JOB_DEFINITIONS);
