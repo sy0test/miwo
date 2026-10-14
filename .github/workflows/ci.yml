@@ -119,6 +119,10 @@ jobs:
           # Phase 1c Task 10 接线（是 Task 10 新门禁的**前置**接线，理由见每条）
           node tools/check-dead-ddl.cjs
           node tools/check-authenticated-writers.cjs
+          # Phase 1c Task 10：所有**非 `/api` 的 `app.use` 挂载点**必须与一份显式"有意公开"清单
+          # 逐项一致（多一个/少一个都红）。理由：`app.use("/api", …authenticate…)` 是鉴权边界，
+          # 非 `/api` 的挂载点**默认匿名** —— 有人加一行 `app.use("/uploads", static(...))` 就静默裸奔。
+          pnpm run verify:mounts
           pnpm run verify:phase1b
           # Phase 1c / Task 10：`apps/api/src/**` 不得出现**绕过 `config.ts` 直读环境变量**。
           # 为什么单开一条：`check-deploy-config.cjs` 的 `inCode` 是**只从 config.ts 里 match 出来的**，
