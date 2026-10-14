@@ -228,4 +228,53 @@ describe("HTTP 跨租户（spec §12.2 T1 的端到端部分）", () => {
     expect((await get("/api/setting/dbConfig/dbInfo", tokenA)).status).toBe(403);
     expect((await get("/api/setting/dbConfig/dbInfo", tokenAdmin)).status).toBe(200);
   });
+
+  /**
+   * U4（计划点名、此前从未交付）：**并发**下 ctx 不串号。
+   * 20 个不同 userId 的请求 `Promise.all` 同时打同一进程：每个响应只能含**自己**的数据。
+   * 为什么必须补：AsyncLocalStorage 一旦被写成"模块级共享变量"，**串行用例仍会全绿**（每次只有一条链在跑），
+   * 只有并发才暴露串号 ⇒ 这条是"隔离在并发下成立"的等价证据。
+   */
+  it("★ U4 并发：20 个不同 userId 同时打（Promise.all），每个响应只含自己的数据", async () => {
+    const key = await secret();
+    const USERS = Array.from({ length: 20 }, (_, i) => 9101 + i);
+    const PROJECT_OF = (u: number) => u + 100; // 9201..9220
+    const TASK_OF = (u: number) => u + 200; // 9301..9320
+    await systemDb("o_project")
+      .insert(USERS.map((u) => ({ id: PROJECT_OF(u), userId: u, name: `conc-${u}`, createTime: 1 })))
+      .onConflict("id")
+      .merge();
+    await systemDb("o_tasks")
+      .insert(USERS.map((u) => ({ id: TASK_OF(u), userId: u, projectId: PROJECT_OF(u), state: "进行中" })))
+      .onConflict("id")
+      .merge();
+    try {
+      const results = await Promise.all(
+        USERS.map(async (u) => {
+          const token = jwt.sign({ id: u, name: `conc-${u}` }, key, { expiresIn: "1h" });
+          const [projects, tasks] = await Promise.all([
+            post("/api/project/getProject", {}, token),
+            post("/api/task/getTaskApi", { page: 1, limit: 100 }, token),
+          ]);
+          return {
+            u,
+            statuses: [projects.status, tasks.status],
+            projectIds: (projects.json?.data as any[]).map((p) => Number(p.id)),
+            taskTotal: Number(tasks.json?.data?.total ?? -1),
+          };
+        }),
+      );
+      for (const r of results) {
+        const mine = PROJECT_OF(r.u);
+        const others = USERS.filter((x) => x !== r.u).map(PROJECT_OF);
+        expect(r.statuses, `user ${r.u} 两个接口都应 200`).toEqual([200, 200]);
+        expect(r.projectIds, `user ${r.u} 只应看到自己的项目 ${mine}（串号就会看到别人的）`).toEqual([mine]);
+        expect(r.projectIds.some((p) => others.includes(Number(p))), `user ${r.u} 不得看到别人的项目`).toBe(false);
+        expect(r.taskTotal, `user ${r.u} 只应有自己那 1 条任务（漏守卫会是 20）`).toBe(1);
+      }
+    } finally {
+      await systemDb("o_tasks").whereIn("id", USERS.map(TASK_OF)).del();
+      await systemDb("o_project").whereIn("id", USERS.map(PROJECT_OF)).del();
+    }
+  }, 60000);
 });
