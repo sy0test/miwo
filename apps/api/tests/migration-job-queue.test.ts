@@ -266,9 +266,25 @@ describe("★ 毫秒时间戳列宽度（机械推导自 001_schema.ts 源码；
       if (type !== "bigint unsigned") bad.push(`${table}.${column} => ${type}`);
     }
     expect(bad, `毫秒列必须是 bigint unsigned（int 上限 2147483647 装不下 Date.now()）：\n${bad.join("\n")}`).toEqual([]);
-    // 整表文本里也不得出现 `col` int 形态（例如长成 int(11) 的写法）
-    for (const { table, column } of MS) {
-      expect(created[table], `${table}.${column} 不得是 int`).not.toMatch(new RegExp("`" + column + "`\\s+int\\b"));
+
+    // ⚠ 上面那一轮只覆盖"源码里写着 `t.ms(...)` 的那些列"。如果**换了个 builder**（例如
+    //   `t.u32(T, "createTime")` → MySQL `int`），那一列就从清单里消失了 —— 只剩"15 → 14"的
+    //   粗粒度信号，而"新加一个毫秒列"也会让同一个信号变红（说不清是退化了还是扩了）。
+    //   所以再补一轮**按列名**的全库扫描：毫秒列的**名字集合**（从 `t.ms(...)` 机械取）一旦在
+    //   任何一张表的 DDL 里出现，它的类型就必须逐字是 `bigint unsigned`。这一轮能直接指出
+    //   "哪张表的哪个毫秒列退化成了 int"，不依赖计数。
+    const MS_NAMES = [...new Set(MS.map((c) => c.column))];
+    const degraded: string[] = [];
+    for (const [table, ddl] of Object.entries(created)) {
+      for (const name of MS_NAMES) {
+        if (!ddl.includes("`" + name + "`")) continue;
+        const type = colType(ddl, name);
+        if (type !== "bigint unsigned") degraded.push(`${table}.${name} => ${type}`);
+      }
     }
+    expect(
+      degraded,
+      `按列名扫出的退化毫秒列（毫秒列的 mysql 类型必须是 bigint unsigned）：\n${degraded.join("\n")}`,
+    ).toEqual([]);
   });
 });
