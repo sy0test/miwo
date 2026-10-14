@@ -157,7 +157,10 @@ export default router.post(
           }),
         );
         const storyboardIds = storyboardData.map((i) => i.id);
-        const assetsIds = await u.db("o_assets2Storyboard").whereIn("storyboardId", storyboardIds).orderBy("rowid");
+        // ⚠ MySQL 必坏点修复：原 `orderBy("rowid")` 依赖 **SQLite 隐式列** `rowid`，MySQL 无此列 ⇒ `ER_BAD_FIELD_ERROR`
+        //   ⇒ 这条"分镜资产顺序 → 提示词"链在 MySQL 上是 500（sqlite 上正常）。本表只有 (storyboardId, assetId, userId)，
+        //   没有 createTime/id ⇒ 确定性排序只能用 `assetId`；真正的"插入顺序"要显式排序列（Phase 1c 加 `sortIndex`，已登记）。
+        const assetsIds = await u.db("o_assets2Storyboard").whereIn("storyboardId", storyboardIds).orderBy("assetId");
 
         const assets2StoryboardMap: Record<number, number[]> = {};
         assetsIds.forEach((i) => {

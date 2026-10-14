@@ -118,6 +118,7 @@ if (apiJob) {
     "node tools/check-natives.cjs",
     "node tools/check-tenant-exceptions.cjs",
     "node tools/check-tenant-policies.cjs",
+    "node tools/check-mysql-dialect.cjs",
     "pnpm run verify:deploy",
   ]) {
     check(apiRuns.includes(cmd), `api job 缺少仓库检查命令: ${cmd}`);

@@ -103,6 +103,8 @@ jobs:
           # Phase 1b / Task 8：策略表 ↔ 001_schema ↔ 回填目标/自检 的三方一致（复用 backfill-userid.ts
           # 的导出常量，不写第三份手写清单）。它必须**真跑**：交付物没进 CI = 零防漂移（Phase 0 终审教训）。
           node tools/check-tenant-policies.cjs
+          # Phase 1b 收尾轮：MySQL 方言门禁（rowid 等 SQLite 隐式列 / ONLY_FULL_GROUP_BY 未分组列）。
+          node tools/check-mysql-dialect.cjs
           pnpm run verify:deploy
           # Phase 1a / Task 11（控制器裁定 B = Ruling 127）：**形态**门禁，禁止
           # "用例体最外层的守卫式 `return;`"（静默早退既不是 pass 也不是 skip，

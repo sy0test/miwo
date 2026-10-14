@@ -44,8 +44,8 @@ export default router.post(
             .where("o_storyboard.id", item.id)
             .select("videoDesc", "prompt", "track", "duration", "shouldGenerateImage")
             .first();
-          // 查询分镜关联的资产ID
-          const assetRows = await u.db("o_assets2Storyboard").where("storyboardId", item.id).orderBy("rowid").select("assetId");
+          // 查询分镜关联的资产ID（⚠ MySQL 无 `rowid` ⇒ 用 assetId 作确定性顺序；插入序要显式排序列，Phase 1c）
+          const assetRows = await u.db("o_assets2Storyboard").where("storyboardId", item.id).orderBy("assetId").select("assetId");
           const associateAssetsIds = assetRows.map((row: any) => row.assetId);
           return {
             ...storyboard,

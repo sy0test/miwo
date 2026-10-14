@@ -54,11 +54,13 @@ export default router.post(
 
     const projectSettingData = await u.db("o_project").where("id", projectId).select("imageModel", "imageQuality", "artStyle", "videoRatio").first();
 
-    // 按 rowid 顺序查出每个 storyboard 关联的 assetId 有序列表
+    // 按 **assetId** 顺序查出每个 storyboard 关联的 assetId 列表。
+    // ⚠ MySQL 必坏点修复：原 `orderBy("rowid")` 依赖 SQLite 隐式列，MySQL 无 `rowid` ⇒ `ER_BAD_FIELD_ERROR`（500）。
+    //   本表只有 (storyboardId, assetId, userId) ⇒ 确定性排序只能用 assetId；"插入顺序"要显式排序列（Phase 1c，已登记）。
     const assets2StoryboardRows = await u
       .db("o_assets2Storyboard")
       .whereIn("storyboardId", storyIds)
-      .orderBy("rowid")
+      .orderBy("assetId")
       .select("storyboardId", "assetId");
 
     // 收集所有 assetId，批量查对应的 imageId
