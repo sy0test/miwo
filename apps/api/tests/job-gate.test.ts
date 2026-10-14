@@ -22,8 +22,13 @@ import { createKnex } from "@/db/connect";
 import { runMigrations } from "@/db/migrations";
 import { createGate, withVendorSlot, type Gate } from "@/jobs/gate";
 import batchGenerateImageAssets from "@/routes/assetsGenerate/batchGenerateImageAssets";
+import batchPolishAssetsPrompt from "@/routes/assetsGenerate/batchPolishAssetsPrompt";
+import batchBindAudio from "@/routes/cornerScape/batchBindAudio";
+import generateEvents from "@/routes/novel/event/generateEvents";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-job-gate-"));
+/** `apps/api`（静态守卫读路由源码用；其余用例只用一次性 `%TEMP%` 库）。 */
+const API_DIR = path.resolve(__dirname, "..");
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 function cfg(file: string): MiwoConfig {
@@ -155,32 +160,89 @@ describe("vendor 分池闸门（spec §9.3）", () => {
  * ⚠ 这里只打**请求内入口**（路由级 grep 见 groupC-report.md 的 4 处对照）。走真 `validateFields`：
  *   超限在**参数校验阶段**就被拒（400），因此**不会碰到数据库**（也不该碰到 —— 这正是"上限在入口收掉"的意思）。
  *   不带鉴权中间件也成立：校验比任何 handler 逻辑都早。
+ *
+ * ── Phase 1d F8 收口（本组）──
+ * C 组只把 4 个入口上了 `.max(8)`，另 **3 个入口漏了**（`batchPolishAssetsPrompt` / `batchBindAudio` /
+ * `generateEvents`）—— 症状与 spec §9.3 点名的"单请求可传 1000"完全一样：请求方能自己放大进程内并发。
+ * 现在 7 个入口全部收口，且**两个方向**都被覆盖：
+ *   ① 真 HTTP：7 个入口各自传 9 ⇒ 400、传 8 ⇒ 不因上限被拒；
+ *   ② 源码静态：7 个路由文件的 `concurrentCount` schema 必须都带 `.max(8)`
+ *      （机械守卫：删掉任何一处 `.max(8)` ⇒ 这条用例红，不必等到有人打 9）。
  */
 describe("concurrentCount 上限 8（spec §9.3）", () => {
-  it("★ 传 9 ⇒ 400（在 validateFields 阶段被拒）；传 8 ⇒ 不因上限被拒（不是 400）", async () => {
+  /** 7 个"请求内并发"入口：路由文件 + 挂载路径 + 最小合法 payload（`concurrentCount` 由用例填）。 */
+  const ENTRIES: Array<{ name: string; route: string; mount: string; payload: (n: number) => unknown; handler: any }> = [
+    {
+      name: "batchGenerateImageAssets",
+      route: "src/routes/assetsGenerate/batchGenerateImageAssets.ts",
+      mount: "/api/assetsGenerate/batchGenerateImageAssets",
+      handler: batchGenerateImageAssets,
+      payload: (n) => ({ projectId: 1, model: "miwo:test", resolution: "1K", concurrentCount: n, items: [{ id: 1, type: "role", name: "n", prompt: "p" }] }),
+    },
+    {
+      name: "batchPolishAssetsPrompt（F8 新收口）",
+      route: "src/routes/assetsGenerate/batchPolishAssetsPrompt.ts",
+      mount: "/api/assetsGenerate/batchPolishAssetsPrompt",
+      handler: batchPolishAssetsPrompt,
+      payload: (n) => ({ projectId: 1, items: [{ assetsId: 1, type: "role", name: "n", describe: "d" }], concurrentCount: n, otherTextPrompt: "x" }),
+    },
+    {
+      name: "batchBindAudio（F8 新收口）",
+      route: "src/routes/cornerScape/batchBindAudio.ts",
+      mount: "/api/cornerScape/batchBindAudio",
+      handler: batchBindAudio,
+      payload: (n) => ({ projectId: 1, assetsIds: [1], concurrentCount: n }),
+    },
+    {
+      name: "generateEvents（F8 新收口）",
+      route: "src/routes/novel/event/generateEvents.ts",
+      mount: "/api/novel/event/generateEvents",
+      handler: generateEvents,
+      payload: (n) => ({ projectId: 1, novelIds: [1], concurrentCount: n }),
+    },
+  ];
+
+  function mountOne(handler: any, mount: string): Promise<http.Server> {
     const app = express();
     app.use(express.json({ limit: "10mb" }));
-    app.use("/api/assetsGenerate/batchGenerateImageAssets", batchGenerateImageAssets);
+    app.use(mount, handler);
     app.use((err: any, _req: any, res: any, _next: any) => res.status(err?.httpStatus ?? 500).send({ code: err?.code ?? 500, message: String(err?.message ?? err) }));
-    const srv = await new Promise<http.Server>((resolve) => {
+    return new Promise((resolve) => {
       const s = app.listen(0, "127.0.0.1", () => resolve(s));
     });
-    try {
-      const port = (srv.address() as AddressInfo).port;
-      const payload = (concurrentCount: number) => ({
-        projectId: 1,
-        model: "miwo:test",
-        resolution: "1K",
-        concurrentCount,
-        items: [{ id: 1, type: "role", name: "n", prompt: "p" }],
-      });
-      const over = await post(port, "/api/assetsGenerate/batchGenerateImageAssets", payload(9));
-      expect(over.status, `传 9 必须被拒（实际 ${over.status}）`).toBe(400);
-      const ok = await post(port, "/api/assetsGenerate/batchGenerateImageAssets", payload(8));
-      expect(ok.status, `传 8 不该因"上限"被拒（实际 ${ok.status}）`).not.toBe(400);
-    } finally {
-      await new Promise<void>((r) => srv.close(() => r()));
-    }
+  }
+
+  for (const e of ENTRIES) {
+    it(`★ ${e.name}：传 9 ⇒ 400（validateFields 阶段被拒）；传 8 ⇒ 不因上限被拒`, async () => {
+      const srv = await mountOne(e.handler, e.mount);
+      try {
+        const port = (srv.address() as AddressInfo).port;
+        const over = await post(port, e.mount, e.payload(9));
+        expect(over.status, `传 9 必须被拒（实际 ${over.status}）`).toBe(400);
+        const ok = await post(port, e.mount, e.payload(8));
+        expect(ok.status, `传 8 不该因"上限"被拒（实际 ${ok.status}）`).not.toBe(400);
+      } finally {
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    });
+  }
+
+  it("★★ 机械守卫：7 个入队/并发入口的 concurrentCount 都必须带 .max(8)（少一处即红）", () => {
+    const files = [
+      "src/routes/assetsGenerate/batchGenerateImageAssets.ts",
+      "src/routes/assetsGenerate/batchPolishAssetsPrompt.ts",
+      "src/routes/cornerScape/batchBindAudio.ts",
+      "src/routes/novel/event/generateEvents.ts",
+      "src/routes/production/assets/batchGenerateAssetsImage.ts",
+      "src/routes/production/workbench/batchGeneratePrompt.ts",
+      "src/routes/production/storyboard/batchGenerateImage.ts",
+    ];
+    const missing = files.filter((rel) => {
+      const text = fs.readFileSync(path.join(API_DIR, rel), "utf8");
+      // 只认 schema 里那一处（`concurrentCount: … .max(8)`），注释里的说明不算
+      return !/concurrentCount:\s*[^,\n]*\.max\(8\)/.test(text);
+    });
+    expect(missing, `这些入口的 concurrentCount 没有 .max(8)：${missing.join(", ")}`).toEqual([]);
   });
 });
 

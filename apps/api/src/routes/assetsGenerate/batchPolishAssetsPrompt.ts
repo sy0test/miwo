@@ -41,7 +41,7 @@ export default router.post(
       }),
     ),
     projectId: zod.number(),
-    concurrentCount: zod.number().int().min(1).optional(),
+    concurrentCount: zod.number().int().min(1).max(8).optional(), //并发数（spec §9.3：上限 8，超限在 validateFields 阶段 400 —— Phase 1d F8 收口）
     otherTextPrompt: zod.string(),
   }),
   async (req, res) => {
