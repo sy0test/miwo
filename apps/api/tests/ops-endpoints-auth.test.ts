@@ -315,4 +315,62 @@ describe("Task 7 运维接口授权（真应用 + 真库 + 真 HTTP）", () => {
       await db.destroy();
     }
   }, 90000);
+
+  /**
+   * Phase 1b 收尾轮 / 终审 ③-B：`/api/setting/agentDeploy/*` 家族 6 个端点**全部未收权**，
+   * 其中 `agentSetKey` 是**写供应商 key** 的接口 ⇒ 任意登录用户都能改供应商凭据。
+   * 判据照 Task 7：无 token 401 / 普通 token 403 / **admin 正向对照 200** / 普通 token 打完**直读数据一行未变**。
+   */
+  const AGENT_DEPLOY_ENDPOINTS: ReadonlyArray<{ method: "GET" | "POST"; path: string; body?: unknown }> = [
+    { method: "POST", path: "/api/setting/agentDeploy/agentSetKey", body: { key: "HACKED-KEY" } },
+    { method: "POST", path: "/api/setting/agentDeploy/deployAgentModel", body: { items: [] } },
+    { method: "POST", path: "/api/setting/agentDeploy/getAgentDeploy" },
+    { method: "GET", path: "/api/setting/agentDeploy/getAgentUseMode" },
+    { method: "POST", path: "/api/setting/agentDeploy/updateAgentModel", body: { id: 1, name: "x", model: "y" } },
+    { method: "POST", path: "/api/setting/agentDeploy/updateUseMode", body: { agentUseMode: "999" } },
+  ];
+
+  it("★ agentDeploy 家族 6 个端点：无 token 401 / 普通 token 403 / admin 200，且普通 token 试写后**数据未被改**", async () => {
+    const db = createKnex(dbConfigOf(dataDir));
+    try {
+      // 前置：种一个会被 updateUseMode 改掉的行（否则"没被改"是空断言）
+      await db("o_setting").insert({ key: "agentUseMode", value: "1" }).onConflict("key").merge();
+      const before = {
+        useMode: String(((await db("o_setting").where("key", "agentUseMode").first()) as any)?.value),
+        agentDeployRows: Number(((await db("o_agentDeploy").count({ n: "*" }).first()) as any)?.n ?? 0),
+        hackedRows: Number(((await db("o_setting").where("value", "HACKED-KEY").count({ n: "*" }).first()) as any)?.n ?? 0),
+      };
+      expect(before.useMode, "前置：agentUseMode 行必须在库里").toBe("1");
+      expect(before.hackedRows, "前置：库里不该已有 HACKED-KEY").toBe(0);
+
+      // ① 无 token ⇒ 全 401
+      for (const ep of AGENT_DEPLOY_ENDPOINTS) {
+        const res = await request(ep.method, url(ep.path), { body: ep.body });
+        expect(res.status, `${ep.method} ${ep.path} 无 token 必须 401（实际 ${res.status}）`).toBe(401);
+      }
+      // ② 普通 token ⇒ 全 403
+      const token = await signAs(db, NORMAL_USER);
+      for (const ep of AGENT_DEPLOY_ENDPOINTS) {
+        const res = await request(ep.method, url(ep.path), { token, body: ep.body });
+        expect(res.status, `${ep.method} ${ep.path} 普通 token 必须 403（实际 ${res.status}）：${res.body.slice(0, 200)}`).toBe(403);
+      }
+      // ③ 直读：**一行都没被改**（agentSetKey 的假 key 没落库、useMode 没变成 999、agentDeploy 行数没动）
+      const after = {
+        useMode: String(((await db("o_setting").where("key", "agentUseMode").first()) as any)?.value),
+        agentDeployRows: Number(((await db("o_agentDeploy").count({ n: "*" }).first()) as any)?.n ?? 0),
+        hackedRows: Number(((await db("o_setting").where("value", "HACKED-KEY").count({ n: "*" }).first()) as any)?.n ?? 0),
+      };
+      expect(after, "普通 token 的 6 次尝试必须零写入").toEqual(before);
+      // ④ admin 正向对照：读接口仍可用 ⇒ 403 是"收权"，不是"接口坏了"
+      const admin = await signAs(db, ADMIN_USER);
+      const read1 = await request("POST", url("/api/setting/agentDeploy/getAgentDeploy"), { token: admin });
+      expect(read1.status, `admin 打 getAgentDeploy 应 200：${read1.body.slice(0, 200)}`).toBe(200);
+      const read2 = await request("GET", url("/api/setting/agentDeploy/getAgentUseMode"), { token: admin });
+      expect(read2.status, `admin 打 getAgentUseMode 应 200：${read2.body.slice(0, 200)}`).toBe(200);
+      expect(read2.body, "admin 读到的是真数据（useMode=1）").toContain("1");
+    } finally {
+      await db("o_setting").where("key", "agentUseMode").del().catch(() => {});
+      await db.destroy();
+    }
+  }, 90000);
 });
