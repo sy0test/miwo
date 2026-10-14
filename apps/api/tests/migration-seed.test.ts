@@ -105,14 +105,25 @@ describe("002_platform_seed", () => {
     await db.destroy();
   });
 
-  it("o_setting 只有平台键，绝无 tokenKey", async () => {
+  it("o_setting 只有平台键，绝无 tokenKey（含 Phase 1c Task 1 的两个平台开关）", async () => {
     const db = await migratedDb();
     const keys = (await db("o_setting").pluck("key")).sort();
     expect(keys).not.toContain("tokenKey");
     expect(keys.length).toBeGreaterThan(0);
-    // 只 seed 平台键：行数与导出文件一致（不是"把源库 12 个键全搬过来"）
-    const seeded = fs.readFileSync(path.join(SEED_DIR, "o_setting.platform.ndjson"), "utf8").split(/\r?\n/).filter((l) => l.trim()).length;
-    expect(keys.length).toBe(seeded);
+    // 只 seed 平台键：**002 种下的那 4 个**键与导出文件一一对应
+    // ⚠【Phase 1c Task 1】`005_accounts` 有意再补两个平台开关（`registrationMode` / `allowDbAdminOps`）⇒
+    //   总行数 = 种子行数 + 2。这里改成"种子键逐个都在 + 总行数 = 种子 + Task1 的 2 个"，
+    //   判别力不变（仍是**精确**相等，且逐个点名），但不再把"别的迁移补的平台键"误报成"种多了"。
+    const seededKeys = fs
+      .readFileSync(path.join(SEED_DIR, "o_setting.platform.ndjson"), "utf8")
+      .split(/\r?\n/)
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l).key as string)
+      .sort();
+    const TASK1_KEYS = ["allowDbAdminOps", "registrationMode"];
+    for (const k of seededKeys) expect(keys, `种子键 ${k} 不在库里`).toContain(k);
+    for (const k of TASK1_KEYS) expect(keys, `Task1 平台键 ${k} 不在库里`).toContain(k);
+    expect(keys).toEqual([...seededKeys, ...TASK1_KEYS].sort());
     // 新库显式 v2（"未设置" = legacy，会让结构化分镜写入被拒）
     expect((await db("o_setting").where("key", "shotsEngine").first()).value).toBe("v2");
     await db.destroy();
@@ -160,7 +171,8 @@ describe("002_platform_seed", () => {
     // 而且第一次迁移本身就"插满了"（不是 0 行 -> 0 行的假幂等）
     expect(before[0]).toBe(4);
     expect(before[1]).toBe(19);
-    expect(before[2]).toBe(4);
+    // ⚠【Phase 1c Task 1】`o_setting` 的 4 是**002 的种子行数**；`005_accounts` 另补 2 个平台开关 ⇒ 6
+    expect(before[2]).toBe(6);
     expect(before[3]).toBe(8);
     await db.destroy();
   });
@@ -233,8 +245,21 @@ describe("002_platform_seed", () => {
     }
     const mod = (await import("@/db/migrations/002_platform_seed")).default;
     await mod.down(db);
-    for (const [table] of pairs) {
-      expect(Number(((await db(table).count({ n: "*" }).first()) as any).n), `${table} 没被 down 清空`).toBe(0);
+    // ⚠【Phase 1c Task 1】判据改成"002 种下的**那些键**确实被删干净"，而不是"o_setting 整表为空"：
+    //   `005_accounts` 的 2 个平台开关（registrationMode / allowDbAdminOps）**不归 002 管**，
+    //   002 的 down 不该、也不能删它们（那是另一个迁移的行）。原断言在"全量迁移的库"上会要求
+    //   002 越界删别人的行 —— 那才是错的语义。
+    const REMAINING_OK = new Set(["registrationMode", "allowDbAdminOps"]);
+    for (const [table, file] of pairs) {
+      const n = Number(((await db(table).count({ n: "*" }).first()) as any).n);
+      if (table !== "o_setting") {
+        expect(n, `${table} 没被 down 清空`).toBe(0);
+        continue;
+      }
+      const left = ((await db("o_setting").pluck("key")) as string[]).sort();
+      expect(left.filter((k) => !REMAINING_OK.has(k)), `o_setting 里 002 的种子行没被 down 清空`).toEqual([]);
+      expect(left.length, `o_setting 只剩 005 的平台开关（${n} 行）`).toBe(REMAINING_OK.size);
+      void file;
     }
     await db.destroy();
   });

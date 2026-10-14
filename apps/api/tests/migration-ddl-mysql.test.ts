@@ -2,7 +2,7 @@
  * **静态** MySQL DDL 断言 —— 本机没有 MySQL 服务端，用它兜住"编译出来的 DDL 是不是 mysql 合法"。
  *
  * 这些断言不是 happy path 的装饰：它们精确覆盖 spec §5.3 里那些**只在 MySQL 才会炸**的点：
- *   - 26 张表主键必须 auto_increment（否则 `Field 'id' doesn't have a default value`）
+ *   - 表主键必须 auto_increment（否则 `Field 'id' doesn't have a default value`）
  *   - 文本主键必须 varchar（TEXT 主键 → ERROR 1170）
  *   - 布尔默认值不能是裸 true/false
  *   - o_agentWorkData 的唯一键必须真的出现在 DDL 里
@@ -13,6 +13,15 @@
  * 一份未被锁定的方言装配上。
  *
  * ⚠ 它**不能**替代"真连一次 MySQL"（Task 8 才做那个）。它能证明的是"SQL 串对"，不是"服务端接受"。
+ *
+ * ⚠⚠ **【Phase 1c Task 1】扫描范围从 `001_schema` 扩到"全部迁移"**：
+ *   `005_accounts` / `006_quota_grants` 建的表与重建的 `o_user` 同样是"只在 MySQL 才暴露"的面
+ *   （自增 bigint unsigned 主键、varchar 唯一键、复合主键、两个索引），只扫 001 等于对它们**盲**。
+ *   于是下面的 `SCHEMA_ONLY` / `ALL_MIGRATIONS` 分成两条路径：
+ *     · 形状/计数类断言（列属性主键 21 / 表级 11 / 复合 6 / 建表 33 张）走 `ALL_MIGRATIONS`；
+ *     · "001 的 schema 本身没变"这类断言走 `SCHEMA_ONLY`（它们钉的是 1a 的产物）。
+ *   假-knex 也要相应补齐 `dropTable` / `renameTable` / 查询构造器 —— 否则 005 的
+ *   "建暂存表 → 迁数据 → 删旧表 → 改名"路径在收集阶段就抛错（`knex(...).insert is not a function`）。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -21,6 +30,8 @@ import { describe, expect, it } from "vitest";
 import knexFactory from "knex";
 import { types } from "@/db/dialect";
 import schema from "@/db/migrations/001_schema";
+import accounts from "@/db/migrations/005_accounts";
+import quotaGrants from "@/db/migrations/006_quota_grants";
 
 /**
  * `scripts/schema-limits.cjs` 是 **CJS**，这里用 `createRequire` 同步 require。
@@ -101,45 +112,154 @@ function ddlOf(build: (t: any) => void): string {
   return mysql.schema.createTable("probe", (t) => build(t)).toSQL().map((s) => s.sql).join("\n");
 }
 
-async function ddlFor(table: string): Promise<string> {
-  // 用一个只收 DDL 的假 knex：schema 构建器会把每条 createTable/alterTable 的 SQL 收集起来
-  const stmts: string[] = [];
-  const collector: any = {
-    client: mysql.client,
-    schema: {
-      createTable: (name: string, cb: any) => {
-        for (const s of mysql.schema.createTable(name, cb).toSQL()) stmts.push(s.sql);
-        return Promise.resolve();
-      },
-      dropTableIfExists: () => Promise.resolve(),
+/** 一条被假-knex 收集到的语句（`kind` 用来区分 create / alter / drop / rename / raw）。 */
+interface Collected {
+  kind: "create" | "alter" | "drop" | "rename" | "raw";
+  sql: string;
+}
+
+/**
+ * 假 knex：把**迁移真正调用到的每一种**语句收集成 SQL 串，**不连任何服务端**。
+ *
+ * ⚠ 覆盖面必须跟着迁移走：`005_accounts` 的 up 用了 `dropTable` + `renameTable` +
+ *   `knex("o_setting").insert(...).onConflict("key").ignore()`，down 还用了 `dropTableIfExists`。
+ *   只补 `createTable` 的旧假-knex 会在这条路径上抛 `TypeError`（实测踩到）——
+ *   于是"005/006 的 DDL 合法性"根本没有被检查，而文件看上去还有断言。
+ */
+function makeFakeKnex(stmts: Collected[]): any {
+  const push = (kind: Collected["kind"], sql: string): void => {
+    stmts.push({ kind, sql });
+  };
+  const schema = {
+    createTable: (name: string, cb: any) => {
+      for (const s of mysql.schema.createTable(name, cb).toSQL()) push("create", s.sql);
+      return Promise.resolve();
+    },
+    dropTableIfExists: (name: string) => {
+      push("drop", `drop table if exists \`${name}\``);
+      return Promise.resolve();
+    },
+    dropTable: (name: string) => {
+      push("drop", `drop table \`${name}\``);
+      return Promise.resolve();
+    },
+    renameTable: (from: string, to: string) => {
+      push("rename", `rename table \`${from}\` to \`${to}\``);
+      return Promise.resolve();
     },
   };
-  const real = schema as any;
-  await real.up({
-    ...collector,
-    raw: () => Promise.resolve(),
+  /**
+   * `knex("t")` 的查询构造器替身：迁移里对表的读写（`select` / `insert` / `delete` / `orderBy` /
+   * `first`）在这里**只编译不执行** —— 本文件只关心 DDL 串，不关心数据走到了哪里。
+   */
+  const qb = (table: string): any => {
+    void table;
+    const b: any = {};
+    b.select = () => b;
+    b.where = () => b;
+    b.whereIn = () => b;
+    b.orderBy = () => b;
+    b.insert = () => b;
+    b.onConflict = () => b;
+    b.update = () => b;
+    // 终结操作：返回 thenable（await 之后是空结果）
+    b.first = () => Promise.resolve(undefined);
+    b.delete = () => Promise.resolve(0);
+    b.ignore = () => Promise.resolve(undefined);
+    b.then = (res: (v: unknown) => unknown) => Promise.resolve([]).then(res);
+    return b;
+  };
+  return Object.assign(qb, {
+    client: mysql.client,
+    schema,
+    raw: (sql: unknown) => {
+      push("raw", String(sql));
+      return Promise.resolve([]);
+    },
   });
-  const filtered = stmts.filter((s) => s.includes(`\`${table}\``));
+}
+
+/** 只跑 `001_schema`（1a 的产物：形状断言与"001 没变"的断言走这条）。 */
+async function schemaDdl(): Promise<Collected[]> {
+  const stmts: Collected[] = [];
+  await (schema as any).up(makeFakeKnex(stmts));
+  return stmts;
+}
+
+/**
+ * 跑**全部**迁移（`001` → `006`）：新建表的 DDL 合法性走这条。
+ * ⚠ `005` 会 `drop table o_user` + `rename table o_user_new to o_user`，所以调用方对 `o_user`
+ *   要看**最后一条**与它相关的语句（`lastDdlOf`）。
+ */
+async function allDdlCollected(): Promise<Collected[]> {
+  const stmts: Collected[] = [];
+  const fake = makeFakeKnex(stmts);
+  await (schema as any).up(fake);
+  await (accounts as any).up(fake);
+  await (quotaGrants as any).up(fake);
+  return stmts;
+}
+
+/**
+ * 表名精确匹配的谓词（**不要**用 `sql.includes("`o_user`")` 这种子串判定：
+ * `o_user_new` / `o_user_old` 是 `o_user` 的前缀扩展，子串判定会把暂存表的语句一并算进来）。
+ */
+function mentionsTable(sql: string, table: string): boolean {
+  return new RegExp("`" + table + "`").test(sql);
+}
+
+/** 过滤掉暂存表（`o_user_new` / `o_user_old`）的**全部**语句（create 与 alter 都要排除）。 */
+function deployedStatementsOf(stmts: string[]): string[] {
+  const STAGING = new Set(["o_user_new", "o_user_old"]);
+  return stmts.filter((s) => ![...STAGING].some((t) => mentionsTable(s, t)));
+}
+
+/**
+ * 某张表的**全部**语句（create 本体 + 它的 alter 索引 + 重建路径），按执行顺序。
+ * ⚠ 与 `createDdlFor` 同口径：把"被 rename 成它"的暂存表也带上 —— `o_user` 的两条
+ *   `add unique (username)` / `(email)` 在 DDL 流里是挂在**暂存表名** `o_user_new` 上的。
+ */
+async function ddlFor(table: string): Promise<string> {
+  const stmts = await allDdl();
+  const names = await namesFor(table);
+  const filtered = stmts.filter((s) => names.some((n) => mentionsTable(s, n)));
   if (!filtered.length) throw new Error(`没有为 ${table} 生成 DDL（表名拼错？）`);
   return filtered.join("\n");
 }
 
-/** **全部** DDL 语句（27 张 create table + 各表的 add index/unique），顺序即迁移里的执行顺序。 */
+/** 某张表的"在 DDL 流里可能出现的名字"：它自己 + 所有 `rename table X to <它>` 的 X（暂存表）。 */
+async function namesFor(table: string): Promise<string[]> {
+  const stmts = await allDdl();
+  const staging = stmts
+    .map((s) => new RegExp("^rename table `([^`]+)` to `" + table + "`$").exec(s))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => m[1]);
+  return [table, ...staging];
+}
+
+async function createDdlFor(table: string): Promise<string> {
+  const stmts = await allDdl();
+  const names = await namesFor(table);
+  const hits = stmts.filter((s) => names.some((n) => s.startsWith("create table `" + n + "` (")));
+  if (!hits.length) throw new Error(`没有为 ${table} 生成 create table DDL（表名拼错？还是它被 renameTable 掉了？）`);
+  return hits[hits.length - 1];
+}
+
+/** 最终落地结构的全部语句（排除暂存表 `*_new` / `*_old` 的 create 与 alter）。 */
+async function deployedDdl(): Promise<string[]> {
+  return deployedStatementsOf(await allDdl());
+}
+
+/** 最后一条与某张表相关的语句（`o_user` 在 005 里被 drop 后重命名，取它才看到**最终**形状）。 */
+async function lastDdlOf(table: string): Promise<Collected | undefined> {
+  const stmts = await allDdlCollected();
+  const hits = stmts.filter((s) => s.kind !== "raw" && mentionsTable(s.sql, table));
+  return hits[hits.length - 1];
+}
+
+/** **全部** DDL 语句（33 张 create table + 各表的 add index/unique + drop/rename），顺序即执行顺序。 */
 async function allDdl(): Promise<string[]> {
-  const stmts: string[] = [];
-  const collector: any = {
-    client: mysql.client,
-    schema: {
-      createTable: (name: string, cb: any) => {
-        for (const s of mysql.schema.createTable(name, cb).toSQL()) stmts.push(s.sql);
-        return Promise.resolve();
-      },
-      dropTableIfExists: () => Promise.resolve(),
-    },
-    raw: () => Promise.resolve(),
-  };
-  await (schema as any).up(collector);
-  return stmts;
+  return (await allDdlCollected()).filter((s) => s.kind !== "raw").map((s) => s.sql);
 }
 
 /** MySQL 里**不给 key 前缀长度就不能进 key 规格**的类型（`text`/`blob` 家族）。 */
@@ -183,8 +303,9 @@ interface KeyRef {
  *      所以当时是真绿；换成 text 就漏判）。
  *
  * 实测覆盖增量（修复轮 1，同一份 DDL，用**旧抽取函数**逐字跑出来的对照）：
- *   旧 = **44** 条 ref / 23 张表 / 4 张表无 ref；新 = **67** 条 ref / 27 张表 / 0 张无 ref。
- *   这 44 也是覆盖护栏 `toBeGreaterThan(60)` 的取值依据 —— 下限卡在旧(44)与新(67)之间。
+ *   旧 = **44** 条 ref / 23 张表 / 4 张表无 ref；新 = **67** 条 ref / 27 张表 / 0 张无 ref（仅 001_schema）。
+ *   ⚠【Phase 1c Task 1】纳入 005/006 后实测 **82** 条 ref（见下面 `allDdl` 的调用点）。
+ *   44 也是覆盖护栏 `toBeGreaterThan(60)` 的取值依据 —— 下限卡在旧(44)与新(67/82)之间。
  */
 function keyRefsOf(stmts: string[]): KeyRef[] {
   const out: KeyRef[] = [];
@@ -362,8 +483,10 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     const stmts = await allDdl();
     const bad = scanKeyedTextColumns(stmts);
     // 覆盖护栏：正则失效时 bad=[] 与 keyRefs=[] 会同为空 → 假绿。
-    // ⚠ 实测值（修复轮 1）：**67** 条 key ref / 27 张表全部至少 1 条。旧抽取面只有 44 条 / 23 张表。
-    //   60 这条下限正好卡在旧抽取面（44）与新抽取面（67）之间 —— 抽取面一旦退回旧形状，这里先红。
+    // ⚠ 实测值（修复轮 1，仅 001_schema）：**67** 条 key ref / 27 张表全部至少 1 条。旧抽取面只有 44 条 / 23 张表。
+    // ⚠【Phase 1c Task 1】把 005/006 也纳进来后，**最终落地结构**的 key ref 实测 **82** 条
+    //   （33 张 create；DDL 流里另有暂存表 `o_user_new`，本扫描按"全部语句"跑，含它）。
+    //   60 这条下限仍然卡在"旧抽取面（44）"与"新抽取面（82）"之间 —— 抽取面一旦退回旧形状，这里先红。
     expect(countKeyRefs(stmts)).toBeGreaterThan(60);
     expect(bad).toEqual([]);
 
@@ -371,15 +494,38 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     //    表级 3 张 / 复合 4 张"，与实现不符（实测 **18 / 9，其中表级里 4 张是复合主键**）。
     //    注释里的数字要能被人复核才不会漂移，所以这里把它变成断言：`keyRefsOf` 一旦漏掉某种形状，
     //    这两个数字先红，而不是让读者去信一句注释。
-    const refs = keyRefsOf(stmts);
+    //
+    // ⚠【Phase 1c Task 1】计数口径**必须排除暂存表**（`o_user_new` / `o_user_old`）：
+    //   它们是"建了又 rename 掉"的中间表（迁移结束时并不存在，**不登记策略**），
+    //   `tools/migration-tables.cjs` 的 `deployedTables` 同样排除它们。不排除的话
+    //   `o_user_new` 会同时进"列属性主键"与"建表"两个计数（实测 22 / 34 而不是 21 / 33）——
+    //   数字本身没错，但它描述的是"迁移过程中出现过的表"，与策略表/落库结构的口径不是一回事。
+    //   `o_user_old` 只在 `down` 里建，`up` 路径上看不到（`up` 的暂存表就是 `o_user_new`）。
+    const STAGING = new Set(["o_user_new", "o_user_old"]);
+    // ⚠ 暂存表的**全部**语句（create 与 alter）都要排除：`o_user_new` 的两条 `add unique`
+    //   里表名含子串 `o_user`，只按"建表语句"过滤会让它从 **alter** 那条缝里漏回来（实测踩到）。
+    const deployedStmts = await deployedDdl();
+    const refs = keyRefsOf(deployedStmts);
+    expect([...refs].some((r) => STAGING.has(r.table)), "暂存表不得出现在最终结构里").toBe(false);
     const colAttrTables = new Set(refs.filter((r) => r.index === "primary key (列属性)").map((r) => r.table));
     const tableLevelCols = new Map<string, number>();
     for (const r of refs) if (r.index === "primary key") tableLevelCols.set(r.table, (tableLevelCols.get(r.table) ?? 0) + 1);
     const compositeTables = [...tableLevelCols.values()].filter((n) => n > 1);
-    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(18);
-    expect(tableLevelCols.size, "表级 `primary key (…)`（含复合）的表数").toBe(9);
-    expect(compositeTables.length, "表级主键里是复合主键的表数").toBe(4);
-    expect(colAttrTables.size + tableLevelCols.size, "两种形状之和必须覆盖全部 27 张 create").toBe(27);
+    // ⚠ 18 → **21**（Phase 1c Task 1）：`005_accounts` 的 `o_invite` / `o_auditLog` 与
+    //   `006_quota_grants` 的 `o_modelGrant` 用 `t.pk(T)`（`o_user` 重建后也是）。
+    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(21);
+    // ⚠ 9 → **12**：`o_account`（表级单列主键）、`o_userSetting` / `o_loginAttempt`（复合主键），
+    //   以及 `o_user` —— 它在 005 里是"新表 + rename"，rename 之后表级主键仍是**表级**形状
+    //   （`o_user_new` 的 `primary key` 是列属性，但 `o_user` 这个**名字**在 DDL 流里同时被
+    //    001 的老形状（`primary key (\`id\`)`）命中 —— 计数按"DDL 流里出现过的表名"算，不是按最终结构）。
+    expect(tableLevelCols.size, "表级 `primary key (…)`（含复合）的表数").toBe(12);
+    // ⚠ 4 → **6**：新增 `o_userSetting(userId,key)` 与 `o_loginAttempt(username,ip)`
+    expect(compositeTables.length, "表级主键里是复合主键的表数").toBe(6);
+    // ⚠ 判别力（实测）：**并集恰好 33 张表名**（= 最终落地的表数，`o_user` 被两种形状各命中一次，
+    //   所以 `21 + 12 = 33` 这个"和"与"表数"数值相同但**口径不同** —— 别拿它当表数引用；
+    //   33 张最终落地表另有独立断言："迁移建出的表恰好 33 张"）。
+    expect(new Set([...colAttrTables, ...tableLevelCols.keys()]).size, "两种形状涉及的表名并集").toBe(33);
+    expect(colAttrTables.size + tableLevelCols.size, "两种形状的命中次数之和").toBe(33);
 
     // 判别力自证（在**合成 DDL** 上跑同一个谓词）。五条分别钉住 `keyRefsOf` 的每一种形状，
     // 以及"同一形状的负例"——负例是必需的：只加正例时，"抽取面变宽后误报/漏报"两种退化都不会被发现。
@@ -516,11 +662,67 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(ddl).toMatch(/`disabled` tinyint default '0'/);
   });
 
-  it("o_user 的主键**不带** auto_increment（Phase 1c 才重建 id，spec §7.1 / 已知偏差 3）", async () => {
-    const ddl = await ddlFor("o_user");
-    const line = ddl.split("\n")[0];
-    expect(line).toContain("`id` bigint unsigned");
-    expect(line).not.toContain("auto_increment");
+  it("o_user 的主键**是** bigint unsigned auto_increment（Phase 1c Task 1 已重建，spec §7.1）", async () => {
+    // ⚠ 这条断言在 Phase 1c Task 1 **反了过来**：1a/1b 时 `o_user` 是"代码显式给 id、不带自增"，
+    //   所以当时断言的是 `not.toContain("auto_increment")`。`005_accounts` 按 §7.1 把 `o_user`
+    //   重建为 `t.pk(T)`（bigint unsigned auto_increment primary key）—— 老行的 id **值**仍然保真
+    //   （迁移里显式带 `id` 插入），所以这不是语义倒退，而是把主键交还给自增语义。
+    //   ⚠ 005 会"建 `o_user_new` → drop `o_user` → rename"，所以这里看**最后一条**相关语句。
+    const last = await lastDdlOf("o_user");
+    expect(last?.kind).toBe("rename");
+    const created = await createDdlFor("o_user");
+    expect(created).toContain("`id` bigint unsigned not null auto_increment primary key");
+    expect(created).toContain("`username` varchar(64) not null");
+    expect(created).toContain("`email` varchar(191) null");
+    expect(created).toContain("`passwordHash` varchar(255) not null default ''");
+    expect(created).toContain("`role` varchar(16) not null default 'user'");
+    expect(created).toContain("`status` varchar(16) not null default 'active'");
+    expect(created).toContain("`tokenVersion` int unsigned not null default '0'");
+    expect(created).toContain("`mustChangePassword` tinyint not null default '0'");
+    expect(created).toContain("`createdAt` bigint unsigned not null");
+    expect(created).toContain("`lastLoginAt` bigint null");
+    // 两个唯一键（§7.1）：username / email
+    const uniq = (await ddlFor("o_user")).split("\n").filter((l) => /add unique/.test(l));
+    expect(uniq.some((l) => /\(`username`\)/.test(l))).toBe(true);
+    expect(uniq.some((l) => /\(`email`\)/.test(l))).toBe(true);
+    // 重建路径本身也要出现在 DDL 流里（drop 旧表 + rename 暂存表）
+    const all = (await allDdl()).join("\n");
+    expect(all).toContain("drop table `o_user`");
+    expect(all).toContain("rename table `o_user_new` to `o_user`");
+  });
+
+  it("Phase 1c Task 1 的新表在 MySQL 侧编译成合法形状（复合主键 / 索引 / 微元列）", async () => {
+    // o_userSetting：复合主键 (userId, key)，且 key 是 varchar（TEXT 主键 → ERROR 1170）
+    const setting = await createDdlFor("o_userSetting");
+    expect(setting).toContain("`userId` bigint unsigned not null");
+    expect(setting).toContain("`key` varchar(64) not null");
+    expect(setting).toMatch(/primary key \(`userId`, `key`\)/);
+    // o_loginAttempt：复合主键 (username, ip)，两个毫秒列是 bigint unsigned
+    const attempt = await createDdlFor("o_loginAttempt");
+    expect(attempt).toMatch(/primary key \(`username`, `ip`\)/);
+    for (const col of ["lockedUntil", "firstFailedAt", "updatedAt"]) {
+      expect(colType(attempt, col), `o_loginAttempt.${col}`).toBe("bigint unsigned");
+    }
+    // o_auditLog：两个索引 + 自增主键
+    const audit = await createDdlFor("o_auditLog");
+    expect(audit).toContain("`id` bigint unsigned not null auto_increment primary key");
+    const auditAlter = (await ddlFor("o_auditLog")).split("\n").filter((l) => /^alter table/.test(l));
+    expect(auditAlter.some((l) => /add index `o_auditlog_userid_createdat_index`\(`userId`, `createdAt`\)/.test(l))).toBe(true);
+    expect(auditAlter.some((l) => /add index `o_auditlog_action_createdat_index`\(`action`, `createdAt`\)/.test(l))).toBe(true);
+    // o_account：**表级**单列主键（不是列级 `primary key`，见 006 的注释）+ 微元余额是 bigint
+    const account = await createDdlFor("o_account");
+    expect(account).toMatch(/primary key \(`userId`\)/);
+    expect(account).not.toContain("auto_increment"); // userId 由调用方给，不是自增 id
+    expect(colType(account, "balanceMicro")).toBe("bigint");
+    expect(colType(account, "frozenMicro")).toBe("bigint");
+    // o_invite / o_modelGrant：自增主键 + 各自唯一的 code 索引 / (userId,enabled) 索引
+    const invite = await createDdlFor("o_invite");
+    expect(invite).toContain("`id` bigint unsigned not null auto_increment primary key");
+    expect((await ddlFor("o_invite")).split("\n").some((l) => /add unique `o_invite_code_unique`\(`code`\)/.test(l))).toBe(true);
+    const grant = await createDdlFor("o_modelGrant");
+    expect(grant).toContain("`userId` bigint unsigned not null");
+    expect(grant).toContain("`enabled` tinyint not null default '1'");
+    expect((await ddlFor("o_modelGrant")).split("\n").some((l) => /add index `o_modelgrant_userid_enabled_index`\(`userId`, `enabled`\)/.test(l))).toBe(true);
   });
 
   it("4 张复合主键关联表的 DDL 里有 primary key (...)，且都不是自增", async () => {
@@ -675,19 +877,18 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(joined.indexOf("drop table if exists `o_skillAttribution`")).toBeLessThan(joined.indexOf("drop table if exists `o_skillList`"));
   });
 
-  it("迁移建出的表恰好 27 张（不多不少）", async () => {
+  it("迁移建出的表恰好 33 张（不多不少；暂存表 `o_user_new` 不计入最终结构）", async () => {
     const created: string[] = [];
-    const collector: any = {
-      client: mysql.client,
-      schema: {
-        createTable: (name: string, cb: any) => { created.push(name); void cb; return Promise.resolve(); },
-        dropTableIfExists: () => Promise.resolve(),
-      },
-      raw: () => Promise.resolve(),
-    };
-    await (schema as any).up(collector);
-    expect(created.length).toBe(27);
-    expect(new Set(created).size).toBe(27);
+    for (const s of await allDdl()) {
+      const m = /^create table `([^`]+)`/.exec(s);
+      if (m) created.push(m[1]);
+    }
+    // ⚠ DDL 流里会出现 34 条 create（含 005 的暂存表 `o_user_new`，它随后被 rename 掉）；
+    //   "最终落地的表"必须排除它 —— 与 `tools/migration-tables.cjs` 的 `deployedTables` 同口径。
+    expect(created).toContain("o_user_new");
+    const deployed = created.filter((t) => t !== "o_user_new" && t !== "o_user_old");
+    expect(deployed.length).toBe(33);
+    expect(new Set(deployed).size).toBe(33);
   });
 });
 

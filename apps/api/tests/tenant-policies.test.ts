@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import {
   DROPPED_TABLES,
@@ -12,26 +13,36 @@ import {
   policyOf,
   roleOfUserId,
 } from "@/db/policies";
+import { BACKFILL_EXEMPT_TABLES, BACKFILL_TARGET_TABLES, SELF_CHECK_TABLES } from "@/db/legacy/backfill-userid";
 import { currentTenant, currentUserId, requireTenantCtx, runWithTenant, TenantContextError } from "@/db/tenant-context";
 
-const SCHEMA_SRC = fs.readFileSync(path.resolve(__dirname, "../src/db/migrations/001_schema.ts"), "utf8");
-
 /**
- * 从 001_schema.ts 里机械抽出建表名与删表名（与 DDL 静态断言同一套路）。
+ * 建表清单**不在这里解析**：它只有一份实现 —— `tools/migration-tables.cjs`
+ * （门禁 `tools/check-tenant-policies.cjs` 用的是同一个文件）。
  *
- * ⚠ **已知边界：这条正则只认一种 `createTable` 写法**——`createTable(` 之后紧跟**双引号**
- *   字面量表名，且表名字符集限 `[A-Za-z0-9_]`。写成 `createTable(\n  'o_x'`（单引号）、
- *   模板串、变量/常量名、或经 `knex.schema` 别名调用时**抽不到**。
- *   ⚠ 此时**长度兜底 `expect(created).toHaveLength(27)` 拦不住**：非常规写法新增的表若**也没登记**
- *   进 `TABLE_POLICIES`，则"长度仍是 27"与下面那条 `declared` ↔ `created` 双向相等**同时成立**
- *   （两边**一起**少了同一张表）⇒ 静默放行。要真封住这条边界得改用 AST（TypeScript compiler API），
- *   或落到 Task 8 的 `tools/check-tenant-policies.cjs`（它的正则也须一并收紧）。
+ * ⚠ 为什么必须共用：Phase 1c Task 1 之前，门禁硬编码只解析 `001_schema.ts`，而本文件自己抄了一份正则 ——
+ *   于是"新迁移建的表"对**门禁**不可见（一登记策略就报"策略表里的表不在建表清单里"），
+ *   而本文件那半条判据也会跟着漂。两处解析 = 两份真相 = 必漂。
+ * ⚠ 另外，`apps/api/tests/` 在 `tools/` 之外，不能 `import` 一个 `.cjs` 的相对路径
+ *   （vitest 的模块图会把它当 ESM 解析）。所以这里 `createRequire` + 读**门禁自己 require 的那一行**，
+ *   把那行文本当成"单一来源"的锚点：门禁一旦改回硬编码/换文件，本用例当场红。
  */
-function schemaTables(): { created: string[]; dropped: string[] } {
-  const created = [...SCHEMA_SRC.matchAll(/createTable\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
-  const dropped = [...SCHEMA_SRC.matchAll(/dropTableIfExists\(\s*"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
-  return { created: [...new Set(created)].sort(), dropped: [...new Set(dropped)].sort() };
-}
+const nodeRequire = createRequire(process.cwd() + "/vitest-probe.js");
+const GATE_SRC = fs.readFileSync(path.resolve(__dirname, "../../../tools/check-tenant-policies.cjs"), "utf8");
+const GATE_REQUIRE = /const \{ collectMigrationTables \} = require\(path\.join\(__dirname, "([^"]+)"\)\);/.exec(GATE_SRC);
+const PARSER_REL = GATE_REQUIRE ? GATE_REQUIRE[1] : "";
+const parser = PARSER_REL
+  ? (nodeRequire(path.resolve(__dirname, "../../../tools", PARSER_REL)) as {
+      collectMigrationTables: () => {
+        files: string[];
+        createdTables: string[];
+        deployedTables: string[];
+        droppedTables: string[];
+        retiredTables: string[];
+        stagingTables: string[];
+      };
+    })
+  : null;
 
 /**
  * 抓取同步抛出的错误对象（`toThrow` 只能证明"抛了"，钉不住 `code` / `httpStatus`）。
@@ -49,28 +60,60 @@ function grabError(fn: () => unknown): { code?: unknown; httpStatus?: unknown } 
 }
 
 describe("策略表（spec §6.2 / 附录 A）", () => {
-  it("001_schema 的镜像没变（27 建 / 2 删）——变了就必须回来核对策略表", () => {
-    const { created, dropped } = schemaTables();
-    expect(created).toHaveLength(27);
-    expect(dropped).toEqual(["o_skillAttribution", "o_skillList"]);
+  it("建表清单由单一来源解析（门禁与本文件的解析器是同一个文件）", () => {
+    // 门禁里必须**没有**残留"只解析 001_schema"的硬编码
+    expect(GATE_SRC).not.toMatch(/001_schema\.ts"?\s*,\s*"utf8"/);
+    expect(PARSER_REL, "门禁里的解析器 require 行没找到 —— 解析器换位置了？").toBe("migration-tables.cjs");
+    expect(parser, `载不到解析器 tools/${PARSER_REL}`).not.toBeNull();
+    const parsed = parser!.collectMigrationTables();
+    // 下界自证：解析器失灵（0 张表）时必须响亮失败，不能"0 === 0"放行
+    expect(parsed.files.length).toBeGreaterThanOrEqual(6);
+    expect(parsed.deployedTables.length).toBeGreaterThanOrEqual(33);
+    // 暂存表（005 的 `o_user_new` / down 的 `o_user_old`）不得出现在"最终落地的表"里
+    expect([...parsed.stagingTables].sort()).toEqual(["o_user_new", "o_user_old"]);
+    for (const t of parsed.stagingTables) expect(parsed.deployedTables).not.toContain(t);
   });
 
-  it("每一张在库表都有策略，且没有任何策略对应不存在的表", () => {
-    const { created } = schemaTables();
+  it("全部迁移建出的表都在策略表里，且没有任何策略对应不存在的表", () => {
+    const parsed = parser!.collectMigrationTables();
+    const created = parsed.deployedTables;
     const declared = Object.keys(TABLE_POLICIES).filter((t) => !INFRA_TABLES.has(t)).sort();
     expect(declared).toEqual(created); // 双向相等：少一张 / 多一张都红
+    // ⚠ 阶段口径：1a 的 27 张 + Task 1 的 7 张（005 的 6 张 + 006 的 2 张 − 1 张是 o_user 重建）= 33
+    expect(created).toHaveLength(33);
+    // ⚠ 退役表口径 = "被 dropTableIfExists 删过 **且从没被创建过**"（005/006 的 down 也删自建表，
+    //   把那些算成"退役"会让这条断言永久对不上 —— 解析器里有详细说明）
+    expect(parsed.retiredTables).toEqual(["o_skillAttribution", "o_skillList"]);
   });
 
-  it("20 张租户表（Phase 1a 账本 Ruling 32 的口径，不是 spec 正文的 18）", () => {
+  it("22 张租户表（Phase 1a Ruling 32 的 20 张 + Phase 1c Task 1 的 o_account/o_modelGrant）", () => {
     expect(TENANT_TABLES.slice().sort()).toEqual(
       [
-        "memories", "o_agentWorkData", "o_assets", "o_assets2Storyboard", "o_assetsRole2Audio", "o_event",
-        "o_eventChapter", "o_image", "o_imageFlow", "o_novel", "o_project", "o_script", "o_scriptAssets",
-        "o_segment", "o_shot", "o_shotAssets", "o_storyboard", "o_tasks", "o_video", "o_videoTrack",
+        "memories", "o_account", "o_agentWorkData", "o_assets", "o_assets2Storyboard", "o_assetsRole2Audio",
+        "o_event", "o_eventChapter", "o_image", "o_imageFlow", "o_modelGrant", "o_novel", "o_project",
+        "o_script", "o_scriptAssets", "o_segment", "o_shot", "o_shotAssets", "o_storyboard", "o_tasks",
+        "o_video", "o_videoTrack",
       ].sort(),
     );
-    expect(TENANT_TABLES).toHaveLength(20);
+    expect(TENANT_TABLES).toHaveLength(22);
     expect(USER_COLUMN).toBe("userId");
+  });
+
+  it("★ 三方一致（Phase 1c Task 1 改写的不变量）：TENANT == 回填目标 ∪ {o_project} ∪ 豁免", () => {
+    const tenant = [...TENANT_TABLES].sort();
+    const backfill = [...BACKFILL_TARGET_TABLES].sort();
+    const exempt = [...BACKFILL_EXEMPT_TABLES].sort();
+    const selfCheck = [...SELF_CHECK_TABLES].sort();
+    // 豁免集非空（本任务新增了两张"迁移后新建的租户空表"）
+    expect(exempt).toEqual(["o_account", "o_modelGrant"]);
+    // ① 并集恰好覆盖全部租户表（"多一张租户表但没归类"必红）
+    expect([...new Set(["o_project", ...backfill, ...exempt])].sort()).toEqual(tenant);
+    // ② 自检表 == TENANT − EXEMPT（豁免表没有历史行，不进自检）
+    expect(selfCheck).toEqual(tenant.filter((t) => !exempt.includes(t)));
+    expect(SELF_CHECK_TABLES).toEqual(["o_project", ...BACKFILL_TARGET_TABLES]);
+    // ③ 回填目标 == TENANT − EXEMPT − {o_project}
+    expect(backfill).toEqual(tenant.filter((t) => t !== "o_project" && !exempt.includes(t)));
+    expect(backfill).toHaveLength(19);
   });
 
   it("knex 基础设施表被显式声明（否则 fail-closed 会拒绝它们）", () => {
@@ -79,14 +122,18 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     expect(policyOf("knex_migrations_lock")).toBe("platform");
   });
 
-  it("平台表集合与附录 A 一致", () => {
+  it("平台表集合与附录 A 一致（Task 1 新增 4 张账号族表）", () => {
     const platform = Object.entries(TABLE_POLICIES).filter(([, p]) => p === "platform").map(([t]) => t).sort();
     expect(platform).toEqual(
       [
-        "knex_migrations", "knex_migrations_lock", "o_agentDeploy", "o_artStyle", "o_modelPrompt",
-        "o_prompt", "o_setting", "o_user", "o_vendorConfig",
+        "knex_migrations", "knex_migrations_lock", "o_agentDeploy", "o_artStyle", "o_auditLog", "o_invite",
+        "o_loginAttempt", "o_modelPrompt", "o_prompt", "o_setting", "o_user", "o_userSetting", "o_vendorConfig",
       ].sort(),
     );
+    // ⚠ 登录发生在建租户 ctx 之前 ⇒ 账号族的承载表**必须**是 platform（无 ctx 可读）
+    for (const t of ["o_user", "o_invite", "o_loginAttempt", "o_userSetting", "o_auditLog"]) {
+      expect(policyOf(t), t).toBe("platform");
+    }
   });
 
   it("未声明的表与退役表都必须抛错，不许静默放行", () => {
@@ -110,7 +157,11 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     expect(isTenantTable("o_setting")).toBe(false);
   });
 
-  it("admin 桥接的判别力：只有 userId=1 是 admin（Phase 1c 由 o_user.role 取代）", () => {
+  it("admin 桥接的判别力：只有 userId=1 是 admin（改读 o_user.role 归 Phase 1c 的鉴权重写任务）", () => {
+    // ⚠【Phase 1c Task 1】`o_user.role` 列**已经有了**（005_accounts），但本函数刻意**不读它**：
+    //   改判据属于鉴权链的重写，不属于数据模型任务；在数据模型改造里顺手改会让 verify-phase1b 的
+    //   D 组（admin 403/200 对照）失去它现在钉住的语义，而且"旧库迁上来的 admin 是 disabled"这件事
+    //   必须与 bootstrap 流程一起设计。
     expect(roleOfUserId(1)).toBe("admin");
     for (const id of [0, 2, 7, 999]) expect(roleOfUserId(id)).toBe("user");
   });

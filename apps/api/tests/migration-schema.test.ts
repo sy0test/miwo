@@ -26,6 +26,8 @@ const EXPECTED_TABLES = [
   "o_novel", "o_event", "o_eventChapter", "o_script", "o_assets", "o_image", "o_storyboard",
   "o_agentWorkData", "o_video", "o_videoTrack", "o_vendorConfig", "o_imageFlow",
   "o_assets2Storyboard", "o_scriptAssets", "memories", "o_assetsRole2Audio", "o_segment", "o_shot", "o_shotAssets",
+  // ---- Phase 1c Task 1（005_accounts / 006_quota_grants）：6 张新表（`o_user` 是**重建**，不增数量）----
+  "o_account", "o_modelGrant", "o_invite", "o_loginAttempt", "o_auditLog", "o_userSetting",
 ];
 const RETIRED_TABLES = ["o_skillList", "o_skillAttribution"];
 
@@ -39,7 +41,7 @@ function freshDb(name: string): Knex {
 }
 
 describe("001_schema 在 sqlite 下真跑", () => {
-  it("建出恰好 27 张表，且不含退役表", async () => {
+  it("建出恰好 33 张表（27 + Phase 1c Task 1 的 6 张），且不含退役表", async () => {
     const db = freshDb("tables");
     await db.migrate.latest({ migrationSource: makeMigrationSource() });
     const rows = await db("sqlite_master").where("type", "table").whereNot("name", "like", "sqlite_%").select("name");
@@ -74,7 +76,7 @@ describe("001_schema 在 sqlite 下真跑", () => {
     await db.destroy();
   });
 
-  it("downgrade 之后 27 张表全没了", async () => {
+  it("downgrade 之后 33 张表全没了", async () => {
     const db = freshDb("down");
     const src = makeMigrationSource();
     await db.migrate.latest({ migrationSource: src });

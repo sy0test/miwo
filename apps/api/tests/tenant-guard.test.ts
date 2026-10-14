@@ -261,10 +261,11 @@ describe("守卫：knex 结构契约（升级护栏）", () => {
     expect(() => parseTableSpec(1)).toThrow(PolicyNotFoundError);
   });
 
-  it("策略表只有 tenant/platform 两态（本阶段无 global 表，结论 2），且租户表 20 张", () => {
+  it("策略表只有 tenant/platform 两态（本阶段无 global 表，结论 2），且租户表 22 张", () => {
     const values = new Set(Object.values(TABLE_POLICIES));
     expect([...values].sort()).toEqual(["platform", "tenant"]); // 本阶段无 global（结论 2）
-    expect(TENANT_TABLES.length).toBe(20);
+    // ⚠【Phase 1c Task 1】20 → 22（`006_quota_grants` 的 `o_account` / `o_modelGrant`）
+    expect(TENANT_TABLES.length).toBe(22);
   });
 });
 

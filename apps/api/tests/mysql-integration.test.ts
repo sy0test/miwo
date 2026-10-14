@@ -111,9 +111,18 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
       expect(types).toEqual(new Set(["bigint unsigned"]));
       expect(list.length).toBeGreaterThan(15); // 防"过滤把业务表一起滤掉"→ 空集合假绿
 
-      // ⚠ 清单**不是**在这里手写的，而是从 `001_schema` 的源码机械抽取：
+      // ⚠ 清单**不是**在这里手写的，而是从**全部迁移文件**的源码机械抽取：
       //    凡是用了 `t.pk(T)` 的表就是自增主键表。这样"加了表但忘了改断言"不可能发生。
-      const schemaSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "db", "migrations", "001_schema.ts"), "utf8");
+      //    ⚠【Phase 1c Task 1】原来只读 `001_schema.ts` ⇒ `o_user`（重建后改用 `t.pk(T)`）与
+      //    005/006 的四张新表（`o_invite` / `o_auditLog` / `o_modelGrant` 自增；`o_userSetting` /
+      //    `o_loginAttempt` 复合主键；`o_account` 是"非自增单列主键"）都不会进期望清单。
+      const MIG_DIR = path.resolve(__dirname, "..", "src", "db", "migrations");
+      const schemaSrc = fs
+        .readdirSync(MIG_DIR)
+        .filter((f) => /^\d{3}_.+\.ts$/.test(f))
+        .sort()
+        .map((f) => fs.readFileSync(path.join(MIG_DIR, f), "utf8"))
+        .join("\n");
       // ⚠ **必须先剥注释**：brief 的原始正则直接在表体里找 `t.pk(T)`，而 `o_project` 的表体里有一句
       //    注释写着「⚠ **不能**用 `t.pk(T)`：现状 `id` 由代码显式给 `Date.now()`…」——
       //    于是 `o_project` 被**误判**成自增主键表（实测：期望清单 19 项 vs 真库 18 项，
@@ -125,10 +134,15 @@ d("真实 MySQL 集成（MIWO_TEST_MYSQL=1）", () => {
         .map((m) => m[1])
         .sort();
       expect(expected.length).toBeGreaterThan(15);                 // 防止正则失效导致"空清单 vs 空清单"的假绿
-      // ⚠ 地板值为什么是 15 而不是 brief 写的 20：**实测**（Task 7，本机真 MySQL）
-      //    27 张表里用 `t.pk(T)` 的**恰好 18 张**（其余 9 张：o_user / o_project 显式给 id、
+      // 地板值为什么是 15 而不是 brief 写的 20：**实测**（Task 7，本机真 MySQL）
+      //    1a 的 27 张表里用 `t.pk(T)` 的**恰好 18 张**（其余 9 张：o_project 显式给 id、
       //    memories / o_setting / o_vendorConfig 是 varchar 主键、4 张复合主键关联表）。
       //    brief 的 20 会让这条断言**恒红**——它是未经实跑的估计值。
+      // ⚠【Phase 1c Task 1】18 → **22**：`005_accounts` 把 `o_user` 也改成 `t.pk(T)`（§7.1 要自增
+      //    bigint unsigned 主键）并新建 `o_invite` / `o_auditLog`，`006_quota_grants` 新建
+      //    `o_modelGrant`。⚠ 这条**未在真 MySQL 上实测**（本机 3307 独占、MIWO_TEST_MYSQL≠1），
+      //    数字由源码机械抽取 + 上面的 sqlite 侧实测共同支撑。
+      expect(expected.length).toBe(22);
       // ⚠ 比较**大小写归一后**的名字：Windows 上的 MySQL `@@lower_case_table_names=1`
       //    （本机实测 = 1）把表名按小写存储，`information_schema` 回读的永远是
       //    `o_agentworkdata`，而源码抽出来的是 `o_agentWorkData`。Linux 的 CI 上是 0，

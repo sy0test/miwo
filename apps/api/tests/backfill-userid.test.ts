@@ -25,6 +25,7 @@ import {
   assertBackfillConsistent,
   assertDeriveColumns,
   backfillUserIds,
+  BACKFILL_EXEMPT_TABLES,
   BACKFILL_TARGET_TABLES,
   firstProjectIdInFlowData,
   formatBackfillReport,
@@ -233,16 +234,22 @@ describe("dry-run 与 apply", () => {
 });
 
 describe("★表清单三方相等（审查输入 ⑥：手工清单必漂，必须有机械判据）", () => {
-  it("policies.TENANT_TABLES ↔ 回填目标(19)+o_project ↔ 运行期 selfCheck(20) 逐项相等", async () => {
+  it("policies.TENANT_TABLES ↔ 回填目标(19)+o_project+豁免(2) ↔ 运行期 selfCheck(20) 逐项相等", async () => {
     // dry-run 即可：它不写库，但会算出**全量** selfCheck（20 行）
     const report = await backfillUserIds(knex, { apply: false });
     const selfTables = report.selfCheck.map((s) => s.table);
-    const policy = [...TENANT_TABLES].sort();
+    // ⚠【Phase 1c Task 1】不变量改成：
+    //   TENANT_TABLES == BACKFILL_TARGET_TABLES ∪ {o_project} ∪ BACKFILL_EXEMPT_TABLES
+    //   自制豁免的是 `o_account` / `o_modelGrant`（迁移后新建的租户空表，没有历史行可回填）。
+    const exempt = [...BACKFILL_EXEMPT_TABLES].sort();
+    const policy = [...TENANT_TABLES].filter((t) => !exempt.includes(t)).sort();
 
-    // ① 常量层：19 + 链源头 = 20，且顺序就是 selfCheck 的顺序
+    // ① 常量层：19 + 链源头 = 20；并集恰好覆盖全部租户表
     expect([...BACKFILL_TARGET_TABLES]).toHaveLength(19);
+    expect(exempt).toEqual(["o_account", "o_modelGrant"]);
     expect([...SELF_CHECK_TABLES]).toEqual(["o_project", ...BACKFILL_TARGET_TABLES]);
     expect([...SELF_CHECK_TABLES].sort()).toEqual(policy);
+    expect([...new Set(["o_project", ...BACKFILL_TARGET_TABLES, ...exempt])].sort()).toEqual([...TENANT_TABLES].sort());
 
     // ② 运行期：selfCheck 覆盖的表**恰好**是这三方约定的集合（顺序也钉住）
     expect(selfTables).toEqual([...SELF_CHECK_TABLES]);
@@ -250,6 +257,8 @@ describe("★表清单三方相等（审查输入 ⑥：手工清单必漂，必
 
     // ③ 反向：策略表里没有一张被回填逻辑漏掉（"少一张"必红）
     for (const table of policy) expect(selfTables).toContain(table);
+    // ④ 豁免表**不该**出现在 selfCheck 里（它们是空表，塞进去只会多出一条永不发火的空断言）
+    for (const table of exempt) expect(selfTables).not.toContain(table);
   });
 });
 
