@@ -1,4 +1,4 @@
-# 谜沃 / MirrorWorld 单机容器编排（Phase 0 交付；worker 于 Phase 1d 启用）
+# 谜沃 / MirrorWorld 单机容器编排（Phase 0 交付；worker 服务自 Phase 1d 起是**真服务**，见文件末）
 #
 # ⚠ 拓扑为什么是"api 用 host 网络 + nginx 跑宿主机"（修复轮 1，F1）：
 #   apps/api/src/config.ts:84-86 在 MIWO_ENV=prod 下**强制** MIWO_HOST === "127.0.0.1"（否则启动抛 ConfigError），
@@ -10,7 +10,7 @@
 #     A) 本文件采用：api 用 `network_mode: host` → 它直接绑**宿主机**的 127.0.0.1:${MIWO_PORT}，
 #        宿主机 nginx 反代 http://127.0.0.1:${MIWO_PORT} 即可连通（见 deploy/nginx.conf）。
 #        ⚠ network_mode 与 ports **不能并存**（docker compose 会直接报错），所以 api 没有 ports 段。
-#     B) Phase 1d 若要把 nginx 也放进容器：必须让 nginx 共享 api 的网络命名空间
+#     B) 若将来要把 nginx 也放进容器：必须让 nginx 共享 api 的网络命名空间
 #        （nginx 服务写 `network_mode: "service:api"`，此时 80/443 要发布在 **api** 服务的 ports 上）。
 #   Phase 0 的 nginx 一律跑在**宿主机**（deploy/nginx.conf 就是给它的，proxy_pass 指 127.0.0.1）。
 name: miwo
@@ -65,6 +65,31 @@ services:
     network_mode: host
     volumes:
       - miwo-data:${MIWO_DATA_DIR}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # Phase 1d：队列 worker。与 api 同镜像/同 env；只换启动命令。
+  # ⚠ 生产用哪个形态：Phase 0 的裁定是 **systemd 为主推**（容器路径整体未在真机验证过）。
+  #    本服务与 systemd 单元二选一，不要同时起（两条进程抢同一队列没事，但会让并发口径翻倍）。
+  worker:
+    image: miwo-api:${MIWO_IMAGE_TAG}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MIWO_ENV: ${MIWO_ENV}
+      MIWO_PORT: ${MIWO_PORT}
+      MIWO_HOST: ${MIWO_HOST}
+      MIWO_DATA_DIR: ${MIWO_DATA_DIR}
+      MIWO_JWT_SECRET: ${MIWO_JWT_SECRET}
+    # 与 api 一致：prod 下后端只绑回环，host 网络是唯一自洽写法（见文件头 A）。
+    network_mode: host
+    volumes:
+      - miwo-data:${MIWO_DATA_DIR}
+    command: ["node", "data/serve/worker.js"]
     depends_on:
       mysql:
         condition: service_healthy

@@ -10,9 +10,18 @@
  *  4) 5 个必填项在 deploy/.env.example 里真实赋值且非空；
  *  5) deploy/nginx.conf **按 location 切块**后逐块断言（位置无关）——F11；
  *     并逐处断言 `proxy_pass http://<host>:<port>` 的 port == MIWO_PORT、host == 127.0.0.1 —— F3；
+ *     另：`/oss` 的 Range 必须是**真实指令** `proxy_set_header Range $http_range;`（裸子串 "Range" 会被
+ *     If-Range 行误满足）—— Phase 0 ledger N2；
  *  6) 容器拓扑自洽：api 必须存在「宿主机 nginx 连得上」的可达路径 —— F1；
- *  7) deploy/Dockerfile：存在、被 compose 的 build 引用、基础镜像 >= 22.12、CMD/WORKDIR 指向 data/serve/app.js —— F2；
+ *  7) deploy/Dockerfile：存在、被 compose 的 build 引用、基础镜像 22.12 <= v < 25（**上下界都查** ——
+ *     Phase 0 ledger N4b）、`CMD`/`WORKDIR` 指向 data/serve/app.js、有一行**真实指令**（非注释）
+ *     `COPY … .npmrc`（Phase 0 ledger N4a）；
  *  8) systemd 单元的 ExecStart 指向真实产物 data/serve/（不得再出现 dist/）—— F5；
+ *     8b) worker 单元是**真单元**（Phase 1d）：ExecStart/WorkingDirectory/KillSignal/TimeoutStopSec(>25s)、
+ *         不得写"占位"，且 `src/worker.ts` 与 `build.ts` 的 entry/outfile 必须同时在；
+ *     8c) compose 的 `worker` 服务：与 api 同镜像/同 build/同 env、command 指向 worker.js、
+ *         network_mode=host、不得有 ports、不得新增 MIWO_*；
+ *     8d) `/assets` **有意不反代**（Phase 1c 未处置项 N4：会遮蔽 SPA 产物目录）—— 静默新增即红；
  *  9) 证书目录不进版本库（.gitignore 规则 + git 索引复查）—— F7；
  * 10) docker-compose.yml 可被 YAML 解析。
  *
@@ -169,7 +178,17 @@ function assertInBlock(prefix, needles) {
   }
 }
 assertInBlock("/api", ["proxy_pass", "X-Real-IP", "X-Forwarded-For", "X-Forwarded-Proto"]);
-assertInBlock("/oss", ["proxy_pass", "X-Forwarded-For", "X-Forwarded-Proto", "Range", "If-Range", "proxy_buffering off"]);
+// N2（Phase 0 ledger）：原断言用子串 `"Range"`，而**同一块里的 `if-range` 行**就能满足它
+//   （`proxy_set_header If-Range $http_if_range;` 里含 "Range" 的子串 "Range"）⇒ 把真正的
+//   `proxy_set_header Range $http_range;` 删掉后断言**照样绿**，症状是"视频拖动进度条失效"。
+//   修法：锚到**真实指令形态**（不再接受子串），并把 If-Range 也锚住。
+assertInBlock("/oss", ["proxy_pass", "X-Forwarded-For", "X-Forwarded-Proto", "If-Range", "proxy_buffering off"]);
+{
+  const blk = nginxBlocks.get("/oss");
+  if (blk && !/proxy_set_header\s+Range\s+\$http_range\s*;/i.test(blk)) {
+    failures.push('deploy/nginx.conf 的 /oss 块必须写 `proxy_set_header Range $http_range;`（只查子串 "Range" 会被 If-Range 行误满足）');
+  }
+}
 assertInBlock("/socket.io", ["proxy_pass", "Upgrade", "Connection"]);
 if (!/gzip\s+on\s*;/.test(nginxCode)) failures.push('deploy/nginx.conf 缺少 "gzip on;"');
 
@@ -241,6 +260,10 @@ if (dockerfile) {
         failures.push(`deploy/Dockerfile 的 FROM ${img} 未写次版本号，无法证明满足 engines ">=22.12 <25"（请写 node:22.12-...）`);
       } else if (major < 22 || (major === 22 && minor < 12)) {
         failures.push(`deploy/Dockerfile 的 FROM ${img} 低于 engines 要求的 Node >=22.12`);
+      } else if (major >= 25) {
+        // N4b（Phase 0 ledger）：engines 是 ">=22.12 <25"，只查下限会让 node:25+ 的镜像溜过
+        //   （`node:25.x` 在 22.12 之上 ⇒ 旧断言全绿），而 25.x 从未验证过。
+        failures.push(`deploy/Dockerfile 的 FROM ${img} 超出 engines 的上界（要求 <25）`);
       }
     }
     if (alias) stageNames.add(alias.toLowerCase());
@@ -251,8 +274,14 @@ if (dockerfile) {
   if (!/^WORKDIR\s+\/app\/apps\/api\s*$/m.test(dockerfile)) {
     failures.push("deploy/Dockerfile 的最终 WORKDIR 必须是 /app/apps/api（与 `node data/serve/app.js` 的相对路径、systemd 的 WorkingDirectory 同口径）");
   }
-  if (!/COPY[^\n]*\.npmrc/.test(dockerfile)) {
-    failures.push("deploy/Dockerfile 必须 COPY .npmrc：仓库把 enable-pre-post-scripts=true 放在那里，缺了它构建不跑 prebuild（router.ts 会陈旧）");
+  // N4a（Phase 0 ledger）：原断言 `/COPY[^\n]*\.npmrc/` 会被**注释行**满足
+  //   （`# COPY package.json … .npmrc`）⇒ 把真实那行删掉、只在注释里留一句，门禁照样绿，
+  //   而构建就不跑 prebuild（产物里是陈旧的 router.ts）。修法：只认**真实指令行**（不以 # 开头）。
+  {
+    const hasNpmrcCopy = dockerfile.split(/\r?\n/).some((l) => /^\s*COPY\b/.test(l) && l.includes(".npmrc"));
+    if (!hasNpmrcCopy) {
+      failures.push("deploy/Dockerfile 必须有一行真实的 `COPY … .npmrc`（注释行不算）：缺它构建不跑 prebuild（router.ts 会陈旧）");
+    }
   }
 
   /**
@@ -373,8 +402,88 @@ if (!/^ExecStart=\/usr\/bin\/node\s+data\/serve\/app\.js\s*$/m.test(units[0][1])
 if (!/^WorkingDirectory=\/opt\/miwo\/apps\/api\s*$/m.test(units[0][1])) {
   failures.push("deploy/systemd/miwo-api.service 的 WorkingDirectory 必须是 /opt/miwo/apps/api");
 }
-if (!/Phase 1d/.test(units[1][1])) {
-  failures.push("deploy/systemd/miwo-worker.service 必须注明它是 Phase 1d 占位（产物 data/serve/worker.js 尚不存在）");
+
+// 8b) worker 单元（Phase 1d 起不再是占位）：ExecStart/WorkingDirectory/停机信号 + **源入口与构建配置必须同时在**
+//     —— 否则"单元指向一个永远不会被产出的文件"，症状是 systemd 起不来 + Restart=always 循环（Phase 0 的 F5 同类）。
+const workerUnit = units[1][1];
+if (!/^ExecStart=\/usr\/bin\/node\s+data\/serve\/worker\.js\s*$/m.test(workerUnit)) {
+  failures.push("deploy/systemd/miwo-worker.service 的 ExecStart 必须是 /usr/bin/node data/serve/worker.js");
+}
+if (!/^WorkingDirectory=\/opt\/miwo\/apps\/api\s*$/m.test(workerUnit)) {
+  failures.push("deploy/systemd/miwo-worker.service 的 WorkingDirectory 必须是 /opt/miwo/apps/api（与 ExecStart 的相对路径同口径）");
+}
+if (!/^KillSignal=SIGTERM\s*$/m.test(workerUnit) || !/^TimeoutStopSec=\d+\s*$/m.test(workerUnit)) {
+  failures.push("deploy/systemd/miwo-worker.service 必须有 KillSignal=SIGTERM 与 TimeoutStopSec（worker 的优雅停机靠它）");
+} else {
+  // 停机窗口必须真的够长：worker 收到 SIGTERM 后在 JOB_POLICY.shutdownGraceMs（默认 25s）内收尾，
+  //   `TimeoutStopSec ≤ shutdownGraceMs` 会让 systemd 提前 SIGKILL ⇒ 在跑的任务只能靠租约回收重跑。
+  const grace = Number((/TimeoutStopSec=(\d+)/.exec(workerUnit) ?? [])[1]);
+  if (!(grace > 25)) {
+    failures.push(`deploy/systemd/miwo-worker.service 的 TimeoutStopSec=${grace} 必须 > shutdownGraceMs(默认 25s)：否则 systemd 提前 SIGKILL，优雅停机名存实亡`);
+  }
+}
+if (/占位|placeholder/i.test(workerUnit)) {
+  failures.push('deploy/systemd/miwo-worker.service 不得再写"占位/placeholder"：Phase 1d 起它是真单元');
+}
+if (!fs.existsSync(path.join(ROOT, "apps/api/src/worker.ts"))) {
+  failures.push("缺少 apps/api/src/worker.ts：miwo-worker.service 指向的 data/serve/worker.js 没有构建入口");
+}
+const buildTs = read("apps/api/scripts/build.ts");
+if (!/src\/worker\.ts/.test(buildTs) || !/data\/serve\/worker\.js/.test(buildTs)) {
+  failures.push("apps/api/scripts/build.ts 里没有 worker 的 entry/outfile：miwo-worker.service 的 ExecStart 将指向不存在的文件");
+}
+
+// 8c) compose 的 worker 服务（Phase 1d）：与 api **同镜像/同 build/同 env**，只换启动命令。
+//     缺它 ⇒ 容器路径下只起 api ⇒ 队列里只有入队没有消费者（任务永远 pending，且没有任何报错）。
+{
+  const worker = services.worker;
+  if (!worker) {
+    failures.push("deploy/docker-compose.yml 缺少 worker 服务：只起 api 时队列只有入队、没有消费者（任务永远 pending 且不报错）");
+  } else {
+    if (!/^\[\s*"node"\s*,\s*"data\/serve\/worker\.js"\s*\]$/.test(JSON.stringify(worker.command ?? null))) {
+      failures.push(`deploy/docker-compose.yml 的 worker 服务 command 必须是 ["node","data/serve/worker.js"]（与 systemd 单元同口径），实际 ${JSON.stringify(worker.command)}`);
+    }
+    if (String(worker.network_mode ?? "").trim() !== "host") {
+      failures.push("deploy/docker-compose.yml 的 worker 服务必须与 api 同样写 network_mode: host（同一镜像/同一 env 口径）");
+    }
+    if (worker.ports) {
+      failures.push("deploy/docker-compose.yml 的 worker 服务不得写 ports：worker 没有任何端口，且 network_mode: host 与 ports 不能并存");
+    }
+    if (api) {
+      if (String(worker.image ?? "") !== String(api.image ?? "")) {
+        failures.push(`worker 与 api 必须是**同一个镜像**（spec §4.1「共用镜像、不同启动命令」）：worker=${JSON.stringify(worker.image)} api=${JSON.stringify(api.image)}`);
+      }
+      const wEnv = Object.keys(worker.environment ?? {}).sort();
+      const aEnv = new Set(Object.keys(api.environment ?? {}));
+      const extra = wEnv.filter((k) => !aEnv.has(k));
+      if (extra.length) {
+        failures.push(`worker 服务的 environment 比 api 多出 ${extra.join(", ")}：本阶段**不新增任何 MIWO_* 变量**（口径只在 policy.ts / GATE_LIMITS 里改）`);
+      }
+    }
+    if (!Array.isArray(worker.env_file) || !worker.env_file.includes(".env")) {
+      failures.push("deploy/docker-compose.yml 的 worker 服务必须 env_file: [.env]（与 api 同一份环境文件）");
+    }
+    if (!Array.isArray(worker.volumes) || !worker.volumes.some((v) => String(v).includes("miwo-data:"))) {
+      failures.push("deploy/docker-compose.yml 的 worker 服务必须挂同一个 miwo-data 卷（媒体/技能/提示词与 api 同源）");
+    }
+    if (!fs.existsSync(path.join(ROOT, "apps/api/src/worker.ts"))) {
+      failures.push("缺少 apps/api/src/worker.ts：compose 的 worker 服务 command 指向的产物没有构建入口");
+    }
+  }
+}
+
+// 8d) 媒体路由（Phase 1c 旧账 N2/N4 的 deploy 侧）
+//   · `/oss` 的反代口径由上面 5) 的锚定断言守着（含 Range/If-Range/proxy_buffering off）—— 浏览器拖进度条靠它。
+//   · `/assets` **有意不反代**：Vite 的默认 `assetsDir` 就是 `assets`，`location /assets` 一旦加上，
+//     SPA 的 `/assets/*.js|css` 会被打到后端签名守卫 ⇒ 无签名 403 ⇒ **整页白屏**（比"用户片尾素材取不到"更严重）。
+//     这一条**不是**"永远不许加"，而是"加它之前必须先拍板 N4"：见根 README「已知问题 §2 · N4」。
+//     所以这里对**静默新增**做机械拦截（去掉这条断言 = 骗自己；改决定必须同时改本断言与两份文档）。
+if (nginxBlocks.has("/assets")) {
+  failures.push(
+    "deploy/nginx.conf 出现了 location /assets：这会遮蔽 SPA 产物目录（Vite 默认 assetsDir=assets）⇒ /assets/*.js 被签名守卫 403 ⇒ 白屏。" +
+      "N4（Phase 1c 登记）要求先与前端 build.assetsDir 一起拍板：见根 README「已知问题 §2 · N4」与 deploy/README.md「媒体路由」一节。" +
+      "确要改这一决定，请同时更新本断言与那两处文档（不许静默新增）。",
+  );
 }
 
 // 9) 证书不进版本库（F7）

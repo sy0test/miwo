@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # 谜沃 / MirrorWorld 后端镜像（多阶段：装依赖 → 构建 → 运行）
 #
-# ⚠ 本文件**未经本机验证**：开发机没有 Docker，Phase 0 只做到"文件自洽 + 与代码/一致性脚本一致"。
-#    真正的镜像构建与容器内运行验证属于 **Phase 1d 的目标形态**（详见 deploy/README.md）。
+# ⚠ 本文件**未经本机验证**：开发机没有 Docker，只做到"文件自洽 + 与代码/一致性脚本一致"。
+#    真正的镜像构建与容器内运行（api + worker）验证归**部署窗口**（Phase 1d 仍未做，详见 deploy/README.md）。
 #
 # 基础镜像下限 = 22.12（`engines.node` = ">=22.12 <25"）：
 #   依赖链里的 is-path-inside@4.0.0 是纯 ESM 且不在 apps/api/scripts/build.ts 的 external 列表里，

@@ -2,12 +2,17 @@
 
 > 本目录只产出部署文件，一致性由 `node tools/check-deploy-config.cjs`（`pnpm verify:deploy`）保证。
 >
-> ⚠ **两条路径，可信度不同（Phase 0 的硬事实）：**
+> ⚠⚠ **本机没有 Docker（Phase 1d 复测）：容器路径整体「未在真机验证」。**
+> `docker compose build`、镜像构建、`network_mode: host` 的真实网络行为、**容器内 worker 启动** —— 一次都没有
+> 在容器里跑过；本目录对它们只有**静态断言 + 文档标注**。**systemd（路径 A）是 Phase 1 主推路径**，
+> 容器路径的验证归部署窗口（见 §3、§3.5 的未验证声明）。
+>
+> ⚠ **两条路径，可信度不同：**
 >
 > | 路径 | 状态 | 说明 |
 > |---|---|---|
-> | **A. 宿主机 systemd + 宿主机 nginx（Phase 0 主推）** | 文件/路径口径可核对，**推荐先走这条** | 后端直接跑在宿主机上，绑 127.0.0.1，nginx 反代它。产物路径 `data/serve/app.js` 是实测存在的真实产物。 |
-> | **B. Docker Compose** | **未经本机验证**（开发机没有 Docker），是 **Phase 1d 的目标形态** | 编排拓扑已按代码事实写成自洽形态（见下），但镜像能否构建成功、容器内能否起来，本机**无法验证**，Phase 0 不做断言。 |
+> | **A. 宿主机 systemd + 宿主机 nginx（Phase 1 主推）** | 文件/路径口径可核对，**推荐先走这条** | 后端直接跑在宿主机上，绑 127.0.0.1，nginx 反代它。产物路径 `data/serve/app.js` 与 `data/serve/worker.js` 都是实测存在的真实产物（`pnpm --filter @miwo/api build` 出两个）。 |
+> | **B. Docker Compose** | **未经本机验证**（开发机没有 Docker）；Phase 1d 起 `docker-compose.yml` 里 `api` + **`worker`** 两个服务齐了 | 编排拓扑已按代码事实写成自洽形态（见下），但镜像能否构建成功、容器内能否起来，本机**无法验证**。 |
 >
 > 两条路径共用同一份 `deploy/nginx.conf`（都跑在**宿主机**上）、同一份 `deploy/.env.example`。
 
@@ -86,13 +91,15 @@ curl -sS http://127.0.0.1:<MIWO_PORT>/api/other/configHealth?summary=1
 curl -I https://<域名>/
 ```
 
-> `deploy/systemd/miwo-worker.service` 是 **Phase 1d 占位**（`data/serve/worker.js` 尚不存在），现在 enable 会启动失败，这是刻意的。
+> **worker 单元自 Phase 1d 起是真单元**（`data/serve/worker.js` 由 `pnpm --filter @miwo/api build` 产出，
+> 现在 `enable` 就能起来）—— 安装步骤、日志、与容器形态的二选一、优雅停机口径见 **§3.5**。
 
-## 3. 路径 B：Docker Compose（**未经本机验证**，Phase 1d 目标形态）
+## 3. 路径 B：Docker Compose（**未经本机验证**；Phase 1d 起含 `worker` 服务）
 
 > ⚠⚠ **本机没有 Docker，以下步骤一次都没有在容器里跑过**：`docker compose build`、镜像构建、容器启动、
-> 卷播种全部**未验证**。`deploy/Dockerfile` 与 `deploy/docker-compose.yml` 只做到"与代码事实自洽 + 过一致性断言"。
-> Phase 1d 接手机器上必须重新验证一遍（尤其是 `deploy/Dockerfile` 的两个 `pnpm install` 阶段）。
+> 卷播种、**容器内 worker 启动**全部**未验证**。`deploy/Dockerfile` 与 `deploy/docker-compose.yml` 只做到
+> "与代码事实自洽 + 过一致性断言"。部署窗口必须重新验证一遍（尤其是 `deploy/Dockerfile` 的两个 `pnpm install`
+> 阶段、`.dockerignore` 对构建上下文的影响、`network_mode: host` 的真实行为）。
 
 ```bash
 git clone <repo> /opt/miwo && cd /opt/miwo
@@ -105,7 +112,7 @@ cp deploy/.env.example deploy/.env        # 填 MIWO_JWT_SECRET / MIWO_PUBLIC_BA
 
 # 3) nginx 与证书都在宿主机上（同路径 A 的第 7、8 步）
 
-# 4) 构建并启动（mysql + api；api 用 host 网络 → 绑宿主机 127.0.0.1:<MIWO_PORT>）
+# 4) 构建并启动（mysql + api + worker；api/worker 用 host 网络 → 绑宿主机 127.0.0.1:<MIWO_PORT>）
 cd deploy && docker compose build && docker compose up -d
 
 # 5) ★ 首次必须把运行时素材播种进 miwo-data 卷（卷为空时 skills/modelPrompt 都不存在，
@@ -114,10 +121,84 @@ cd deploy && docker compose build && docker compose up -d
 docker compose run --rm --no-deps --entrypoint sh api \
   -c 'cp -a /app/apps/api/data/. "$MIWO_DATA_DIR"/'
 
-# 6) 验证
+# 6) 验证（worker 的日志：docker compose logs -f worker）
 curl -sS http://127.0.0.1:<MIWO_PORT>/api/other/configHealth?summary=1
 curl -I https://<域名>/
 ```
+
+> `deploy/.dockerignore`（Phase 0 ledger N1 + Phase 1d 落地）把 `node_modules`、`.git`、
+> `apps/api/data/{oss,serve,web,models,assets,db2.sqlite}`、`apps/web/dist` 等排除在构建上下文之外，
+> 但**刻意保留** `apps/api/data/{vendor,skills,modelPrompt}` 之外的素材拷贝路径（Dockerfile 要 `COPY` 它们播种）。
+> 没有它时：根 `node_modules`（GB 级）+ `.git` 全进上下文，且宿主机产物会覆盖容器里刚装好的
+> `apps/api/node_modules`（Windows 开发机上是 Junction/symlink + `*.CMD` ⇒ 构建大概率失败）。
+
+## 3.5 worker 进程（Phase 1d 起是**真进程**）
+
+队列的执行者是**独立进程**（api 只入队 + 推事件 `job:update`），产物与 api 同目录 `data/serve/`：
+
+| 形态 | 启动方式 | 说明 |
+|---|---|---|
+| **systemd（主推）** | `deploy/systemd/miwo-worker.service` | 与 api 同一套前置（`pnpm install` + `pnpm --filter @miwo/api build`），只是 `ExecStart` 换成 `data/serve/worker.js` |
+| **容器** | `deploy/docker-compose.yml` 的 `worker` 服务 | 与 api **同镜像/同 build/同 env/同卷**，只换 `command`（spec §4.1） |
+| **本机开发** | `pnpm.cmd --filter @miwo/api run worker` | tsx 直跑 `src/worker.ts`，不需要 build |
+
+安装（路径 A 第 9 步之后）：
+
+```bash
+cp deploy/systemd/miwo-worker.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now miwo-worker
+journalctl -u miwo-worker -f          # 领取 / 心跳 / 优雅停机的日志都在这
+systemctl status miwo-worker
+```
+
+- ⚠ **与 compose 的 `worker` 服务二选一，不要同时起**：两条进程抢同一队列**不会重复执行**（领取是条件写 +
+  租约），但 `JOB_POLICY.perUserMaxRunning` 是"**每 worker 一份**" ⇒ 同时起会让实际并发口径**翻倍**。
+- **优雅停机**：worker 收到 `SIGTERM` 后在 `JOB_POLICY.shutdownGraceMs`（默认 25s）内等在跑任务收尾，再 abort。
+  单元里 `TimeoutStopSec=45 > 25` 是**必须的** —— `tools/check-deploy-config.cjs` 会断言这个不等式；
+  否则 systemd 提前 `SIGKILL`，在跑的任务只能靠租约回收（`reclaimExpired`）重跑一遍（次优路径）。
+- **数据卷**：与 api 共用 `${MIWO_DATA_DIR}`；缺 `{skills,modelPrompt}` 时 worker 照常起、技能/提示词**静默失效**
+  （与 api 同一个坑，播种见 §2 第 5 步 / §3 第 5 步）。Phase 1c Task 8 起**没有** `vendor/` 要播种。
+
+## 3.6 并发口径（O10）：参数表与**唯一落点**
+
+**不下沉到环境变量**：本阶段**不新增任何 `MIWO_*`**（新增要同时改 `deploy/.env.example`、
+`apps/api/.env.example` 与 `tools/check-deploy-config.cjs` 的白名单，收益为零；门禁会断言 compose 没有引入新变量）。
+**改口径 = 改 `apps/api/src/jobs/policy.ts` 的 `JOB_POLICY` 与 `apps/api/src/jobs/gate.ts` 的 `GATE_LIMITS`，
+不是改环境变量。**
+
+| 参数 | 落点 | 当前值 | 含义 |
+|---|---|---|---|
+| `globalMaxRunning` | `policy.ts` | 8 | 每个 worker 进程内同时在跑的任务数 |
+| `perUserMaxRunning` | `policy.ts` | 2 | 每用户额度；⚠ 多 worker 下是"**每 worker 一份**"，全局按用户上限属 Phase 3 |
+| `leaseMs` / `heartbeatMs` | `policy.ts` | 60000 / 15000 | 租约与心跳（不变式 `heartbeatMs*4 <= leaseMs`） |
+| `claimBatch` / `idlePollMs` / `busyPollMs` | `policy.ts` | 64 / 1000 / 200 | 领取批量与轮询节奏 |
+| `maxPayloadBytes` | `policy.ts` | 65536 | payload 只存引用 id（base64 一律不进队列） |
+| `retryBaseMs` / `retryMaxMs` | `policy.ts` | 30000 / 600000 | 退避 `base*2^(n-1)`，封顶 |
+| `shutdownGraceMs` | `policy.ts` | 25000 | SIGTERM 后的收尾窗口（必须 < 单元的 `TimeoutStopSec`） |
+| `stuckGraceMs` | `policy.ts` | 1800000 | 对账器（`job:admin --reconcile`）的宽限期 |
+| `relayPollMs` / `relayBatch` | `policy.ts` | 1000 / 200 | api 侧进度 relay |
+| `gateWaitMs` / `gateLeaseMs` / `gatePollMs` | `policy.ts` | 120000 / 300000 / 200 | `o_gate` 槽位的等待/租约/轮询 |
+| `selftestSleepMs` | `policy.ts` | 1500 | 运维冒烟（`job:admin --enqueue-selftest`）与 chaos 的睡眠 |
+| `GATE_LIMITS` `vendor:text` / `vendor:image` / `vendor:video` / `default` | `gate.ts` | 8 / 4 / 2 / 4 | vendor 分池上限（**跨进程**，`o_gate` 租约） |
+
+⚠ **O10 未定**（spec §15：「100 并发」指**注册用户 / 日活 / 同时在线 / 同时生成**中的哪一种）。
+上表是按"100 = **注册用户**"取的**保守默认**（最不容易把服务器与厂商配额打挂）；口径一旦拍板，
+只需改 `globalMaxRunning` / `perUserMaxRunning` / 池上限这三个值。
+
+## 3.7 媒体路由：`/oss` 反代 vs `/assets` **有意不反代**（Phase 1c 旧账 N2/N4）
+
+- **N2（Bearer / 签名取媒体）**：`/oss` 与 `/assets` 在后端都挂了 `optionalMediaAuth`（有
+  `Authorization: Bearer` 就建 ctx）+ `mediaAuthGuard`（短时签名），两端都可达 —— 由
+  `pnpm verify:phase1c-media` 的真进程 + 真 HTTP 用例守着（`★★ 带 Bearer 取媒体（无签名）⇒ 200`）。
+  nginx 侧则必须让**媒体字节真的流过去**：`location /oss` 的 `proxy_set_header Range $http_range;` /
+  `If-Range` / `proxy_buffering off` 是拖进度条的前提。`tools/check-deploy-config.cjs` 现在**锚真实指令**断言
+  （裸子串 `"Range"` 会被同一块里的 `If-Range` 行误满足 ⇒ 把真指令注释掉后门禁照样绿，这就是 Phase 0 ledger 的 N2）。
+- **N4（`/assets` 会遮蔽将来的 SPA 产物目录）**：`/assets` **有意没有** `location` 反代。
+  Vite 的默认 `assetsDir` 正是 `assets` ⇒ 一旦加 `location /assets` 把它打到后端签名守卫，
+  `apps/web/dist/assets/*.js|css` 会无签名 **403** ⇒ **整页白屏**（症状比"用户片尾素材在 nginx 路径上取不到"更严重）。
+  这是一条**必须与前端 `build.assetsDir` 一起拍板**的取舍，归属 **Phase 3**（根 README「已知问题 §2 · N4」、
+  `apps/api/README-auth.md` 第 11 条）。两个方向都不是"永远不许动"：`tools/check-deploy-config.cjs` 对
+  `/assets` 的**静默新增**直接报红并指向本节 —— 改决定必须同时改断言与文档。
 
 ## 4. `MIWO_PORT` 与 nginx 的联动（改端口必读）
 
@@ -194,12 +275,25 @@ cd deploy && docker compose build && docker compose up -d
 4. 5 个必填项（`MIWO_ENV/MIWO_PORT/MIWO_HOST/MIWO_DATA_DIR/MIWO_JWT_SECRET`）必须真实赋值且非空；
 5. `nginx.conf` **按 location 切块**后逐块断言（`/api`、`/oss`、`/socket.io` 各自要有的头不能"挂在别处"），
    并逐处断言 `proxy_pass` 的端口 == `MIWO_PORT`、主机 == `127.0.0.1`；
+   `/oss` 的 Range 必须写成**真实指令** `proxy_set_header Range $http_range;`（裸子串 `"Range"` 会被
+   同一块里的 `If-Range` 行误满足）—— Phase 0 ledger N2；
 6. 容器拓扑自洽（api 必须是 `network_mode: host` 或与 nginx 共享网络命名空间；不得同时写 `ports`）；
    mysql 只发布到 `127.0.0.1`、healthcheck 不把口令放命令行；
-7. `deploy/Dockerfile` 存在且被 compose 的 `build:` 引用、基础镜像 >=22.12、`CMD`/`WORKDIR` 指向 `data/serve/app.js`、COPY 了 `.npmrc`；
-8. systemd 单元的 `ExecStart` 指向 `data/serve/` 真实产物（写 `dist/` 会红），worker 单元必须标注 Phase 1d 占位；
+7. `deploy/Dockerfile` 存在且被 compose 的 `build:` 引用、基础镜像 **22.12 <= v < 25**（**上下界都查**，
+   只查下限会让 `node:25+` 溜过 —— Phase 0 ledger N4b）、`CMD`/`WORKDIR` 指向 `data/serve/app.js`、
+   有一行**真实指令（非注释）**`COPY … .npmrc`（注释行不算 —— Phase 0 ledger N4a）；
+8. systemd 单元的 `ExecStart` 指向 `data/serve/` 真实产物（写 `dist/` 会红）；
+   8b. **worker 单元是真单元**：`ExecStart=/usr/bin/node data/serve/worker.js`、`WorkingDirectory=/opt/miwo/apps/api`、
+   `KillSignal=SIGTERM`、`TimeoutStopSec` **> 25s**（`shutdownGraceMs`）、不得写"占位/placeholder"，
+   且 `apps/api/src/worker.ts` 与 `build.ts` 的 entry/outfile 必须**同时在**（否则单元指向永远不产出的文件）；
+   8c. compose 的 **`worker` 服务**：与 api 同镜像/同 build/同 env（不得新增 `MIWO_*`）、`command` 指向
+   `data/serve/worker.js`、`network_mode: host`、不得写 `ports`、必须挂 `miwo-data` 卷；
+   8d. `/assets` **有意不反代**（Phase 1c 未处置项 N4：会遮蔽 SPA 产物目录）—— 静默新增 `location /assets` 即红；
 9. 证书不进版本库（`.gitignore` 规则 + git 索引复查）；
 10. `docker-compose.yml` 可被 YAML 解析。
+
+> 判据的红/绿两端（篡改 ⇒ 红、逐字节还原 ⇒ 绿）逐条记录在
+> `.superpowers/sdd/2026-10-12-miwo-phase1d-job-queue/groupD-report.md` 的 Task 11 一节。
 
 ## 11. 与旧系统共存
 
