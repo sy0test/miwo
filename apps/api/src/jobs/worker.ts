@@ -5,7 +5,8 @@
  *   1. **回收**：交给 store.claim 内部先跑 reclaimExpired（租约过期的 running → queued/dead）。
  *   2. **领取**：只在有空槽时才领（`globalMaxRunning - inFlight.size`），并把槽位数当 limit 传下去。
  *   3. **执行**：每条任务一个 AbortController；心跳定时器负责续租，续租失败（affected=0）
- *      立刻 abort —— 这是"租约被回收/被取消"时唯一能阻止 handler 继续写产物的机制。
+ *      立刻 abort —— 这是"租约被回收/被取消"时**通知** handler 停下的机制。
+ *      ⚠ 它是**协作式**的：handler 不看 `ctx.signal` 就拦不住它直接写业务表（见偏离 ② 的纠正）。
  *   4. **收尾**：stop() 先等在跑任务自然结束（最多 shutdownGraceMs），再强 abort。
  *
  * ⚠ 为什么不用 `Promise.all` 一次领一批再等：那会让"空槽"与"领取数"脱钩（领回来的任务排队等槽），
@@ -31,14 +32,22 @@
  *   两条心跳并发即是铁证）。所以正确顺序是：**先确认租约仍属于我且未过期，再续租**；
  *   一旦过期就认输 abort（fail-closed，宁可不做也不做两遍）。
  *
- * 偏离 ② **abort 立刻解除 worker 的等待**（`Promise.race`，`abortedDeferred`）。
+ * 偏离 ② **abort 立刻解除 worker 的等待**（`Promise.race`，`aborted` deferred）。
  *   brief 写的是 `await def.handle(...)` —— handler 不尊重 `ctx.signal` 时（brief 用例 4 的
  *   handler 就是 `sleep(5s).then(...)`，**完全不看 signal**），worker 会把槽位占满 handler 的
  *   全部时长：超时 100ms 触发了，但 `store.fail` 要等 5s 后才执行 ⇒ 用例 4 在 vitest 的 5s
  *   上限上直接 `Test timed out in 5000ms`（实测）。abort 的语义是"这条任务我已经放弃了"，
  *   所以 worker **不该**再为它阻塞自己的槽位。竞速之后：abort 分支立刻写失败（含"已中止：…"），
- *   handler 的 promise 只挂 `.catch` 兜住未处理拒绝（它若还在跑，其产物写入由租约/终态条件
- *   拦下 —— store 的 I4 保证 `succeed/fail` 的 `state='running'` 条件命中不了）。
+ *   handler 的 promise 只挂 `.catch` 兜住未处理拒绝。
+ *
+ *   ⚠⚠ **abort 是"协作式"的，它不强制 handler 停止**（review-B F6 纠正了这里早先过强的表述）：
+ *     worker 能保证的只有"**队列行**的终态不被旧持有者写坏"（`store.succeed/fail` 带
+ *     `state='running'` 条件 —— I4），**管不到 handler 直接写业务表**。实测（reviewer 探针 5）：
+ *     handler 故意不看 `ctx.signal`、在租约丢失后仍 `update o_video` ⇒
+ *     `signalAbortedAtWrite=true o_video.state=生成成功 jobState=dead`。
+ *     ⇒ **handler 必须自己尊重 `ctx.signal`**：关键写库前 `if (ctx.signal.aborted) throw`，
+ *       并在每条条目开始前复查（Task 7 的 `runItems` 就是这么写的）。
+ *       单靠 worker 的 abort 保护不了产物行。
  *
  * 偏离 ③ **同一 job 被重新领取时的代际记账**（`superseded`）。
  *   偏离①生效后，"旧执行 abort + 该 job 被回收重领"会在**同一进程、同一 workerId** 下同时
