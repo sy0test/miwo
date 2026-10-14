@@ -26,6 +26,12 @@
       "count": 1,
       "note": "Phase 1d Task 3 的任务队列存储层：`o_job` / `o_gate` 是 **platform** 策略的表（spec §6.2），而 worker/后台路径**没有请求 ctx**，HTTP 入队又可能是 role=user 的普通用户 ——「未认证路径写 platform 表」正是本原语的适用场景。**调用点只有 1 处**：`asSystem()` 那个包装函数（所有公开方法都经它进出，所以「谁能用系统身份写 platform 表」在源码里只有一个答案）。⚠ 三条纪律：① 绝不新增 `systemDb` 绕过口（Phase 1c 的结论是绕过口不该变多，故此处用同一守卫下的系统身份）；② 系统身份**不提权**到租户表 —— 业务 handler 走 `src/jobs/tenant.ts` 的 `withJobTenant()`（role=user）；③ `o_job.userId` 归属由入队方显式写入，用户可见的读取必须在路由层按 ctx.userId 过滤（platform 表守卫不注入条件）。",
       "evidence": "tests/job-store.test.ts#★ facade（@/jobs 的 getJobStore/enqueueJob）接的是受守卫的 u.db：真跑通 enqueue+claim"
+    },
+    {
+      "path": "apps/api/src/jobs/gate.ts",
+      "count": 1,
+      "note": "Phase 1d Task 9 的 vendor 分池闸门：`o_gate` 是 **platform** 表，而取/还槽位的两条真实调用路径的 ctx 都是 `role=user`（worker handler 走 `withJobTenant()` 建的最小权限 ctx；api 侧「请求内同步等模型」入口是普通用户 HTTP 请求）⇒ platform 写必须代行系统身份。**调用点结构**：`asSystem` 缺省值是 `(fn) => runAsAuth(fn)`（`deps.asSystem` 只为测试注入直通版），`acquire`/`release`/`releaseAll`/`reclaimExpired`/`counts` 里对 `o_gate` 的每一条语句都经它 ⇒ 「谁能用系统身份动槽位表」在本文件仍只有一个入口。⚠ 三条纪律：① 不新增 `systemDb` 绕过口（与 store.ts 逐字同理）；② 代行范围只有 `o_gate` 的语句，**厂商调用本身仍在调用方真实 ctx 里跑**；③ 槽位只在「厂商调用期间」持有（包整条 15 分钟视频任务会让 8 个额度退化成 1）。",
+      "evidence": "tests/job-gate.test.ts#★ 20 并发抢 3 槽位，峰值持有者 ≤ 3（含反恒真断言）+ 过期回收/超时/releaseAll"
     }
   ]
 }

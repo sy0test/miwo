@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-14T19:54:05.501Z",
+  "generatedAt": "2026-10-14T21:17:58.752Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 291,
+    "tsFilesScanned": 301,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)（接收者限定：u.db/db/systemDb/trx/knex/conn/connection）",
     "systemDbUsers": "拿到裸 systemDb 的文件（命名/别名/命名空间/相对路径/动态 import/require 任一形态）",
@@ -20,6 +20,38 @@
     "excludedReason": "包装层自身（utils.ts / utils/db.ts）、非请求上下文（utils/taskRecord.ts、utils/agent/embedding.ts）用的是默认导出的 dbClient，不受请求上下文隔离约束；它们是内部层，不记为特例。⚠ Phase 1c Task 5 起 `lib/fixDB.ts` / `lib/initDB.ts` 已删除（原条目见本条的历史说明）。"
   },
   "joins": {
+    "apps/api/src/jobs/handlers/imageProductionAssets.ts": {
+      "count": 1,
+      "lines": [
+        47
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[47 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/assets/batchGenerateAssetsImage.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：payload 里的 assetIds 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。⚠ 该代码块原属路由、Task 7 起由 worker 在 `withJobTenant()`（role=user）里执行，守卫照常生效。"
+      }
+    },
+    "apps/api/src/jobs/handlers/promptBatch.ts": {
+      "count": 1,
+      "lines": [
+        123
+      ],
+      "tables": [
+        "o_image"
+      ],
+      "confirmed": true,
+      "note": "[123 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/workbench/batchGeneratePrompt.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
+        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：payload 里的 payload.trackData[].info[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集。⚠ 该代码块原属路由、Task 7 起由 worker 在 `withJobTenant()`（role=user）里执行，守卫照常生效。"
+      }
+    },
     "apps/api/src/routes/assets/getAssetsApi.ts": {
       "count": 2,
       "lines": [
@@ -177,17 +209,17 @@
     "apps/api/src/routes/production/workbench/batchGeneratePrompt.ts": {
       "count": 1,
       "lines": [
-        131
+        133
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[131 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 且 .first()，item.id 来自前端请求体的素材列表，无归属校验。Phase 1b：补 o_assets.userId 与 o_image.userId 条件，使越权 id 查不到而不是返回数据。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[133 leftJoin o_image] 被 join 表 o_image 策略=tenant。行号由 131 漂移到 133（Phase 1d Task 7 在文件头补回了 `fs`/`path`/`pLimit`/`trackTableForId`/`storyboardItemsForShots` 导入）——**处数与 SQL 文本均未变**。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 trackId/info[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集。"
       }
     },
     "apps/api/src/routes/production/workbench/batchGenerateVideo.ts": {
