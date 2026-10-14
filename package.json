@@ -28,6 +28,8 @@
     "verify:phase1a:ci": "node apps/api/scripts/verify-phase1a.cjs --ci",
     "verify:phase1b": "node apps/api/scripts/verify-phase1b.cjs",
     "verify:test-shape": "node tools/check-test-early-return.cjs",
+    "verify:build": "node tools/check-build.cjs",
+    "verify:phase1c-media": "node apps/api/scripts/verify-phase1c-media.cjs",
     "verify:legacy-freeze": "node tools/record-legacy-freeze.cjs --check",
     "verify:exceptions": "node tools/check-tenant-exceptions.cjs",
     "verify:exceptions:record": "node tools/check-tenant-exceptions.cjs --record",

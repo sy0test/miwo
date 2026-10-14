@@ -123,6 +123,96 @@ if (apiJob) {
   ]) {
     check(apiRuns.includes(cmd), `api job 缺少仓库检查命令: ${cmd}`);
   }
+  // ---- Phase 1c / Task 10：三条**新接线**必须钉死（"没接线的验证 ≈ 没有验证"）----
+  // 为什么这三条断言本身就是本轮教训的产物：`apps/api/scripts/build.ts` 的 external 缺
+  // `@node-rs/argon2` 让生产构建坏了 8 个任务而无人发现，唯一原因是**验收清单里没有一条跑 build**；
+  // 同理 `verify-phase1c-media.cjs` 早就写好了，但根 package.json 里**从来没有它的 script**
+  // （`pnpm run verify:phase1c-media` 会 ERR_PNPM_NO_SCRIPT），CI 里也没有 ⇒ 它每轮都不跑。
+  // ⚠ 判据写成"必须出现 `node tools/check-build.cjs`"（而不是"出现 verify:build"）：CI 里直跑
+  //   cjs 与 package.json 的 script 是同一件事，但**直跑才不依赖 script 名字被改**。
+  //
+  // ⚠⚠ 这里刻意**从根 package.json 的 scripts 里读**要断言的命令，而不是手抄第三份清单：
+  //    Task 10 之前 `verify:phase0` / `verify:phase1b` 等脚本在 package.json 里有、CI 里却
+  //    **一个都没跑**（本任务之前的真实缺口），而"脚本存在"与"CI 真跑"是两回事。
+  //    从 scripts 读 ⇒ 加一个 script 就自动要求 CI 同步，漏接会红（**多一个都拦得住**）。
+  //    只做下限（"scripts 里的每条 verify:* 都必须在 api job 里出现"），不做"CI 里的 pnpm 行
+  //    必须都在 scripts 里"——后者会把 `pnpm run verify:phase1a:ci` 这类 CI 专属口径误判。
+  const rootPkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
+  const rootScripts = rootPkg.scripts || {};
+  /**
+   * **显式豁免表**：登记"为什么这个 script 不该进 CI"。
+   * ⚠ 每条必须有非空 reason（空 reason 判红）—— 这就是防"往豁免表里塞一行就绿"的那道闸。
+   * ⚠ 表长被下面的 `EXEMPT_MAX` 钉住：**豁免表本身也是被断言的**（多一行就红）。
+   */
+  const CI_EXEMPT = {
+    "verify:phase0": {
+      reason:
+        "**本机门禁**：A 组按 `tools/.phase0-old-baseline.json` 的 8 条 sha256 比对**仓库外**两个旧仓，" +
+        "而基线被 `.gitignore:12` 忽略、旧仓在 runner 上不存在。**实测**（git archive HEAD 的全新树）" +
+        "= EXIT 1「缺少 tools/.phase0-old-baseline.json」，通过数 33/34。README 的「已知问题」小节" +
+        "第 1 条本来就写明「`pnpm run verify:phase0` 是「本机门禁」，CI 跑不了它」。",
+    },
+    "verify:legacy-freeze": {
+      reason:
+        "同上：`record-legacy-freeze.cjs --check` 需要仓库外两个旧仓，且它自己的口径是" +
+        "「缺仓库**不算通过**」⇒ 无 remote 的 runner 上必然 EXIT 1。" +
+        "CI 侧的替代口径是 `verify:phase1a:ci`（把这条显式记为「CI 不适用」）。",
+    },
+    "verify:manual-test": {
+      reason:
+        "**Windows 本机专用**：脚本是 `powershell -NoProfile … -File scripts/manual-test.ps1`，" +
+        "CI 跑在 ubuntu-latest（无 powershell.exe）。它的用途是" +
+        "「一条命令起本机可手动点的环境」，与自动化门禁是两件事（见 README）。",
+    },
+  };
+  /** 豁免表长度的**精确**上界（新增一条必须同时改这里 —— 让"往表里塞一行"变成一次显式动作）。 */
+  const EXEMPT_MAX = 3;
+  const exemptNames = Object.keys(CI_EXEMPT);
+  if (exemptNames.length > EXEMPT_MAX) {
+    failures.push(
+      `check-ci-yaml 的 CI_EXEMPT 有 ${exemptNames.length} 条，超过登记上界 ${EXEMPT_MAX}：` +
+        `豁免表是"不跑的正当理由"清单，不是垃圾桶。要新增豁免，请连同这条上界一起改并说明理由。`,
+    );
+  }
+  for (const [name, e] of Object.entries(CI_EXEMPT)) {
+    if (!e || !String(e.reason || "").trim()) {
+      failures.push(`CI_EXEMPT 的 \`${name}\` 没有 reason：空 reason 的豁免等于无理由不跑，判红`);
+    }
+    if (!(name in rootScripts)) {
+      failures.push(`CI_EXEMPT 的 \`${name}\` 在根 package.json 里已不存在：豁免表必须跟着收缩（否则它会慢慢变成谎言）`);
+    }
+  }
+  for (const [name, cmd] of Object.entries(rootScripts)) {
+    if (!name.startsWith("verify:")) continue;
+    // `:record` 是写入型脚本（会改仓库文件），本就不该进 CI；`*:ci` 是 CI 专属口径，由上面单独管。
+    if (/:(record|ci)$/.test(name)) continue;
+    if (new RegExp(`^\\s*pnpm run ${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(:ci)?\\s*$`, "m").test(apiRuns)) continue;
+    if (String(cmd).includes("check-") || String(cmd).includes("verify-")) {
+      const cjs = String(cmd).replace(/^node\s+/, "");
+      if (apiRuns.includes(cjs)) continue;
+    }
+    // 需要在**全新树**（CI 的条件）上真跑过的才放行；本机专属的必须在 CI_EXEMPT 里登记。
+    if (name in CI_EXEMPT) continue;
+    failures.push(
+      `根 package.json 的 script \`${name}\`（${cmd}）**一次都不会在 CI 里跑**：` +
+        `脚本存在 ≠ 每轮被跑到（Task 10 的教训：verify-phase1c-media.cjs 存在了很久却从没接线）。` +
+        `请把它加进 .github/workflows/ci.yml 的 api job，或在 CI_EXEMPT 里登记不跑的理由。`,
+    );
+  }
+  check(
+    apiRuns.includes("node tools/check-config-single-source.cjs"),
+    "api job 缺少 `node tools/check-config-single-source.cjs`：apps/api/src 下不得绕过 config.ts 直读环境变量",
+  );
+  check(
+    apiRuns.includes("pnpm run verify:build"),
+    "api job 缺少 `pnpm run verify:build`（= node tools/check-build.cjs）：**生产构建本身**必须是一条门禁" +
+      "（Task 10 的教训：Task 2 引入 @node-rs/argon2 后 build 坏了 8 个任务，因为验收清单里没有一条跑 build）",
+  );
+  check(
+    /^\s*pnpm run verify:phase1c-media\s*$/m.test(apiRuns),
+    "api job 缺少 `pnpm run verify:phase1c-media`：Phase 1c 媒体验收（Task 7/8/9 的判别力脚本）" +
+      "必须在 CI 里真的跑到 —— 它存在过很久却从来没被接进任何自动化环境",
+  );
   // Phase 1b / Task 8：策略门禁不仅要"在 CI 里"，还必须**真跑**（不许被 continue-on-error / `|| true` 变成永不失败）。
   // ⚠ 判据刻意严于"值为 true"：**出现这个键/写法就算失败** —— 那两样都是掩盖，不是通过。
   //   （mysql job 的同类断言在下面单独一段；这里管 api/web 两个 job。）

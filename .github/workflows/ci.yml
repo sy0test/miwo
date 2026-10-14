@@ -110,6 +110,21 @@ jobs:
           # "用例体最外层的守卫式 `return;`"（静默早退既不是 pass 也不是 skip，
           # "0 skipped" 这类断言测不到它）。放在这里是因为它只读源码、秒级完成（快速失败序列）。
           node tools/check-test-early-return.cjs
+          # Phase 1c Task 10（★本轮的教训）：`pnpm run verify:build` —— **生产构建本身**必须是一条门禁。
+          # 为什么：Task 2 引入 @node-rs/argon2 后 build.ts 的 external 没跟上 ⇒ `pnpm run build` EXIT 1，
+          # 而验收清单里从来**没有一条跑 build** ⇒ "10 个任务全绿、生产构建全坏"持续了 8 个任务。
+          # ⚠ 它**不在"秒级只读"那一批的语义里**（它真跑一次 esbuild 打包，约 3~10 秒），
+          #   但仍然是 install 之后的第一批：构建一坏就没有必要再跑 typecheck/单测/打包。
+          pnpm run verify:build
+          # Phase 1c Task 10 接线（是 Task 10 新门禁的**前置**接线，理由见每条）
+          node tools/check-dead-ddl.cjs
+          node tools/check-authenticated-writers.cjs
+          pnpm run verify:phase1b
+          # Phase 1c / Task 10：`apps/api/src/**` 不得出现**绕过 `config.ts` 直读环境变量**。
+          # 为什么单开一条：`check-deploy-config.cjs` 的 `inCode` 是**只从 config.ts 里 match 出来的**，
+          # 所以"别的文件直读 env"它完全看不见（实测 oss.ts/ffmpeg.ts/analyzeSource.ts/proxy.ts 都在界外），
+          # 而 README 声称"配置唯一入口是 config.ts" —— 这条门禁就是那句话的机器化。
+          node tools/check-config-single-source.cjs
       - name: 路由生成（幂等）
         working-directory: apps/api
         run: node --import=tsx scripts/generate-router.ts
@@ -130,6 +145,13 @@ jobs:
           node --env-file-if-exists=.env --import=tsx scripts/db-migrate.ts
       - name: 类型检查
         run: pnpm --filter @miwo/api run typecheck
+      # Phase 1c Task 10：把 Phase 1c 的**媒体验收**（Task 7+8+9 的判别力脚本）接进 CI。
+      # 为什么必须有这一步：该脚本一直存在、也一直被引用，但**根 package.json 里从来没有它的 script**
+      #   ⇒ brief 给的 `pnpm run verify:phase1c-media` 会 ERR_PNPM_NO_SCRIPT，而 CI 里更没有它
+      #   ⇒ "验证脚本写好了"与"验证每轮都跑"是两件事（没接线的验证 ≈ 没有验证）。
+      # 它自己起真 `src/app.ts` 与按老形状装配的对照实例（%TEMP% 下一次性 dataDir，绝不碰仓库 data/）。
+      - name: Phase 1c 媒体验收（签名 URL / Range / 缓存 / 三档分界）
+        run: pnpm run verify:phase1c-media
       - name: 单测
         # 【Ruling 26】`MIWO_TEST_SLOW=1` 让 `tests/migrations.test.ts` 那条**唯一的事务守卫**
         # 慢用例（~60s，实测 KnexTimeoutError）真的执行。改动前这个变量全仓只出现在
