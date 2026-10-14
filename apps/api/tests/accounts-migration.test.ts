@@ -103,7 +103,11 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
 
       const [up1, n1] = await runMigrations(db);
       expect(up1).toBe(2); // 002 是 batch 1，其余是 batch 2
-      expect(n1).toEqual(["003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants"]);
+      expect(n1).toEqual([
+        "003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants",
+        // Phase 1d Task 1 的两张队列表同批（batch 2 = "002 之后的全部"）
+        "007_job_queue", "008_vendor_gate",
+      ]);
 
       // ---- 幂等 ①：再跑一次 0 行 ----
       const [up2, n2] = await runMigrations(db);
@@ -113,7 +117,10 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
       // ---- down（全部）只回滚 005/006 之外还要把 004/003/002/001 也带走：这里只回滚第二批 ----
       const [rb, rn] = await rollbackMigrations(db); // all=false ⇒ 只回滚最后一个 batch（2）
       expect(rb).toBe(2);
-      expect(rn).toEqual(["006_quota_grants", "005_accounts", "004_backfill_userid", "003_vendor_asset_sync"]);
+      expect(rn).toEqual([
+        "008_vendor_gate", "007_job_queue", "006_quota_grants", "005_accounts",
+        "004_backfill_userid", "003_vendor_asset_sync",
+      ]);
 
       // 005 的 down：新表消失、o_user 回到 3 列、口令**不可恢复**（空串）
       const names = await tableNames(db);
@@ -133,7 +140,10 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
       //   "全量回滚后再 up 得到 batch 1" 是 all=true 的路径，两者不矛盾）。
       const [up3, n3] = await runMigrations(db);
       expect(up3).toBe(2);
-      expect(n3).toEqual(["003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants"]);
+      expect(n3).toEqual([
+        "003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants",
+        "007_job_queue", "008_vendor_gate",
+      ]);
       expect(await columnsOf(db, "o_user")).toContain("passwordHash");
       const again = (await db("o_user").where("username", "admin").first()) as any;
       expect(again).toMatchObject({ status: "disabled", passwordHash: "", role: "admin" });

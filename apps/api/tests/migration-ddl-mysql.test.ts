@@ -32,6 +32,8 @@ import { types } from "@/db/dialect";
 import schema from "@/db/migrations/001_schema";
 import accounts from "@/db/migrations/005_accounts";
 import quotaGrants from "@/db/migrations/006_quota_grants";
+import jobQueue from "@/db/migrations/007_job_queue";
+import vendorGate from "@/db/migrations/008_vendor_gate";
 
 /**
  * `scripts/schema-limits.cjs` 是 **CJS**，这里用 `createRequire` 同步 require。
@@ -147,6 +149,12 @@ function makeFakeKnex(stmts: Collected[]): any {
       push("rename", `rename table \`${from}\` to \`${to}\``);
       return Promise.resolve();
     },
+    // ⚠ Phase 1d Task 1 起需要：`007_job_queue` / `008_vendor_gate` 的 up 用 `hasTable` 守卫幂等
+    //   （Ruling 31：必须 await）。假 knex 返回 false ⇒ 走建表分支，正是本文件要收集的 DDL。
+    hasTable: (name: string) => {
+      void name;
+      return Promise.resolve(false);
+    },
   };
   /**
    * `knex("t")` 的查询构造器替身：迁移里对表的读写（`select` / `insert` / `delete` / `orderBy` /
@@ -187,9 +195,12 @@ async function schemaDdl(): Promise<Collected[]> {
 }
 
 /**
- * 跑**全部**迁移（`001` → `006`）：新建表的 DDL 合法性走这条。
+ * 跑**全部**迁移（`001` → `008`）：新建表的 DDL 合法性走这条。
  * ⚠ `005` 会 `drop table o_user` + `rename table o_user_new to o_user`，所以调用方对 `o_user`
  *   要看**最后一条**与它相关的语句（`lastDdlOf`）。
+ * ⚠ Phase 1d Task 1：`007_job_queue` / `008_vendor_gate` 也在这里跑 —— 否则那两张表的 MySQL
+ *   DDL 合法性（key 规格里的 text 列、毫秒列宽度…）**完全没有被检查**，而本文件的标题
+ *   "迁移建出的表恰好 N 张"会变成一句对**子集**的陈述（陈旧断言）。
  */
 async function allDdlCollected(): Promise<Collected[]> {
   const stmts: Collected[] = [];
@@ -197,6 +208,8 @@ async function allDdlCollected(): Promise<Collected[]> {
   await (schema as any).up(fake);
   await (accounts as any).up(fake);
   await (quotaGrants as any).up(fake);
+  await (jobQueue as any).up(fake);
+  await (vendorGate as any).up(fake);
   return stmts;
 }
 
@@ -513,7 +526,9 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     const compositeTables = [...tableLevelCols.values()].filter((n) => n > 1);
     // ⚠ 18 → **21**（Phase 1c Task 1）：`005_accounts` 的 `o_invite` / `o_auditLog` 与
     //   `006_quota_grants` 的 `o_modelGrant` 用 `t.pk(T)`（`o_user` 重建后也是）。
-    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(21);
+    // ⚠ 21 → **23**（Phase 1d Task 1）：`007_job_queue` 的 `o_job` 与 `008_vendor_gate` 的 `o_gate`
+    //   也都用 `t.pk(T)`。数字变了必须回来核对 —— 这是本组"登记变化"的一处，不是放宽判据。
+    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(23);
     // ⚠ 9 → **12**：`o_account`（表级单列主键）、`o_userSetting` / `o_loginAttempt`（复合主键），
     //   以及 `o_user` —— 它在 005 里是"新表 + rename"，rename 之后表级主键仍是**表级**形状
     //   （`o_user_new` 的 `primary key` 是列属性，但 `o_user` 这个**名字**在 DDL 流里同时被
@@ -521,11 +536,11 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(tableLevelCols.size, "表级 `primary key (…)`（含复合）的表数").toBe(12);
     // ⚠ 4 → **6**：新增 `o_userSetting(userId,key)` 与 `o_loginAttempt(username,ip)`
     expect(compositeTables.length, "表级主键里是复合主键的表数").toBe(6);
-    // ⚠ 判别力（实测）：**并集恰好 33 张表名**（= 最终落地的表数，`o_user` 被两种形状各命中一次，
-    //   所以 `21 + 12 = 33` 这个"和"与"表数"数值相同但**口径不同** —— 别拿它当表数引用；
-    //   33 张最终落地表另有独立断言："迁移建出的表恰好 33 张"）。
-    expect(new Set([...colAttrTables, ...tableLevelCols.keys()]).size, "两种形状涉及的表名并集").toBe(33);
-    expect(colAttrTables.size + tableLevelCols.size, "两种形状的命中次数之和").toBe(33);
+    // ⚠ 判别力（实测）：**并集恰好 35 张表名**（= 最终落地的表数，`o_user` 被两种形状各命中一次，
+    //   所以 `23 + 12 = 35` 这个"和"与"表数"数值相同但**口径不同** —— 别拿它当表数引用；
+    //   35 张最终落地表另有独立断言："迁移建出的表恰好 35 张"）。
+    expect(new Set([...colAttrTables, ...tableLevelCols.keys()]).size, "两种形状涉及的表名并集").toBe(35);
+    expect(colAttrTables.size + tableLevelCols.size, "两种形状的命中次数之和").toBe(35);
 
     // 判别力自证（在**合成 DDL** 上跑同一个谓词）。五条分别钉住 `keyRefsOf` 的每一种形状，
     // 以及"同一形状的负例"——负例是必需的：只加正例时，"抽取面变宽后误报/漏报"两种退化都不会被发现。
@@ -877,18 +892,19 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(joined.indexOf("drop table if exists `o_skillAttribution`")).toBeLessThan(joined.indexOf("drop table if exists `o_skillList`"));
   });
 
-  it("迁移建出的表恰好 33 张（不多不少；暂存表 `o_user_new` 不计入最终结构）", async () => {
+  it("迁移建出的表恰好 35 张（不多不少；暂存表 `o_user_new` 不计入最终结构）", async () => {
     const created: string[] = [];
     for (const s of await allDdl()) {
       const m = /^create table `([^`]+)`/.exec(s);
       if (m) created.push(m[1]);
     }
-    // ⚠ DDL 流里会出现 34 条 create（含 005 的暂存表 `o_user_new`，它随后被 rename 掉）；
+    // ⚠ DDL 流里会出现 36 条 create（含 005 的暂存表 `o_user_new`，它随后被 rename 掉）；
     //   "最终落地的表"必须排除它 —— 与 `tools/migration-tables.cjs` 的 `deployedTables` 同口径。
     expect(created).toContain("o_user_new");
     const deployed = created.filter((t) => t !== "o_user_new" && t !== "o_user_old");
-    expect(deployed.length).toBe(33);
-    expect(new Set(deployed).size).toBe(33);
+    // 33 → **35**（Phase 1d Task 1 的 007_job_queue / 008_vendor_gate）
+    expect(deployed.length).toBe(35);
+    expect(new Set(deployed).size).toBe(35);
   });
 });
 
