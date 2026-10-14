@@ -11,8 +11,10 @@ import cors from "cors";
 import helmet from "helmet";
 import path from "path";
 import fs from "fs";
+import type { Knex } from "knex";
 import u from "@/utils";
 import { dbReady } from "@/utils/db";
+import { startProgressRelay } from "@/jobs/progressRelay";
 import { tenantErrorHandler } from "@/middleware/tenant";
 import { authenticate, authErrorHandler, optionalMediaAuth } from "@/middleware/auth";
 import { apiLimiter } from "@/middleware/rateLimit";
@@ -439,6 +441,24 @@ export default async function startServe(randomPort: Boolean = false) {
     server.listen(port, bindHost, async () => {
       const address = server.address();
       const realPort = typeof address === "string" ? address : address?.port;
+      /**
+       * Phase 1d Task 8：**进度 relay 必须在 listen 之后启动**（spec §9.2 / §9.3）。
+       *
+       * 它做的事：worker（独立进程）只把状态写进 `o_job`，这里用**复合游标 (updatedAt,id)** 轮询
+       * "哪些任务变了"，再 `io.to(\`user:{userId}\`)` 推 `job:update`（载荷是白名单，见 progressRelay 文件头）。
+       * 放在 listen 回调里（而不是更早）有两个理由：① 端口没起来就轮询没有意义（事件没订阅者）；
+       * ② `closeServe()` 里 `relay.stop()` 是**唯一**的清理点 —— 测试里先 listen 再 close 必须能停表，
+       * 否则 vitest 会留下活动定时器（实测会挂住进程）。
+       */
+      const relay = startProgressRelay({ db: u.db as unknown as Knex, io, log: (m) => console.log(m) });
+      const stopRelay = (): void => {
+        relay.stop();
+        server.removeListener("close", stopRelay);
+      };
+      // `close` 是「所有连接都断了」才触发；SIGTERM/SIGINT 是进程退出的入口。两条都挂。
+      server.on("close", stopRelay);
+      process.once("SIGTERM", stopRelay);
+      process.once("SIGINT", stopRelay);
       console.log(`[服务启动成功]: http://localhost:${realPort}`);
       resolve(realPort);
     });

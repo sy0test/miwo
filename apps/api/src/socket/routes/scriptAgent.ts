@@ -4,6 +4,7 @@ import * as agent from "@/agents/scriptAgent/index";
 import ResTool from "@/socket/resTool";
 import { runWithTenant } from "@/db/tenant-context";
 import { bindSocketTenant, buildIsolationKey, decodeSocketToken, resolveOwnedProject } from "@/socket/tenant";
+import { bindSocketLifecycle, joinUserRoom, type SocketLike } from "@/socket/lifecycle";
 
 export default (nsp: Namespace) => {
   nsp.on("connection", async (socket: Socket) => {
@@ -35,6 +36,15 @@ export default (nsp: Namespace) => {
     const isolationKey = buildIsolationKey(tenant, projectId, "scriptAgent");
     // ④ 之后所有 socket.on(…) 的 handler 都带 ctx（只包"事件回调入口"，内部 await/timer 自动继承）
     bindSocketTenant(socket, tenant);
+
+    /**
+     * Phase 1d Task 8：**同一处 spec §9.5 bug 的姊妹实例**（原文件末尾的 `nsp.on("disconnect", …)`
+     * 挂在 namespace 上 ⇒ 永不触发 ⇒ 关页面后 agent 继续烧 token）。brief 只点名了 productionAgent，
+     * 但两处是**逐字相同**的缺陷 ⇒ 一并修（判据只收紧不放宽：静态守卫改成扫**整个 `src/socket`**）。
+     * `userId` 取**服务端**推导的 `tenant.userId`，绝不读客户端可伪造的 handshake 字段。
+     */
+    joinUserRoom(socket as unknown as SocketLike, tenant.userId);
+    bindSocketLifecycle(socket as unknown as SocketLike, () => abortController, (m) => console.log(m));
 
     console.log("[scriptAgent] 已连接:", socket.id, isolationKey);
 
@@ -89,7 +99,6 @@ export default (nsp: Namespace) => {
       abortController = null;
     });
   });
-  nsp.on("disconnect", (socket: Socket) => {
-    console.log("[scriptAgent] 已断开连接:", socket.id);
-  });
+  // ⚠ Phase 1d Task 8：原 `nsp.on("disconnect", …)` 已删 —— namespace 上没有 socket 级 `disconnect`，
+  //   那段代码从未触发（spec §9.5）。现由 `bindSocketLifecycle` 在 connection 回调里挂到 **socket** 上。
 };

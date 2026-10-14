@@ -4,6 +4,7 @@ import * as agent from "@/agents/productionAgent/index";
 import ResTool from "@/socket/resTool";
 import { runWithTenant } from "@/db/tenant-context";
 import { bindSocketTenant, buildIsolationKey, decodeSocketToken, pickEpisodesId, resolveOwnedProject, resolveOwnedScript } from "@/socket/tenant";
+import { bindSocketLifecycle, joinUserRoom, type SocketLike } from "@/socket/lifecycle";
 
 export default (nsp: Namespace) => {
   nsp.on("connection", async (socket: Socket) => {
@@ -46,6 +47,18 @@ export default (nsp: Namespace) => {
     //    ⚠ 用 `let currentIsolationKey`：`updateContext` 之后 `chat` 必须读到**最新**的键。
     let currentIsolationKey = buildIsolationKey(tenant, projectId, "productionAgent", scriptId);
     bindSocketTenant(socket, tenant);   // 之后所有 socket.on(…) 的 handler 都带 ctx
+
+    /**
+     * Phase 1d Task 8（spec §9.5 的真机 bug 修复 + 进度事件订阅）：
+     *  · `joinUserRoom`：`userId` 用**服务端**推导的 `tenant.userId`（Phase 1c 的验签出口），
+     *    **绝不**读 `socket.handshake.auth` 里客户端可伪造的 userId（那等于把租户隔离的洞开在 socket 上）。
+     *    room 名是契约 `user:{userId}`：`jobs/progressRelay.ts` 按它 emit `job:update`。
+     *  · `bindSocketLifecycle`：把 `disconnect` 挂在 **socket** 上并 abort 正在跑的任务。
+     *    历史 bug 是挂在 **namespace** 上（`nsp.on("disconnect", …)`）⇒ **永远不触发**，
+     *    用户关掉页面后 agent 继续烧 token。`abortController` 会被 `chat` 替换，所以传**取值函数**。
+     */
+    joinUserRoom(socket as unknown as SocketLike, tenant.userId);
+    bindSocketLifecycle(socket as unknown as SocketLike, () => abortController, (m) => console.log(m));
 
     console.log("[productionAgent] 已连接:", socket.id, currentIsolationKey);
 
@@ -145,7 +158,7 @@ export default (nsp: Namespace) => {
       abortController = null;
     });
   });
-  nsp.on("disconnect", (socket: Socket) => {
-    console.log("[productionAgent] 已断开连接:", socket.id);
-  });
+  // ⚠ Phase 1d Task 8：这里原来有 `nsp.on("disconnect", …)` —— **namespace 上没有 socket 级
+  //   `disconnect` 事件**，那段代码从未触发过（spec §9.5 的真机 bug）。现由 `bindSocketLifecycle`
+  //   在 `connection` 回调里挂到 **socket** 上。静态守卫：`git grep -n 'nsp.on("disconnect"'` 必须 0 命中。
 };
