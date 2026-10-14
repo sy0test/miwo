@@ -189,3 +189,24 @@ node --import=tsx scripts/check-migration-import-graph.ts     # exit 0 = 干净
   大小写敏感性**没有**实测数据。
 - **真实库上的回填未跑**（`apps/api/data/db2.sqlite` 是只读快照；一切实验都在 `%TEMP%` 一次性副本上）
   ⇒ 真实库的**行级结果**只能由运维按 §2.2 跑完后用 §2.3 的自检表核对。
+- **`group_concat_max_len` 只在连接级设了值，真实截断行为未实测**：`src/db/connect.ts` 的
+  `MYSQL_SESSION_SETUP` = `SET SESSION group_concat_max_len = 1048576`，由 `mysqlAfterCreate` 挂在
+  `createKnex` 的 mysql `pool.afterCreate` 上（**必须走 `conn.promise()`**：knex 用的是 mysql2 的 callback API，
+  对 callback `Query` 直接 `await` 会抛 ⇒ 那会让每条新连接都建不出来）。**本机 sqlite 分支不接 `afterCreate`**
+  ⇒ "真实连接上截断真的消失"只能由 CI 的 mysql job 作证。
+
+## 10. 租户隔离速查（Phase 1b；细节见根 `README.md` 的「租户隔离」一节）
+
+- **策略三态**：`tenant`（20 张，读写都注入 `userId`）/ `platform`（9 张：读放行、写仅 admin）/ `global`
+  （读放行、写一律拒；本阶段无表使用）。表清单的**唯一真相**是 `src/db/policies.ts`；
+  `node tools/check-tenant-policies.cjs` 会把它与 `001_schema` 的建表、以及
+  `src/db/legacy/backfill-userid.ts` 导出的 `BACKFILL_TARGET_TABLES`/`SELF_CHECK_TABLES` **逐项**比对。
+- **守卫注入与封禁**：主表条件、join 的 ON 条件、`insert` 的 `userId` 自动注入；`orWhere*` 前缀与
+  `WIDENING_METHODS`（`with*/union*/having*/whereRaw/joinRaw/crossJoin`…）在租户查询上**直接抛**；
+  `raw` 只在语句不含租户表名时放行。**`runWithTenant` 的回调必须是 `async` 且在里面 `await`**（见 §4）。
+- **`systemDb` 的唯一性**：它是显式命名导出的裸 knex；**新使用者必须登记**进
+  `src/db/tenant-exceptions.json` 的 `systemDbUsers`（判据与 import 形态解耦），否则
+  `pnpm verify:exceptions` 会红；裸 `import { db }` 出现同样会红。
+- **回填的三种跑法**见 §2.2/§2.3；**孤儿报告**：`--report=` 写完整 JSON（名单不截断），控制台只点前 5 条。
+- 一次把 Phase 1b 全跑一遍：`pnpm verify:exceptions` → `pnpm verify:policies` → `pnpm verify:phase1b`
+  （+ 可选 `node tools/tenant-redend.cjs` 复现 11 项红端）。
