@@ -1,6 +1,5 @@
-import { VM } from "vm2";
-import sharp from "sharp";
 import axios from "axios";
+import sharp from "sharp";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createZhipu } from "zhipu-ai-provider";
@@ -12,53 +11,43 @@ import { createXai } from "@ai-sdk/xai";
 import { createMinimax } from "vercel-minimax-ai-provider";
 import FormData from "form-data";
 import jsonwebtoken from "jsonwebtoken";
-import u from "@/utils";
 import crypto from "node:crypto";
-export default function runCode(code: string, vendor?: Record<string, any>) {
-  code = code.replace(/export\s*\{\s*\};?/g, ""); // 去掉 export {} 以免沙盒环境报错
-  // 创建一个沙盒
-  const exports = {};
-  const sandbox: Record<string, any> = {
-    createOpenAI,
-    createDeepSeek,
-    createZhipu,
-    createQwen,
-    createAnthropic,
-    createOpenAICompatible,
-    createXai,
-    createMinimax,
-    createGoogleGenerativeAI,
-    zipImage,
-    zipImageResolution,
-    urlToBase64,
-    mergeImages,
-    pollTask,
-    fetch: fetch,
-    exports,
-    axios,
-    FormData,
-    logger,
-    jsonwebtoken,
-    crypto,
-  };
-  if (vendor !== undefined) {
-    sandbox.vendor = vendor;
-  }
-  const vm = new VM({
-    timeout: 0,
-    sandbox,
-    compiler: "javascript",
-    eval: false,
-    wasm: false,
-  });
+import u from "@/utils";
 
-  vm.run(code);
+/**
+ * 供应商适配器的**纯函数辅助**（Phase 1c Task 8）。
+ *
+ * ── 这个文件曾经是"代码执行通道" ──
+ * 本文件原名 `utils/vm.ts`，它同时干两件事：
+ *   ① 导出 `runCode(code, vendor?)` —— 用 **vm2** 起沙箱、`vm.run(code)` 执行**用户提交的**
+ *      供应商脚本（spec Tier 0 #1 的最高危能力）；
+ *   ② 导出 `zipImage` / `zipImageResolution` / `urlToBase64` / `mergeImages` / `pollTask` / `logger`
+ *      这批纯函数，供适配器在沙箱里当全局用。
+ *
+ * Task 8 把 ① **整段删除**（`import { VM } from "vm2"` / `runCode` / `export default`），并把 13 个
+ * 适配器改成**编译期内置**（`src/vendors/*.ts`，静态 import 进注册表）⇒ 运行期不再有任何
+ * `require`/`eval`/`new Function`/`vm`/`vm2` 路径。能力**不存在**，不是"加了校验"。
+ *
+ * ── 留下的这批函数为什么要留着 ──
+ * 它们被适配器本体与别处都用（`zipImage(...)` 等），且**与代码执行无关**：
+ * 全部是"拿 base64/URL，走 sharp/axios 处理"的普通异步函数。名字与旧沙箱逐一对应，
+ * 于是 `src/vendors/runtime.ts` 能逐名 re-export 给适配器用。上面的 import 头是**照抄**旧
+ * `vm.ts` 的（那些 create* 工厂原本是沙箱对象里的条目，现在同理只被 `runtime.ts` 转出去）。
+ *
+ * ⚠ `logger` 内部调用的是 `console.log`，与 `src/logger.ts` 的应用日志**不是一回事** ——
+ *   所以这里以 `vmLogger` 为正式名导出，并保留 `logger` 别名（适配器源码里裸写 `logger(...)`，
+ *   `runtime.ts` 仍以 `logger` 这个名字转出去）。改名不是为了更漂亮，是为了下一个人不会
+ *   把"适配器调试打印"和"应用日志"接错线。
+ */
 
-  return exports as Record<string, any>;
-}
-export function logger(logstring: any) {
+/** 适配器里的 `logger(...)`：前缀 `【VM】` 是历史痕迹（沙箱已删），保留以免改变对外可见的输出形状。 */
+export function vmLogger(logstring: any) {
   console.log("【VM】" + JSON.stringify(logstring));
 }
+
+/** 适配器源码里裸写的名字。新代码请用 `vmLogger`（避免与 `src/logger.ts` 混淆）。 */
+export const logger = vmLogger;
+
 /**
  * 压缩图片，目标字节数不高于 size
  */
