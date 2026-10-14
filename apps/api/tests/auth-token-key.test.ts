@@ -72,13 +72,17 @@ function delay(ms: number): Promise<void> {
 }
 
 /** HTTP GET returning status + body; a connection error is reported as status 0. */
-function get(url: string): Promise<{ status: number; body: string }> {
+function get(url: string, token?: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve) => {
-    const req = http.get(url, { timeout: 5000 }, (res) => {
-      let body = "";
-      res.on("data", (c) => (body += c));
-      res.on("end", () => resolve({ status: res.statusCode || 0, body }));
-    });
+    const req = http.get(
+      url,
+      { timeout: 5000, headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode || 0, body }));
+      },
+    );
     req.on("timeout", () => req.destroy(new Error("timeout")));
     req.on("error", () => resolve({ status: 0, body: "" }));
   });
@@ -184,6 +188,17 @@ function sign(secret: string): string {
   return (jwt.sign as any)({ id: 1, name: "auth-priority-test" }, secret, { expiresIn: "180Days" });
 }
 
+/**
+ * 带令牌请求（**只走 `Authorization` 头**）。
+ *
+ * ⚠【Phase 1c Task 4】本文件原先用 `?token=` 查询串传令牌 —— 那个形态已被**取消**
+ *   （控制器裁定 §2.3：URL 会进访问日志 / Referer）。`tests/authorization.test.ts` 有专门的
+ *   红绿两端用例钉住"查询串带 token 必须 401"；这里改成头，被测对象（**哪个密钥能验签**）不变。
+ */
+function getSigned(base: string, pathname: string, secret: string): Promise<{ status: number; body: string }> {
+  return get(`${base}${pathname}`, sign(secret));
+}
+
 /** A protected, non-whitelisted route: no token -> 401, valid token -> reaches the handler. */
 const GUARDED = "/api/project/getProject";
 
@@ -201,10 +216,10 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
 
       const base = `http://127.0.0.1:${srv.port}`;
       // 判别力前置：错密钥必须被拒（否则下面的 200 可能是"白名单放行"造成的恒真）
-      const wrong = await get(`${base}${GUARDED}?token=${sign("definitely-not-the-key-".repeat(2))}`);
+      const wrong = await getSigned(base, GUARDED, "definitely-not-the-key-".repeat(2));
       expect(wrong.status, `错密钥不应通过：${wrong.body.slice(0, 120)}`).toBe(401);
 
-      const ok = await get(`${base}${GUARDED}?token=${sign(CONFIG_SECRET)}`);
+      const ok = await getSigned(base, GUARDED, CONFIG_SECRET);
       expect(ok.status, `配置兜底的密钥应通过：${ok.body.slice(0, 200)}`).not.toBe(401);
       expect(ok.status).not.toBe(444);
     } finally {
@@ -226,10 +241,10 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
 
       const base = `http://127.0.0.1:${srv.port}`;
       // 判别力前置：配置密钥现在必须**不**再被接受（证明库里那行真的接管了密钥）
-      const configSigned = await get(`${base}${GUARDED}?token=${sign(CONFIG_SECRET)}`);
+      const configSigned = await getSigned(base, GUARDED, CONFIG_SECRET);
       expect(configSigned.status, `库里 tokenKey 存在时不应再用配置密钥：${configSigned.body.slice(0, 120)}`).toBe(401);
 
-      const dbSigned = await get(`${base}${GUARDED}?token=${sign(DB_SECRET)}`);
+      const dbSigned = await getSigned(base, GUARDED, DB_SECRET);
       expect(dbSigned.status, `库里的 tokenKey 应通过：${dbSigned.body.slice(0, 200)}`).not.toBe(401);
       expect(dbSigned.status).not.toBe(444);
     } finally {
@@ -253,13 +268,13 @@ describe("JWT 密钥优先级（库里 tokenKey 优先，配置兜底）", () =>
 
       const base = `http://127.0.0.1:${srv.port}`;
       // 判别力前置①：有库值时**不再**接受配置密钥
-      const configSigned = await get(`${base}${GUARDED}?token=${sign(CONFIG_SECRET)}`);
+      const configSigned = await getSigned(base, GUARDED, CONFIG_SECRET);
       expect(configSigned.status, `有库值就不该用配置密钥：${configSigned.body.slice(0, 120)}`).toBe(401);
       // 判别力前置②：旧键也要被新键压过去（顺序是 新 > 旧 > 配置）
-      const legacySigned = await get(`${base}${GUARDED}?token=${sign(DB_SECRET)}`);
+      const legacySigned = await getSigned(base, GUARDED, DB_SECRET);
       expect(legacySigned.status, `新键存在时旧键不该再生效：${legacySigned.body.slice(0, 120)}`).toBe(401);
 
-      const newSigned = await get(`${base}${GUARDED}?token=${sign(NEW_SECRET)}`);
+      const newSigned = await getSigned(base, GUARDED, NEW_SECRET);
       expect(newSigned.status, `新位置的密钥应通过：${newSigned.body.slice(0, 200)}`).not.toBe(401);
       expect(newSigned.status).not.toBe(444);
     } finally {

@@ -58,8 +58,17 @@ function unauthorized(res: Response, message: string): void {
   res.status(401).send({ code: 401, data: null, message });
 }
 
+/**
+ * 取令牌：**只认 `Authorization` 头**（Phase 1c Task 4 取消 `?token=` 查询串）。
+ *
+ * ⚠ 为什么必须取消查询串形态（Phase 0 遗留）：
+ *   · URL 会被**访问日志 / 反代日志 / 浏览器历史**记录下来 ⇒ 令牌等于明文落盘；
+ *   · 页面里的 `<img src="…?token=…">` 之类会把令牌经 `Referer` 带给第三方站点；
+ *   · 它还让"令牌可以出现在分享链接里"变成事实上的功能，而这条路没有吊销面（只在 tokenVersion 上）。
+ *   现在查询串里带 token **一律 401**（`tests/authorization.test.ts` 有红绿两端用例）。
+ */
 function extractToken(req: Request): string {
-  const raw = (req.headers?.authorization as string) || (req.query?.token as string) || "";
+  const raw = (req.headers?.authorization as string) || "";
   return String(raw).replace("Bearer ", "").trim();
 }
 
