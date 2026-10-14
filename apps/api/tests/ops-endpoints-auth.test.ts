@@ -35,6 +35,7 @@ import jwt from "jsonwebtoken";
 import type { Knex } from "knex";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createKnex } from "@/db/connect";
+import { isExportableTable } from "@/lib/tableWhitelist";
 import type { MiwoConfig } from "@/config";
 
 const API_ROOT = path.resolve(__dirname, "..");
@@ -458,6 +459,39 @@ describe("Task 7/4 运维接口授权与处置（真应用 + 真库 + 真 HTTP�
       const closed = await request("POST", url("/api/setting/dbConfig/importData"), { token, body: { tables: {} } });
       expect(closed.status, "关闭态必须 403").toBe(403);
       expect(await snapshot(db), "关闭态零副作用").toEqual(before);
+    } finally {
+      await db.destroy();
+    }
+  }, 90000);
+
+  /**
+   * Phase 1c Task 5+6（裁定 §2.5 / brief Task 5 Step 2）的**凭据表拒绝**：
+   * `o_user` / `o_vendorConfig` / `o_setting` 虽然**在白名单里**（它们是业务表，导出仍照旧），
+   * 但**不允许经 HTTP 灌回**——允许它等于"任何拿到 admin 令牌的人都能把全站账号/供应商凭据
+   * 替换成自己准备的一份"。这条与"非白名单表名"是**两条独立的判据**：
+   * 前者挡"不认识的表"，这条挡"认识但不该能恢复的表"。
+   */
+  it("⑧b ★ 凭据表（o_user/o_vendorConfig/o_setting）**在白名单里但拒绝导入**：400 + 零副作用", async () => {
+    const db = createKnex(dbConfigOf(dataDir));
+    try {
+      await setOpsSwitch(db, "1");
+      const before = await snapshot(db);
+      // 正向对照：这三张表确实**在白名单里**（否则这条用例测的是"白名单拒绝"，与上一条重复）
+      expect(isExportableTable("o_user"), "o_user 必须仍是可导出表（导出侧不收窄）").toBe(true);
+      expect(isExportableTable("o_vendorConfig")).toBe(true);
+      expect(isExportableTable("o_setting")).toBe(true);
+      const token = await signAs(db, ADMIN_USER);
+
+      for (const table of ["o_user", "o_vendorConfig", "o_setting"]) {
+        const r = await request("POST", url("/api/setting/dbConfig/importData"), {
+          token,
+          body: { tables: { [table]: [{ id: 99999, hacked: 1 }] } },
+        });
+        expect(r.status, `${table} 必须 400（凭据表拒绝导入），实际 ${r.status}：${r.body.slice(0, 220)}`).toBe(400);
+        expect(r.body, `${table} 的拒绝理由要能看懂`).toMatch(/不允许恢复的凭据/);
+      }
+      expect(await snapshot(db), "被拒的凭据表导入必须零副作用").toEqual(before);
+      await setOpsSwitch(db, "0");
     } finally {
       await db.destroy();
     }
