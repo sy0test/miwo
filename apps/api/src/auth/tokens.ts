@@ -73,23 +73,12 @@ export function verifyToken(token: string, typ: TokenType, secret: string = conf
 }
 
 /**
- * 旧形状 token（`{id, name}`，无 `typ`/`tv`）—— **过渡兼容**，见文件头限制 2。
+ * ⚠【Phase 1c Task 11】**旧形状 token 的验签函数已删除**（原 `verifyLegacyToken`）。
  *
- * 判据刻意收紧到"**恰好**是旧形状才认"：只要载荷里出现 `typ` 就走新路径
- *   （否则"新 access 当 refresh 用"这类类型混淆会被 legacy 分支悄悄放行）。
- * 返回 `null` = 不是旧形状或验签失败（调用方一律 401，不区分原因，避免枚举信息）。
+ * 删掉比"留着但没人调用"更安全：留着一个"能把 `{id:N}` 变成 userId"的原语，下一个人只要在
+ * 中间件里加一行就能把整条漏洞恢复，而**没有任何机械判据会红**。现在这条路上什么都不剩：
+ * 载荷形状不对 ⇒ `verifyToken` 抛 `AuthError("invalid")` ⇒ HTTP 401 / socket 拒连。
+ *
+ * 判别力用例：`tests/auth-legacy-retired.test.ts`（真应用 + 真 HTTP：旧形状令牌必须 401，
+ * 新形状令牌必须 200）。
  */
-export function verifyLegacyToken(token: string, secret: string = config.jwtSecret): { userId: number; payload: any } | null {
-  let decoded: any;
-  try {
-    decoded = jwt.verify(token, secret, { algorithms: ["HS256"] });
-  } catch {
-    return null;
-  }
-  if (!decoded || typeof decoded !== "object") return null;
-  if (decoded.typ !== undefined) return null; // 有 typ = 新形状，归 verifyToken 管
-  if (typeof decoded.uid === "number" || typeof decoded.tv === "number") return null;
-  const userId = Number(decoded.id);
-  if (!Number.isInteger(userId) || userId <= 0) return null;
-  return { userId, payload: decoded };
-}

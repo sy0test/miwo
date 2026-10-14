@@ -11,7 +11,6 @@ import {
   PolicyNotFoundError,
   isTenantTable,
   policyOf,
-  roleOfUserId,
 } from "@/db/policies";
 import { BACKFILL_EXEMPT_TABLES, BACKFILL_TARGET_TABLES, SELF_CHECK_TABLES } from "@/db/legacy/backfill-userid";
 import { currentTenant, currentUserId, requireTenantCtx, runWithTenant, TenantContextError } from "@/db/tenant-context";
@@ -157,13 +156,26 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     expect(isTenantTable("o_setting")).toBe(false);
   });
 
-  it("admin 桥接的判别力：只有 userId=1 是 admin（改读 o_user.role 归 Phase 1c 的鉴权重写任务）", () => {
-    // ⚠【Phase 1c Task 1】`o_user.role` 列**已经有了**（005_accounts），但本函数刻意**不读它**：
-    //   改判据属于鉴权链的重写，不属于数据模型任务；在数据模型改造里顺手改会让 verify-phase1b 的
-    //   D 组（admin 403/200 对照）失去它现在钉住的语义，而且"旧库迁上来的 admin 是 disabled"这件事
-    //   必须与 bootstrap 流程一起设计。
-    expect(roleOfUserId(1)).toBe("admin");
-    for (const id of [0, 2, 7, 999]) expect(roleOfUserId(id)).toBe("user");
+  /**
+   * ⚠【Phase 1c Task 11】这条用例**取代**了原来那条"admin 桥接的判别力"（它当时断言
+   * `roleOfUserId(1) === "admin"`）。
+   *
+   * 那个函数已随旧形状 token（`{id,name}`）的退役一起删除：它在新链路上**没有任何调用方**，
+   * 而"按 id===1 判 admin、不读 DB"这件事只要被接回鉴权链就是一条提权路 —— 旧用例却还在钉住它的行为。
+   * 现在钉的是"**原语真的不在了**"（删掉的是机制本身，所以"再加回来"必须从零写起），
+   * 而"旧形状 `{id:1}` 令牌 ⇒ 401"由 `tests/auth-legacy-retired.test.ts` 在**真应用 + 真 HTTP** 上钉住。
+   */
+  it("★ admin 判定只信 DB：`roleOfUserId` 与两侧的 legacy 分支**都已从源码中消失**", () => {
+    const read = (rel: string): string => fs.readFileSync(path.join(__dirname, "..", rel), "utf8");
+    // ⚠ 判据刻意钉在"**声明/调用**"上，而不是"文本里出现过这个词"：注释里保留"它已经删了、
+    //   为什么删"的说明是有价值的（本文件自己的注释也在提它）—— 只要**导出/调用**不在，机制就不在。
+    expect(read("src/db/policies.ts"), "policies.ts 不得再**导出** roleOfUserId（按 id===1 判 admin 的过渡桥接）").not.toMatch(
+      /export\s+function\s+roleOfUserId/,
+    );
+    expect(read("src/auth/tokens.ts"), "tokens.ts 不得再**提供**旧形状的验签原语").not.toMatch(/export\s+function\s+verifyLegacyToken/);
+    for (const rel of ["src/middleware/auth.ts", "src/socket/tenant.ts"]) {
+      expect(read(rel), `${rel} 不得再**调用** verifyLegacyToken（legacy 分支已退役）`).not.toMatch(/verifyLegacyToken\s*\(/);
+    }
   });
 });
 

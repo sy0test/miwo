@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import jwt from "jsonwebtoken";
 import { config } from "@/config";
-import { AuthError, ACCESS_TTL_SEC, REFRESH_TTL_SEC, signToken, verifyLegacyToken, verifyToken } from "@/auth/tokens";
+import { AuthError, ACCESS_TTL_SEC, REFRESH_TTL_SEC, signToken, verifyToken } from "@/auth/tokens";
 
 describe("双令牌（spec §7.2）", () => {
   it("access 15 分钟 / refresh 7 天（exp - iat 精确断言）", () => {
@@ -72,23 +72,31 @@ describe("双令牌（spec §7.2）", () => {
   });
 });
 
-describe("旧形状 token 的过渡兼容（{id,name}，无 typ/tv）", () => {
-  it("旧形状能被认出来（Phase 1b 的 verify-phase1b / ops-endpoints-auth 依赖它）", () => {
+/**
+ * Phase 1c Task 11：**旧形状 token 的兼容已整体退役**。
+ *
+ * 原来这里有两条 `verifyLegacyToken` 的用例（"旧形状能被认出来" / "无 id、坏签名 → null"）。
+ * 现在那个函数**已经删除**，所以这里改钉"**旧形状在新链路上不成立**"：
+ *   · `verifyToken` 对旧形状载荷（没有 `typ`/`uid`/`tv`）一律抛 `AuthError`；
+ *   · 真 HTTP / socket 层面的"旧令牌必须 401 / 拒连"由
+ *     `tests/auth-legacy-retired.test.ts`（真应用 + 真 HTTP）与 `tests/socket-tenant.test.ts` 覆盖。
+ * 判据的意义：**删掉原语之后，"再加回一条兼容分支"必须从零写起**，而这里钉住的是"新链路不认它"。
+ */
+describe("★ 旧形状 token（{id,name}，无 typ/tv）在新链路上必须不成立（Phase 1c Task 11）", () => {
+  it("旧形状载荷 → `verifyToken` 抛 AuthError（不是被认出来、也不是静默放行）", () => {
     const legacy = jwt.sign({ id: 7, name: "u7" }, config.jwtSecret, { expiresIn: "1h" });
-    const got = verifyLegacyToken(legacy);
-    expect(got?.userId).toBe(7);
-    // 判别力：**新形状绝不能被 legacy 分支接走**，否则类型混淆会被绕过
-    const modern = signToken({ uid: 7, role: "user", tv: 0, typ: "access" });
-    expect(verifyLegacyToken(modern)).toBeNull();
-    const refresh = signToken({ uid: 7, role: "user", tv: 0, typ: "refresh" });
-    expect(verifyLegacyToken(refresh)).toBeNull();
+    expect(() => verifyToken(legacy, "access")).toThrow(AuthError);
   });
 
-  it("无 id / id 非正 / 坏签名 / 别的密钥 → null（不抛）", () => {
-    expect(verifyLegacyToken(jwt.sign({ name: "x" }, config.jwtSecret))).toBeNull();
-    expect(verifyLegacyToken(jwt.sign({ id: 0, name: "x" }, config.jwtSecret))).toBeNull();
-    expect(verifyLegacyToken(jwt.sign({ id: -1, name: "x" }, config.jwtSecret))).toBeNull();
-    expect(verifyLegacyToken("garbage")).toBeNull();
-    expect(verifyLegacyToken(jwt.sign({ id: 7 }, "another-secret-at-least-32-bytes-long!!"))).toBeNull();
+  it("缺 uid / 无 id / id 非正 的旧形状一律拒", () => {
+    for (const payload of [{ name: "x" }, { id: 0, name: "x" }, { id: -1, name: "x" }, { id: 7 }]) {
+      const t = jwt.sign(payload, config.jwtSecret, { expiresIn: "1h" });
+      expect(() => verifyToken(t, "access"), JSON.stringify(payload)).toThrow(AuthError);
+    }
+  });
+
+  it("判别力对照：同一密钥签的**新形状**必须照常通过（否则上面两条只是「整个验签坏了」）", () => {
+    const modern = signToken({ uid: 7, role: "user", tv: 0, typ: "access" });
+    expect(verifyToken(modern, "access").uid).toBe(7);
   });
 });

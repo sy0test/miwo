@@ -101,9 +101,14 @@ async function main(): Promise<void> {
   // ④ tokenKey 用**裸 knex 直读**（不走 `u.db` ⇒ 不触发启动迁移）
   const db = createKnex();
   let tokenKey: unknown;
+  let userRow: any;
   try {
     const setting: any = await db("o_setting").where("key", "tokenKey").select("value").first();
     tokenKey = setting?.value;
+    // ⚠【Phase 1c Task 11】令牌换成**新形状**（`{uid,role,tv,typ}`）之后，`decodeSocketToken` 每连接
+    //   都要 `loadUserCtx()` 读这一行（复核 `status`/`tokenVersion`/`role`）⇒ 探针必须知道夹具账号
+    //   在不在、是什么角色。读不到就照旧只报 NO_TOKEN_KEY，让调用方看见"夹具没种上"。
+    userRow = await db("o_user").where("id", userId).select("role", "status", "tokenVersion").first();
   } catch (e: any) {
     console.error(`[probe-agent-connect] 读 o_setting 失败：${String(e?.message ?? e)}`);
     emitResult({ ok: false, reason: "DB_NOT_MIGRATED", disconnected: true }, 2);
@@ -115,7 +120,18 @@ async function main(): Promise<void> {
     emitResult({ ok: false, reason: "NO_TOKEN_KEY", disconnected: true });
     return;
   }
-  const token = "Bearer " + (jwt.sign as any)({ id: userId, name: "probe" }, String(tokenKey), { expiresIn: "1h" });
+  if (!userRow) {
+    emitResult({ ok: false, reason: "NO_USER_ROW", disconnected: true });
+    return;
+  }
+  const role = userRow.role === "admin" ? "admin" : "user";
+  const token =
+    "Bearer " +
+    (jwt.sign as any)(
+      { uid: userId, role, tv: Number(userRow.tokenVersion ?? 0), typ: "access", jti: "probe-agent-connect" },
+      String(tokenKey),
+      { expiresIn: "1h" },
+    );
 
   // ⑤ 真 route（**动态 import**：driver/护栏/存在性/裸读全在它之前；这是唯一会拉起应用数据层的一步）
   const { default: productionAgentRoute } = await import("@/socket/routes/productionAgent");

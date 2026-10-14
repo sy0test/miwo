@@ -50,8 +50,10 @@ async function main(): Promise<void> {
   //   不等它就会出现"表还没建好就开始 insert"的竞态（实测：`no such table: o_setting`，brief 里"模块加载即跑迁移"的说法不成立）。
   await dbReady;
   await systemDb("o_setting").insert({ key: "tokenKey", value: TOKEN_KEY }).onConflict("key").merge();
-  // ⚠ 夹具账号：id=1 必须是 admin（`policies.roleOfUserId` 的临时桥接按 id=1 判 admin，
-  //   `verify-phase1b` 的 D 组用它的 token 断言"管理员 GET dbInfo → 200"）。
+  // ⚠ 夹具账号：id=1 必须是 admin。**注意**：`policies.roleOfUserId`（按 id===1 判 admin 的过渡桥接）
+  //   已在 Phase 1c Task 11 随旧形状 token 一起**删除** ⇒ 这里的 role 之所以有意义，是因为
+  //   `verify-phase1b.cjs` 用**新形状**令牌（`{uid,role,tv,typ}`），而新链路的 ctx.role 只从
+  //   这一行的 `role` 读（D 组的"普通 403 / admin 200"就是这样成立的）。
   await upsertUser(1, "admin", "admin");
   await upsertUser(7, "a", "user");
   await upsertUser(8, "b", "user");

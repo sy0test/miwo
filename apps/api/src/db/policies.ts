@@ -152,18 +152,11 @@ export function isTenantTable(table: string): boolean {
 }
 
 /**
- * `role` 的**过渡桥接**：本函数只按 `userId === 1` 判定 admin，**不读 `o_user.role`**。
+ * ⚠【Phase 1c Task 11】**`roleOfUserId(userId)` 已删除**（原来它按 `userId === 1` 判 admin）。
  *
- * ⚠【Phase 1c Task 1 更正】原注释写"本阶段 `o_user` 还没有 role 列"——**该前提已不成立**：
- *   `005_accounts` 已给 `o_user` 加上 `role`（`user | admin`）与 `status`（`active | disabled`）。
- * ⚠【Phase 1c Task 3 更新】**鉴权链已经改写**（`src/middleware/auth.ts` / `src/socket/tenant.ts`）：
- *   · **新形状 token**（`{uid,role,tv,typ}`）的 ctx.role 取 **DB 的 `o_user.role`**（spec §7.3：
- *     授权判定只信 DB），**不再**经过本函数；
- *   · 本函数现在只剩**一个**消费者：**旧形状 token**（`{id,name}`，Phase 1b 的验收脚本与夹具
- *     仍按它签发）的兼容分支。删掉它会让 `verify:phase1b` 的 D 组（admin 403/200 对照）整片红。
- *   ⚠ 旧库迁上来的 admin 行在 `005` 里是 `status='disabled'` ⇒ 新形状那条路**连登都登不进去**，
- *   所以"旧账号不会因为这次改写立刻拿到 admin"这一点由数据（status）+ 每条请求的 DB 复核共同保证。
+ * 它曾是"旧形状 token"的过渡桥接；Task 11 把旧形状整体退役之后它**没有任何调用方**，
+ * 而它带来的风险很具体：`roleOfUserId(1) === "admin"` 是一条**不读 DB** 的管理员判定 ——
+ * 只要有人在合并/重构里把某条链接回它，任何"用当前密钥签的 `{id:1}`"就又变成管理员，
+ * 而**没有任何机械判据会红**（原来的 `tests/tenant-policies.test.ts` 甚至还在钉住它的行为）。
+ * 现在唯一的管理员判定是 **`o_user.role`**（每请求现读，见 `auth/service.ts` 的 `loadUserCtx`）。
  */
-export function roleOfUserId(userId: number): "user" | "admin" {
-  return Number(userId) === 1 ? "admin" : "user";
-}

@@ -13,7 +13,8 @@
  *   · 444 分支**删除**（缺密钥不再是"服务起不来"，密钥三档优先级里配置恒有值）；
  *   · 失败响应统一 `{code:401,data:null,message}`；
  *   · ctx 的 role 从 **DB** 读（`o_user.role`），不再由 `roleOfUserId` 桥接 ——
- *     **旧形状 token 例外**（它没有 `tv`/`role` claim，只能按 1b 的桥接语义走）。
+ *     ⚠ Phase 1c Task 11 起**没有例外**：旧形状 token 的兼容分支已整体退役
+ *     （`roleOfUserId` 本身也删了），`{id,N}` 载荷一律 401 / socket 拒连。
  */
 import type { NextFunction, Request, Response } from "express";
 

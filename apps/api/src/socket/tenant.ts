@@ -22,16 +22,18 @@
  *    HTTP 侧与这里共用；Task 1 把 `tokenKey` 行从 `o_setting` 删掉后新增了 `o_setting.jwtSecret`
  *    作为新位置，读取顺序见该文件头）。连接期读 `o_setting` 继续走 `u.db`
  *    （platform 表读**无 ctx 也放行**），**不**新增第 8 个 `systemDb` 使用者（Ruling 220 #4）。
- * ⚠ token 形状：新形状（`typ`/`tv`）与旧形状（`{id}`，Phase 1b 夹具在用）**都接受**
- *    —— 与 `@/middleware/auth` 的判据一致（理由见 `@/auth/tokens` 文件头限制 2）。
+ * ⚠ token 形状：**只有新形状**（`typ`/`tv`/`uid`）。旧形状（`{id}`）的兼容分支在
+ *    Phase 1c Task 11 **与 HTTP 侧一起整体退役** —— 理由同 `middleware/auth.ts` 文件头：
+ *    它**不读 DB**，所以 005 对旧账号的 `status="disabled"` 封禁对它不生效，且
+ *    `roleOfUserId(1)==="admin"` 让任何用当前密钥签的旧 `{id:1}` 令牌恒为管理员。
+ *    两边必须同时退役：只改 HTTP 的话，同一个旧令牌可以走 WebSocket 连上来。
  */
 import { randomUUID } from "node:crypto";
 import type { Socket } from "socket.io";
 import u from "@/utils";
 import { resolveJwtSecret } from "@/auth/secret";
-import { verifyLegacyToken, verifyToken } from "@/auth/tokens";
+import { verifyToken } from "@/auth/tokens";
 import { loadUserCtx } from "@/auth/service";
-import { roleOfUserId } from "@/db/policies";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
 
 /** 连接期验签 → 租户 ctx（失败一律 `null`，调用方据此 `socket.disconnect()`）。 */
@@ -50,9 +52,8 @@ export async function decodeSocketToken(rawToken: unknown): Promise<TenantCtx | 
     if (!user || user.status !== "active" || user.tokenVersion !== claims.tv) return null;
     return { userId: user.id, role: user.role, requestId: randomUUID(), source: "socket" };
   } catch {
-    const legacy = verifyLegacyToken(token, secret);
-    if (!legacy) return null;
-    return { userId: legacy.userId, role: roleOfUserId(legacy.userId), requestId: randomUUID(), source: "socket" };
+    // ⚠【Phase 1c Task 11】不再回退旧形状：验签/载荷/DB 复核任一失败 ⇒ 一律拒连。
+    return null;
   }
 }
 

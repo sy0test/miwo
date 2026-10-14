@@ -92,6 +92,24 @@ describe("★P1：o_script.userId 回填是 agent 可用性的开关（真 route
       await knex("o_project").insert({ id: PROJECT_ID, userId: USER_ID, name: "T6", createTime: 1 }).onConflict("id").merge();
       await knex("o_script").insert({ id: SCRIPT_ID, projectId: PROJECT_ID, name: "ep1", userId: null }).onConflict("id").merge();
       await knex("o_setting").insert({ key: "tokenKey", value: TOKEN_KEY }).onConflict("key").merge();
+      // ⚠【Phase 1c Task 11】账号夹具：旧形状令牌的 legacy 分支已退役 ⇒ 探针签的是**新形状**令牌，
+      //   而 `decodeSocketToken` 每连接都要 `loadUserCtx()` 复核这一行（status/tokenVersion/role）。
+      //   没有它，红端与绿端都会以"NO_USER_ROW ⇒ 拒连"收场 —— 绿端会红，且失败信息指向完全无关的地方。
+      await knex("o_user")
+        .insert({
+          id: USER_ID,
+          username: "task6-probe-user",
+          email: null,
+          passwordHash: "",
+          role: "user",
+          status: "active",
+          tokenVersion: 0,
+          mustChangePassword: 0,
+          createdAt: 1,
+          lastLoginAt: null,
+        })
+        .onConflict("id")
+        .merge();
       // 前置：脚本行**存在**，但 userId 是 NULL —— 这正是"未回填"的形态
       const row: any = await knex("o_script").where("id", SCRIPT_ID).first();
       expect(row?.userId, "前置：fixture 的 o_script.userId 必须是 NULL").toBeNull();
