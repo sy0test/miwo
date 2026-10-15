@@ -3,7 +3,6 @@
     <t-loading :loading="true" size="large" text="加载中..." />
   </div>
   <template v-else>
-    <titleBar v-if="isElectron" />
     <t-config-provider :global-config="globalConfig">
       <router-view></router-view>
     </t-config-provider>
@@ -49,7 +48,7 @@ onBeforeMount(() => {
 
 // 初始化主题
 onMounted(async () => {
-  getPort();
+  resolveBaseUrl();
 });
 
 async function handleLinkClick(event: MouseEvent) {
@@ -60,11 +59,7 @@ async function handleLinkClick(event: MouseEvent) {
   const url = target?.getAttribute("data-link") || target?.getAttribute("href");
   if (!url) return false;
 
-  if (isElectron.value) {
-    await fetch(`toonflow://openurlwithbrowser?url=${encodeURIComponent(url)}`);
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
+  window.open(url, "_blank", "noopener,noreferrer");
 
   return false;
 }
@@ -73,20 +68,15 @@ onMounted(() => {
   (window as any).handleLinkClick = handleLinkClick;
 });
 
-async function getPort() {
+/** Phase 1e Task 02：原 `getPort()` 已改名（它不再探 Electron 端口，只解析 baseUrl）。 */
+async function resolveBaseUrl() {
   await nextTick();
   await nextTick();
   await nextTick();
   await nextTick();
-  try {
-    const res = await fetch("toonflow://getAppUrl");
-    const data = await res.json();
-    if (data?.url) {
-      baseUrl.value = data.url;
-      isElectron.value = true;
-    }
-  } catch (error) {
-    // ⚠ 不是 Electron（自定义协议取不到 URL）。这里必须分两种开发/使用方式，不能一律用同源：
+  // ⚠ Phase 1e Task 02：Electron 自定义协议的 getAppUrl 探针已整体删除（服务器版没有该协议，
+  //   `isElectron` 恒为 false）。以下是服务器版的**真实路径** —— 必须分两种开发/使用方式，不能一律用同源：
+  {
     //   a) **页面就是后端自己吐出来的**（局域网服务器模式：http://<IP>:18080/、或本机 10588）
     //      → 用**同源** /api，这样用户机用任何 IP/域名访问都能连上；
     //   b) **页面是 Vite dev server 吐的**（如 http://localhost:50188），后端另在 10588

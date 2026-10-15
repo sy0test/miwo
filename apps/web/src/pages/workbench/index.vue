@@ -127,19 +127,13 @@ function handleClick(menu: any) {
 }
 
 async function jumpGithub() {
-  if (isElectron.value) {
-    await fetch("toonflow://openurlwithbrowser?url=https://github.com/HBAI-Ltd/Toonflow-app");
-  } else {
-    window.open("https://github.com/HBAI-Ltd/Toonflow-app");
-  }
+  // Phase 1e Task 02：Electron 自定义协议分支已删除，浏览器 fallback 是唯一行为。
+  window.open("https://github.com/HBAI-Ltd/Toonflow-app");
 }
 
 async function openFeedback() {
-  if (isElectron.value) {
-    await fetch("toonflow://openurlwithbrowser?url=https://docs.qq.com/smartsheet/form/EmvmQBrmlPmr%2Fss_vsqk2v%2FvhiGzE?tab=ss_vsqk2v");
-  } else {
-    window.open("https://docs.qq.com/smartsheet/form/EmvmQBrmlPmr%2Fss_vsqk2v%2FvhiGzE?tab=ss_vsqk2v");
-  }
+  // Phase 1e Task 02：同上（协议分支已删）。
+  window.open("https://docs.qq.com/smartsheet/form/EmvmQBrmlPmr%2Fss_vsqk2v%2FvhiGzE?tab=ss_vsqk2v");
 }
 
 async function checkVersion() {

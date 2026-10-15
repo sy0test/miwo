@@ -425,11 +425,8 @@ onMounted(() => {
 
 //跳转官方网站
 async function jumpToWebsite() {
-  if (isElectron.value) {
-    await fetch(`toonflow://openurlwithbrowser?url=https://platform.deepseek.com`);
-  } else {
-    window.open("https://platform.deepseek.com", "_blank");
-  }
+  // Phase 1e Task 02：Electron 自定义协议分支已删除，浏览器 fallback 是唯一行为。
+  window.open("https://platform.deepseek.com", "_blank");
 }
 </script>
 

@@ -13,7 +13,7 @@
         <t-space size="small">
           <t-button theme="primary" type="submit" @click="handleSubmit">{{ $t("settings.request.save") }}</t-button>
           <t-button theme="default" @click="handleReset">{{ $t("settings.request.reset") }}</t-button>
-          <t-button v-if="isElectron" theme="warning" @click="refreshAPI">{{ $t("settings.request.refresh") }}</t-button>
+          <t-button theme="warning" @click="refreshAPI">{{ $t("settings.request.refresh") }}</t-button>
         </t-space>
       </t-form-item>
     </t-form>
@@ -61,14 +61,11 @@ function handleReset() {
 }
 
 async function refreshAPI() {
+  // Phase 1e Task 02：Electron 自定义协议的 getAppUrl 探针已删除 —— 服务器版没有
+  // "向后端问应用端口"这回事。等价语义 = **重新读取当前保存的 API 地址**（按钮不再只在 Electron 下显示）。
   try {
-    const res = await fetch("toonflow://getAppUrl");
-    const data = await res.json();
-    if (data?.port) {
-      baseUrl.value = data.url;
-      isElectron.value = true;
-      window.$message.success($t("settings.request.msg.refreshSuccess"));
-    }
+    await loadSettings();
+    window.$message.success($t("settings.request.msg.refreshSuccess"));
   } catch (error) {
     window.$message.error($t("settings.request.msg.refreshFailed"));
   }

@@ -141,11 +141,8 @@ function handleFinish() {
 }
 
 async function jumpGithub() {
-  if (isElectron.value) {
-    await fetch("toonflow://openurlwithbrowser?url=https://github.com/HBAI-Ltd/Toonflow-app");
-  } else {
-    window.open("https://github.com/HBAI-Ltd/Toonflow-app");
-  }
+  // Phase 1e Task 02：Electron 自定义协议分支已删除（服务器版没有该协议），浏览器 fallback 是唯一行为。
+  window.open("https://github.com/HBAI-Ltd/Toonflow-app");
 }
 </script>
 

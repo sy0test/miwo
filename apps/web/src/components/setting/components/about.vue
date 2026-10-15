@@ -268,11 +268,8 @@ watch(updateSource, () => {
 });
 
 async function openLink(url: string) {
-  if (isElectron.value) {
-    await fetch(`toonflow://openurlwithbrowser?url=${url}`);
-  } else {
-    window.open(url, "_blank");
-  }
+  // Phase 1e Task 02：Electron 自定义协议分支已删除，浏览器 fallback 是唯一行为。
+  window.open(url, "_blank");
 }
 
 onMounted(async () => {
@@ -322,15 +319,6 @@ async function checkUpdateWithSource() {
     updateLoading.value = false;
   }
 }
-async function electronAction(action: string) {
-  try {
-    const res = await fetch(`toonflow://${action}`);
-    return await res.json();
-  } catch {
-    // 非 Electron 环境或请求失败
-  }
-}
-
 async function doConfirmUpdate() {
   updateLoading.value = true;
   try {
@@ -346,7 +334,8 @@ async function doConfirmUpdate() {
         },
       });
       try {
-        await fetch(`toonflow://openurlwithbrowser?url=${updateInfo.value.url}`);
+        // Phase 1e Task 02：Electron 协议分支已删除，浏览器 fallback 是唯一行为。
+        window.open(updateInfo.value.url, "_blank", "noopener,noreferrer");
       } catch (error) {}
       return;
     }
@@ -356,7 +345,7 @@ async function doConfirmUpdate() {
       version: updateInfo.value.version,
     });
 
-    electronAction("apprestart");
+    // Phase 1e Task 02：`electronAction("apprestart")` 已删除（服务器版没有 Electron 重启动作）。
     MessagePlugin.success(t("settings.about.updateSuccess"));
     updateDialogVisible.value = false;
   } catch (e) {

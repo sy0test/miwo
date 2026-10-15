@@ -132,15 +132,8 @@ const filteredLocalStorageRows = computed(() => {
 });
 
 function openDevTool() {
-  if (isElectron.value) {
-    try {
-      fetch("toonflow://openDevTool");
-    } catch (error) {
-      window.$message?.warning($t("settings.dev.openDevtoolFailed"));
-    }
-  } else {
-    window.$message?.warning($t("settings.dev.notInElectron"));
-  }
+  // Phase 1e Task 02：Electron 的 openDevTool 协议分支已删除 —— 服务器版没有开发者工具可开。
+  window.$message?.warning($t("settings.dev.notInElectron"));
 }
 
 async function getSwitchAiDevTool() {
