@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const chaos = require(path.resolve(__dirname, "..", "scripts", "job-chaos.cjs")) as {
   buildSpans: (events: unknown[]) => Map<number, Array<{ attempt: number; s: number; e: number | null; userId?: number }>> & { orphanEnds: number };
-  findOverlaps: (spans: Map<number, Array<{ attempt: number; s: number; e: number | null }>>) => Array<{ jobId: number; prev: { attempt: number }; cur: { attempt: number } }>;
+  findOverlaps: (spans: Map<number, Array<{ attempt: number; s: number; e: number | null }>>, fallbackMs: number) => Array<{ jobId: number; prev: { attempt: number }; cur: { attempt: number } }>;
   resolveLimits: (policy: { globalMaxRunning: number; perUserMaxRunning: number }, env?: Record<string, string | undefined>) => {
     global: number;
     perUser: number;
@@ -28,19 +28,27 @@ const chaos = require(path.resolve(__dirname, "..", "scripts", "job-chaos.cjs"))
 
 /** 合成事件：`selftest.sleep` handler 写 JSONL 的形状（事件流只有 start/end + jobId/attempt/ts/userId）。 */
 const ev = (jobId: number, attempt: number, event: "start" | "end", ts: number, userId?: number) => ({ jobId, attempt, event, ts, userId });
+/** chaos 用 selftest 的 `ms`（默认 400）作为"无 end 的 attempt 至少跑了多久"的下界。 */
+const MS = 400;
 
-describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1）", () => {
+describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1 / F-1R）", () => {
   /**
-   * review-D.md 逐行复制的两条事件流：
-   *  · NORMAL：同一 job 两次 attempt **都正常收尾**（有 end）⇒ 旧算法也绿。
-   *  · KILLED_ATTEMPT：attempt 1 被 SIGKILL（**没有 end**）+ attempt 2 重跑 ⇒
-   *    旧算法（第 i 个 start 配第 i 个 end）会把它判成"区间重叠"，而 B 断言强制这个场景必须发生。
+   * review-D.md 逐行复制的两条事件流（+ 复核轮 F-1R 的两条）：
+   *  · NORMAL：同一 job 两次 attempt **都正常收尾**（有 end）。
+   *  · KILLED_ATTEMPT / LEGIT_RECLAIM：attempt 1 被 SIGKILL（**没有 end**）+ 60s 后租约过期**合法重领** ⇒
+   *    必须判 0（旧"第 i 个 start 配第 i 个 end"算法会误判成重叠，而 B 断言强制这个场景必须发生）。
+   *  · DUP_KILLED：**同一 job 被两个 worker 同时执行**（start 1000 / 1005）且 chaos 杀掉其中一个 ⇒
+   *    左端永远没有 end；若"无 end 就整段跳过"就会**漏判重复执行**（F-1R）。
    */
   const STREAMS = {
     // 两次 attempt 正常收尾（start 1000/end 9000、start 10000/end 19000）
     NORMAL: [ev(7, 1, "start", 1000, 1), ev(7, 1, "end", 9000, 1), ev(7, 2, "start", 10000, 1), ev(7, 2, "end", 19000, 1)],
     // review-D.md 的原始数据：start(1000, attempt=1) 无 end + start(61000, attempt=2) + end(61400, attempt=2)
     KILLED_ATTEMPT: [ev(7, 1, "start", 1000, 1), ev(7, 2, "start", 61000, 1), ev(7, 2, "end", 61400, 1)],
+    // 与 KILLED_ATTEMPT 同形（合法重领：间隔 60s ≫ leaseMs），单独命名以表达"不许误伤"
+    LEGIT_RECLAIM: [ev(7, 1, "start", 1000, 1), ev(7, 2, "start", 61000, 1), ev(7, 2, "end", 61400, 1)],
+    // 【F-1R】重复执行 + 其中一个被杀：start(1000,a1) 无 end、start(1005,a2) 有 end
+    DUP_KILLED: [ev(7, 1, "start", 1000, 1), ev(7, 2, "start", 1005, 1), ev(7, 2, "end", 61400, 1)],
   };
 
   /** **旧算法**（行内复制，只用于"改前红"的见证；生产代码里已删除）。 */
@@ -62,15 +70,15 @@ describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1�
 
   it("★ NORMAL 事件流：新旧算法都判 0 重叠（改前改后都绿 —— 证明改的不是恒真条件）", () => {
     expect(legacyOverlapCount(STREAMS.NORMAL)).toBe(0);
-    expect(chaos.findOverlaps(chaos.buildSpans(STREAMS.NORMAL))).toEqual([]);
+    expect(chaos.findOverlaps(chaos.buildSpans(STREAMS.NORMAL), MS)).toEqual([]);
   });
 
   it("★★ KILLED_ATTEMPT（被 SIGKILL 的 attempt 没有 end）：旧算法误判 1 处重叠（改前红），新算法 0（改后绿）", () => {
     // 改前红：这正是 review-D.md 实测的 `C_KILLED_ATTEMPT overlaps=1`
     expect(legacyOverlapCount(STREAMS.KILLED_ATTEMPT), "旧配对算法在被 SIGKILL 的场景下会误判重叠").toBe(1);
-    // 改后绿：按 attempt 分组 + 无 end 的 attempt 不参与重叠判定
+    // 改后绿：按 attempt 分组 + 无 end 的左端按 "start + ms" 下界估计（下界 < 60000 的重领间隔 ⇒ 不误伤）
     const spans = chaos.buildSpans(STREAMS.KILLED_ATTEMPT);
-    expect(chaos.findOverlaps(spans)).toEqual([]);
+    expect(chaos.findOverlaps(spans, MS)).toEqual([]);
     // 而且"无 end"这件事是可观测的（chaos 会打印它，不是被静默吞掉）
     const flat = [...spans.values()].flat();
     expect(flat.length).toBe(2);
@@ -78,9 +86,31 @@ describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1�
     expect(spans.orphanEnds).toBe(0);
   });
 
+  it("★★ LEGIT_RECLAIM（租约过期后**合法重领**，间隔 ~60s）：必须判 0 ⇒ 修复没有误伤正常回收", () => {
+    expect(chaos.findOverlaps(chaos.buildSpans(STREAMS.LEGIT_RECLAIM), MS)).toEqual([]);
+    // 边界：重领起点刚好落在下界之内（1000 + 400 之内）时**应当**判重叠 —— 这正是 F-1R 要抓的形态
+    const tight = [ev(7, 1, "start", 1000, 1), ev(7, 2, "start", 1399, 1), ev(7, 2, "end", 2000, 1)];
+    expect(chaos.findOverlaps(chaos.buildSpans(tight), MS).length).toBe(1);
+  });
+
+  it("★★ F-1R DUP_KILLED（同一 job 被两个 worker 同时执行、其中一个被 SIGKILL）：必须判 1 处重叠", () => {
+    // 这是复核轮的原始数据：start(1000,a1) 无 end + start(1005,a2) + end(61400,a2)
+    // ⚠ 漏判形态：对"左端无 end"整段 continue ⇒ overlaps=0 ⇒ C 会 PASS（B 只看 attempts、D 只看采样峰值）
+    const overlaps = chaos.findOverlaps(chaos.buildSpans(STREAMS.DUP_KILLED), MS);
+    expect(overlaps.length, "重复执行 + 其中一个被杀必须被判重叠（否则对重复执行的检测退化成概率性）").toBe(1);
+    expect(overlaps[0].prev.attempt).toBe(1);
+    expect(overlaps[0].cur.attempt).toBe(2);
+  });
+
+  it("★★ 漏判的**机械守卫**：findOverlaps 缺 fallbackMs（或非正值）必须**抛错**，不许静默退化成'整段跳过'", () => {
+    const spans = chaos.buildSpans(STREAMS.DUP_KILLED);
+    expect(() => chaos.findOverlaps(spans as never, undefined as never)).toThrow(/fallbackMs/);
+    expect(() => chaos.findOverlaps(spans as never, 0 as never)).toThrow(/fallbackMs/);
+  });
+
   it("★★ REAL_OVERLAP（两次 attempt 真的同时在跑，都有 end）：必须判 1 处重叠 ⇒ 修复没有放宽判据", () => {
     const stream = [ev(7, 1, "start", 1000, 1), ev(7, 1, "end", 9000, 1), ev(7, 2, "start", 5000, 1), ev(7, 2, "end", 12000, 1)];
-    const overlaps = chaos.findOverlaps(chaos.buildSpans(stream));
+    const overlaps = chaos.findOverlaps(chaos.buildSpans(stream), MS);
     expect(overlaps.length).toBe(1);
     expect(overlaps[0].prev.attempt).toBe(1);
     expect(overlaps[0].cur.attempt).toBe(2);
@@ -88,7 +118,7 @@ describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1�
 
   it("★ 多 job 互不干扰：A 的 attempt 与 B 的 attempt 时间重叠不算重叠（重叠只在**同一 job** 内判定）", () => {
     const stream = [ev(7, 1, "start", 1000, 1), ev(7, 1, "end", 9000, 1), ev(8, 1, "start", 2000, 2), ev(8, 1, "end", 8000, 2)];
-    expect(chaos.findOverlaps(chaos.buildSpans(stream))).toEqual([]);
+    expect(chaos.findOverlaps(chaos.buildSpans(stream), MS)).toEqual([]);
   });
 
   it("★ 只有 end 没有 start 的事件（事件流不完整）被计数为 orphanEnds ⇒ C 判 FAIL（观测不到 ≠ 通过）", () => {

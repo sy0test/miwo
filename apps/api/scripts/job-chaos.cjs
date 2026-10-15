@@ -13,7 +13,9 @@
  *   B. 发生了回收：至少 1 条 attempts >= 2（否则租约回收没生效）
  *   C. 无重叠执行：**按 (jobId, attempt) 分组**配对 [start,end]，同一 job 的相邻 attempt 不重叠
  *      （事件流 `${MIWO_DATA_DIR}/job-selftest.jsonl`）。⚠ 被 SIGKILL 的 attempt **没有 end**
- *      —— 这是 B 断言强制发生的场景，不参与重叠判定（否则 B 与 C 互相矛盾，见 review-D.md F-1）
+ *      —— 这是 B 断言强制发生的场景：左端无 end 时用 `start + ms`（下界）估它的结束时间，
+ *      既**不误伤**合法回收（review-D F-1），也**不漏判**"同一 job 被两个 worker 同时跑、其中一个被杀"
+ *      （review-D F-1R）
  *   D. 上限不被突破：按 50ms 采样，全局在跑数 ≤ `JOB_POLICY.globalMaxRunning`、
  *      单用户在跑数 ≤ `JOB_POLICY.perUserMaxRunning`（**上界只来自 policy.ts**，不是环境变量默认值 —— F-2）
  *   E. 没有"永久 running"：终态检查时 state=running 的行数 == 0
@@ -105,23 +107,38 @@ function buildSpans(events) {
 }
 
 /**
- * 【F-1】找出**同一条 job 的相邻 attempt 之间**的重叠（= 两次执行真的同时在跑）。
+ * 【F-1 + F-1R】找出**同一条 job 的相邻 attempt 之间**的重叠（= 两次执行真的同时在跑）。
  *
- * ⚠ 只有**左端 attempt 有 end** 时才能判定："它还没结束，右端就开始了"。
- *   左端 `e === null`（被 SIGKILL）说明我们**不知道**它何时停下 ⇒ 该 attempt **不参与重叠判定**
- *   （否则 chaos 自己制造的场景必然误判，见 `buildSpans` 的头注）。
- * ⚠ 这个放宽**不影响**真正要守的不变式：一条 job 被两个 worker 同时执行时，两次 attempt
- *   **都会有 end**（都正常/失败收尾），相邻区间必然重叠 ⇒ 照样红（见 `tests/job-chaos-assertions.test.ts`
- *   的 `REAL_OVERLAP` 用例：这是"只收紧不放宽"的判别力证据）。
+ * ── 左端没有 `end` 时怎么办（这条经历过两轮，别再简化回去）──
+ * F-1 的第一版对"左端无 end"整段 `continue`（理由：被 SIGKILL 的 attempt 我们不知道它何时停下）。
+ * 那修掉了"chaos 自己制造的合法回收被误判成重叠"，但**开了个漏判**（复核轮 F-1R）：
+ *   `DUP_KILLED = start(1000, a1) + start(1005, a2) + end(61400, a2)`
+ *   —— 这正是"**同一 job 被两个 worker 同时执行、chaos 又杀掉其中一个**"的形状：a1 永远没有 end，
+ *   整段跳过 ⇒ `overlaps=0` ⇒ C PASS。而 B 只看 `attempts`、D 只看采样峰值，**都不必然**抓住它
+ *   ⇒ 对"重复执行"的检测退化成**概率性**。
+ *
+ * 修法 = 用 **D 本来就在用的下界口径**给左端估一个结束时间：
+ *   `prevEnd = prev.e ?? prev.s + fallbackMs`（`fallbackMs` = selftest 的 `ms`：一次 attempt 至少跑满它）。
+ *   · `DUP_KILLED`：`1005 < 1000 + 400` ⇒ **判重叠**（红）。
+ *   · `LEGIT_RECLAIM`（租约过期后合法重领，间隔 ~leaseMs=60s）：`61000 < 1000 + 400` 为假 ⇒ **不误伤**（绿）。
+ *   ⚠ `fallbackMs` 是**必需**参数（不是可选默认值）：缺了它就只能回到"整段跳过"那个漏判形态，
+ *     所以这里**响亮抛错**而不是静默退化（Ruling 243：观测不到 ≠ 通过）。
+ * ⚠ 左端**有** end 时仍按真实结束时间判（那是最强的判据；`REAL_OVERLAP` 用例守着它）。
  */
-function findOverlaps(jobSpans) {
+function findOverlaps(jobSpans, fallbackMs) {
+  if (!Number.isFinite(fallbackMs) || fallbackMs <= 0) {
+    throw new Error(
+      "[chaos] findOverlaps 需要正的 fallbackMs（= selftest 的 ms，用作'无 end 的 attempt 至少跑了多久'的下界）：" +
+        "缺了它就没法判'同一 job 被两个 worker 同时执行、其中一个被杀'的重复执行（review-D F-1R）。",
+    );
+  }
   const overlaps = [];
   for (const [jobId, spans] of jobSpans) {
     for (let i = 1; i < spans.length; i += 1) {
       const prev = spans[i - 1];
       const cur = spans[i];
-      if (prev.e === null) continue; // 左端没有 end ⇒ 无法判定（被 SIGKILL 是预期场景）
-      if (cur.s < prev.e) overlaps.push({ jobId, prev, cur });
+      const prevEnd = prev.e === null ? prev.s + fallbackMs : prev.e;
+      if (cur.s < prevEnd) overlaps.push({ jobId, prev, cur });
     }
   }
   return overlaps;
@@ -171,6 +188,17 @@ async function main() {
     console.error("        （这不是通过，也不是失败 —— 是'观测不到'，按 Ruling 243 以 EXIT 2 结束）");
     process.exit(2);
   }
+
+  // ── 0b) 上界来源自检**前移到连库之前**（复核轮 F-1R 顺带项）──
+  //   旧位置在断言段（连库之后）：MySQL 不可达时 `createConnection` 先抛 ⇒ 以 **EXIT 1** 收场，
+  //   而"env 与 JOB_POLICY 不一致 ⇒ 验的是旧上界"这个**配置错误**根本没被说出来（会误导排查方向）。
+  //   这里前移：配置/策略冲突 ⇒ **EXIT 2**（参数错），且不依赖数据库是否可达。
+  const policy = loadJobPolicy();
+  const { global: GLOBAL_MAX, perUser: PER_USER_MAX, problems: limitProblems } = resolveLimits(policy, process.env);
+  if (limitProblems.length) {
+    fail(2, `[chaos] 上界来源冲突（拒绝用旧上界跑验收）：\n        ${limitProblems.join("\n        ")}\n        ⇒ 请删掉 MIWO_CHAOS_*，或让它与 apps/api/src/jobs/policy.ts 的 JOB_POLICY 一致`);
+  }
+  say(`[chaos] D 上界来源：JOB_POLICY globalMaxRunning=${GLOBAL_MAX} / perUserMaxRunning=${PER_USER_MAX}`);
 
   const mysql2 = (() => {
     try {
@@ -299,9 +327,9 @@ async function main() {
     const B = Number(attempts.mx || 0) >= 2;
     say(`[chaos] B 租约回收生效：max(attempts)=${attempts.mx} ⇒ ${B ? "PASS" : "FAIL"}`);
 
-    // C 无重叠执行（【F-1】按 (jobId, attempt) 分组配对；无 end 的 attempt 不参与重叠判定）
+    // C 无重叠执行（【F-1 + F-1R】按 (jobId, attempt) 分组配对；无 end 的左端用 `start + MS` 的**下界**估结束时间）
     const jobSpans = buildSpans(events);
-    const overlaps = findOverlaps(jobSpans);
+    const overlaps = findOverlaps(jobSpans, MS);
     for (const o of overlaps) {
       say(`[chaos]   ⚠ job #${o.jobId} attempt ${o.prev.attempt}→${o.cur.attempt} 区间重叠：${JSON.stringify(o.prev)} vs ${JSON.stringify(o.cur)}`);
     }
@@ -310,17 +338,10 @@ async function main() {
     if (jobSpans.orphanEnds) say(`[chaos]   ⚠ 事件流有 ${jobSpans.orphanEnds} 条 end 没有对应 start（事件流不完整）`);
     say(
       `[chaos] C 无重叠执行：事件 ${events.length} 条 / job ${jobSpans.size} 个 / 重叠 ${overlaps.length} ⇒ ${C ? "PASS" : "FAIL"}` +
-        `（其中 ${killedAttempts} 次 attempt 无 end = 被 SIGKILL/中止，按设计不参与重叠判定）`,
+        `（其中 ${killedAttempts} 次 attempt 无 end = 被 SIGKILL/中止，按 "start + ${MS}ms" 下界参与判定）`,
     );
 
-    // D 并发上限（50ms 采样）【F-2】上界只来自 JOB_POLICY；MIWO_CHAOS_* 只能用于"一致性自检"
-    const policy = loadJobPolicy();
-    const { global: GLOBAL_MAX, perUser: PER_USER_MAX, problems: limitProblems } = resolveLimits(policy, process.env);
-    if (limitProblems.length) {
-      // 明确拒绝跑：env 与策略不一致时"验的是旧上界"，正是 F-2 的形态
-      fail(2, `[chaos] 上界来源冲突（拒绝用旧上界跑验收）：\n        ${limitProblems.join("\n        ")}\n        ⇒ 请删掉 MIWO_CHAOS_*，或让它与 apps/api/src/jobs/policy.ts 的 JOB_POLICY 一致`);
-    }
-    say(`[chaos] D 上界来源：JOB_POLICY globalMaxRunning=${GLOBAL_MAX} / perUserMaxRunning=${PER_USER_MAX}`);
+    // D 并发上限（50ms 采样）【F-2】上界来自 JOB_POLICY（已在连库**之前**自检，见 main() 的 0b 步）
     const intervals = [];
     for (const [, spans] of jobSpans) {
       for (const a of spans) {
