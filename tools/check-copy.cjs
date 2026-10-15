@@ -134,6 +134,10 @@ for (const p of [
   //    `src/vendors/*.ts` ⇒ 这个目录**整体删除**。它是"运行期加载并执行用户代码"的入口，
   //    留着它（或让它在某次合并里回来）等于把 Tier 0 #1 那条通道恢复了一半。
   "apps/api/data/vendor",
+  // ⚠ Phase 1e Task 02：`titleBar.vue` 是 Electron 标题栏（整文件删除）。协议 13 处删干净之后
+  //    它是"唯一置真 isElectron 的探针组件"，复活它就等于把删掉的协议渲染路径带回来。
+  //    这条**比跟踪文件计数更有判别力**（路径级，不是数字级）。
+  "apps/web/src/components/titleBar.vue",
 ]) mustNotExist(p);
 
 // ---- 不得被提交（运行/构建产物；查索引，不查磁盘）----

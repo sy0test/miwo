@@ -250,15 +250,15 @@ const EXEMPTIONS = [
   {
     scope: "apps/web/src/components/setting/components/about.vue",
     match: { re: "toonflow", flags: "gi" },
-    min: 16,
+    min: 13,
     reason:
-      "(1) 上游仓库 URL `https://github.com|gitee.com/HBAI-Ltd/Toonflow-app` ×5（第三方/上游地址，页面里的**产品名已经是 MirrorWorld**，这 5 处从来不是品牌残留）；(2) `toonflow://` 协议（Phase 1e）；(3) 代码标识符与机器枚举值：`toonflowLogo` 变量、`UpdateSource = ... | \"toonflow\"`、`updateSource` 取值、sourceMap 键、`iconClass: \"toonflow\"`。均非用户可见品牌文案。",
+      "(1) 上游仓库 URL `https://github.com|gitee.com/HBAI-Ltd/Toonflow-app` ×5（第三方/上游地址，页面里的**产品名已经是 MirrorWorld**，这 5 处从来不是品牌残留）；(2) 协议已在 Phase 1e 删除，故 min 从 16 降到 13；(3) 代码标识符与机器枚举值：`toonflowLogo` 变量、`UpdateSource = ... | \"toonflow\"`、`updateSource` 取值、sourceMap 键、`iconClass: \"toonflow\"`。均非用户可见品牌文案。",
   },
   {
     scope: "apps/web/src/pages/workbench/index.vue",
     match: "HBAI-Ltd/Toonflow-app",
-    min: 2,
-    reason: "上游仓库 URL ×2（第三方/上游地址）。",
+    min: 1,
+    reason: "上游仓库 URL ×1（第三方/上游地址）。Phase 1e 删掉 Electron 协议分支时，那一行 fetch 里也带着这个 URL ⇒ 实测从 2 降到 1，**据实下调**（不是放宽：条目仍要求真实命中）。",
   },
   {
     scope: "apps/web/src/pages/workbench/index.vue",
@@ -269,8 +269,8 @@ const EXEMPTIONS = [
   {
     scope: "apps/web/src/components/hello.vue",
     match: "HBAI-Ltd/Toonflow-app",
-    min: 2,
-    reason: "上游仓库 URL ×2（第三方/上游地址）。",
+    min: 1,
+    reason: "上游仓库 URL ×1（第三方/上游地址）。Phase 1e 删掉 Electron 协议分支时，那一行 fetch 里也带着这个 URL ⇒ 实测从 2 降到 1，**据实下调**（不是放宽：条目仍要求真实命中）。",
   },
   // ⚠【Phase 1c Task 11】这里原来有一条 `apps/web/src/components/setting/components/dbConfig.vue`
   //   的 `toonflow-backup-` 豁免（Task 4 把后端前缀改成 `miwo-backup-` 时登记下来的"前端那半归 Task 11"）。
@@ -334,9 +334,11 @@ const EXEMPTIONS = [
   {
     scope: "*",
     match: { re: "toonflow:\\/\\/", flags: "gi" },
-    min: 22,
+    min: 9,
     reason:
-      "Electron 自定义协议 `toonflow://`（标题栏/打开浏览器/开发者工具等；收口当日实测 22 处 / 10 个文件）。**Phase 0 刻意不动**（Phase 1e 处理）；本规则另有「协议仍须存在」的独立断言，见文件末尾。要改这些处数（例如 Phase 1e 开始清理）必须同时改这条 min，不能悄悄漂移。",
+      "Phase 1e 已删除全部**运行时**引用（apps/web 的 13 处：App.vue 2 / titleBar.vue 2（整文件已删）/ about.vue 3 / hello.vue 1 / agentConfog.vue 1 / devConfig.vue 1 / requestConfig.vue 1 / pages/workbench/index.vue 2）。" +
+      "剩下的 9 处**全部是门禁/工具自身**：本文件（协议正则、规则 2 的文案、本条豁免的 reason）×6 + tools/rename-brand.cjs 的 PROTO 保护串 ×3（改名工具的保护规则本质就是写出被保护的字符串）。" +
+      "运行时零命中由文件末尾的正面断言兜底（`runtimeProtocolHits` 必须恰好 0），不靠这条 min。",
   },
 
   // ── 门禁/工具脚本自身 ──
@@ -439,6 +441,8 @@ const ent = EXEMPTIONS.map((e, i) => ({ ...e, i, regex: toRegex(e.match), hits: 
 const uncoveredBrand = [];
 const uncoveredLegacy = [];
 let protocolTotal = 0;
+/** 运行时的 `toonflow://` 命中（`tools/**` 之外）；Phase 1e 起必须为 **0**。 */
+const runtimeProtocolHits = [];
 const exemptInventory = new Map(); // rel -> Set(exemption index)
 let textFiles = 0;
 let skippedBinary = 0;
@@ -452,6 +456,14 @@ for (const rel of files) {
   textFiles += 1;
 
   protocolTotal += collectMatches(text, PROTOCOL_RE).length;
+  // ⚠ Phase 1e Task 02：**运行时**引用 = 不在 `tools/` 下的命中（apps/、packages/、deploy/、docs/ 全算）。
+  //   与上面的 `protocolTotal` **同源**（同一次扫描、同一个正则），不另起一套 —— 两条统计必须一致，
+  //   否则"残余 9 处全在门禁/工具自身"这句话就不可信。
+  if (!rel.startsWith("tools/")) {
+    for (const m of collectMatches(text, PROTOCOL_RE)) {
+      runtimeProtocolHits.push(`${rel}:${lineOf(text, m.start)}  …${text.slice(m.start, m.start + 24).split(/\r?\n/)[0]}…`);
+    }
+  }
 
   const brandTokens = collectMatches(text, BRAND_RE);
   if (!brandTokens.length) continue;
@@ -532,8 +544,21 @@ if (uncoveredLegacy.length) {
     `仍有 ${uncoveredLegacy.length} 处未豁免的旧包名/旧目录名（toonflow-web / toonflow-upstream）：\n      ` + uncoveredLegacy.slice(0, 15).join("\n      "),
   );
 }
-// ── 规则 2：toonflow:// 协议本阶段不动，但不得被误删 ──
-if (protocolTotal === 0) failures.push(`toonflow:// 共 0 处：Phase 0 不应删除它（Phase 1e 处理），请确认没有被误改`);
+// ── 规则 2：`toonflow://` 必须**只剩**门禁/工具自身，**运行时零命中**（Phase 1e 反转）──
+// Phase 0 这里写的是 `if (protocolTotal === 0) failures.push("不应删除")`（反向守卫：不许删）。
+// Phase 1e 按 spec §11.1 删掉了全部运行时引用（apps/web 的 13 处 + titleBar.vue 整文件）
+// ⇒ 守卫方向必须翻过来，否则它挡的是"做对了"。
+if (protocolTotal > 0 && runtimeProtocolHits.length) {
+  failures.push(
+    `仍有 ${runtimeProtocolHits.length} 处**运行时**的 toonflow:// 引用（应全删；只有 tools/** 下的门禁/工具自身允许保留）：\n      ` +
+      runtimeProtocolHits.slice(0, 15).join("\n      "),
+  );
+}
+// ⚠ 正面断言（与规则 2 成对）：`tools/**` 之外必须**一处都不剩**。
+//   单独写一条是因为"残留为 0"时上面的 `&&` 短路了 —— 恒真不等于判过（Ruling 243 家族）。
+if (runtimeProtocolHits.length !== 0) {
+  failures.push(`运行时的 toonflow:// 必须恰好 0 处，实际 ${runtimeProtocolHits.length} 处`);
+}
 
 // ── 规则 3：供应商数据 id 的三方一致性 ──
 // ⚠ Phase 1c Task 8：适配器目录从 `apps/api/data/vendor/` 搬到 **`apps/api/src/vendors/`**
@@ -580,6 +605,22 @@ for (const [rel, want] of [
   if (name !== want) failures.push(`${rel} 的 name 期望 "${want}"，实际 "${name}"`);
 }
 
+// ── 规则 5：**构建产物**里的协议必须零命中（Phase 1e Task 02 / R5）──
+//   ⚠ 源码侧零命中 ≠ 产物侧零命中：产物是"真正被浏览器加载的那份"。只要 `apps/web/dist` 存在
+//   （本机构建过 / CI 的 web job 构建过），就正面断言 `index.html` 里 `toonflow://` 恰好 0 处。
+//   dist 不存在时**明确打印跳过原因**（不能静默当成通过：那是"观测不到"，但这里的不确定性来自
+//   "没构建"这一可解释状态，因此不判红，只在日志里点名）。
+const DIST_INDEX = path.join(ROOT, "apps", "web", "dist", "index.html");
+if (fs.existsSync(DIST_INDEX)) {
+  const distHtml = fs.readFileSync(DIST_INDEX, "utf8");
+  const distHits = collectMatches(distHtml, PROTOCOL_RE);
+  if (distHits.length) {
+    failures.push(`构建产物 apps/web/dist/index.html 里仍有 ${distHits.length} 处 toonflow://（应全删）：${distHits.slice(0, 5).map((m) => distHtml.slice(m.start, m.start + 24).split(/\r?\n/)[0]).join(" / ")}`);
+  }
+} else {
+  console.log("  · 构建产物断言跳过：apps/web/dist/index.html 不存在（未构建）—— 别把它读成「产物已干净」");
+}
+
 if (failures.length) {
   console.error("check-brand 失败：");
   for (const f of failures) console.error("  - " + f);
@@ -590,7 +631,7 @@ if (failures.length) {
 const exemptFiles = [...exemptInventory.keys()].sort();
 console.log(
   `check-brand 通过（全仓扫描 ${files.length} 个 git 跟踪文件，其中文本 ${textFiles}、跳过二进制 ${skippedBinary}；` +
-    `品牌 token 全部被 ${ent.length} 条显式豁免覆盖；保留 toonflow:// ${protocolTotal} 处；供应商 id 三方一致）`,
+    `品牌 token 全部被 ${ent.length} 条显式豁免覆盖；toonflow:// 剩余 ${protocolTotal} 处（全部在门禁/工具自身，**运行时 ${runtimeProtocolHits.length} 处**）；供应商 id 三方一致）`,
 );
 for (const e of ent) {
   console.log(`  · 豁免[${e.scope}] ${JSON.stringify(e.match)} → 覆盖 ${e.hits} 处/${e.filesHit.size} 个文件（min ${e.min}）`);
