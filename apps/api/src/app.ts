@@ -22,6 +22,7 @@ import socketInit, { makeRelayTargetResolver } from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
 import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
 import { mediaAuthGuard, normalizeMediaRelPathInside, redactMediaQueryString, resolveInsideRoot } from "@/utils/mediaSign";
+import { parseThumbnailSize } from "@/utils/thumbnail-size";
 import isPathInside from "is-path-inside";
 import { config } from "@/config";
 
@@ -168,35 +169,19 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
    */
   const thumbnailBranch = (req: Request, res: Response, next: NextFunction): void => {
     if (!req.query.size) return next();
-    const size = String(req.query.size);
     // ⚠ 越界（含 `..` 逃逸）在**任何 path.join / mkdir / sendFile 之前**就判掉：
     //   后面的 `ensureThumbnail` 会 mkdir -p 再落盘，越界等于把服务变成"任意路径写入器"。
     const rel = normalizeMediaRelPathInside(req.path);
     if (rel === null) return void res.status(403).end();
     const originalPath = path.join(ossDir, rel.split("/").join(path.sep));
 
-    let sizeSubDir: string;
-    let sizeOpts: ThumbnailSize | undefined;
-
-    // 判断是否为 WIDTHxHEIGHT 格式，如 "200x300"：等比压缩到指定宽高边界
-    const dimensMatch = size.match(/^(\d+)x(\d+)$/i);
-    // 判断是否为百分比格式，如 "30"、"30%"：等比压缩到原图的指定百分比
-    const percentMatch = size.match(/^(\d+(?:\.\d+)?)\s*%?$/);
-
-    if (dimensMatch) {
-      const w = parseInt(dimensMatch[1], 10);
-      const h = parseInt(dimensMatch[2], 10);
-      sizeSubDir = `${w}x${h}`;
-      sizeOpts = { type: "dimensions", width: w, height: h };
-    } else if (percentMatch) {
-      const pct = parseFloat(percentMatch[1]);
-      sizeSubDir = `${percentMatch[1]}p`;
-      sizeOpts = { type: "percentage", value: pct };
-    } else {
-      // 无效的 size 参数，降级返回原图
-      express.static(ossDir, { acceptRanges: true })(req, res, next);
-      return;
-    }
+    // ⚠ Phase 1e Task 01 Step 3b：`?size=` 的解析抽到 `utils/thumbnail-size.ts`（可单测 + **显式上界**）。
+    //   签名是**路径域**的（query 不参与）⇒ 任何拿到过一条合法媒体 URL 的人都能自由改 `size`，
+    //   所以"上界"是这块唯一的收口；非法/越界一律 **400**（不再静默降级返回原图）。
+    const parsed = parseThumbnailSize(req.query.size);
+    if (!parsed.ok) return void res.status(400).json({ code: 400, message: parsed.reason });
+    const sizeSubDir = parsed.subDir;
+    const sizeOpts: ThumbnailSize = parsed.opts;
 
     const ext = path.extname(rel);
     const base = path.posix.basename(rel, ext);
