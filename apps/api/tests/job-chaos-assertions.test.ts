@@ -87,10 +87,8 @@ describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1 /
   });
 
   it("★★ LEGIT_RECLAIM（租约过期后**合法重领**，间隔 ~60s）：必须判 0 ⇒ 修复没有误伤正常回收", () => {
+    // ⚠ 这条用例**只**表达"不误伤"：60s 的重领间隔远大于下界 MS=400 ⇒ 任何一版实现都必须判 0
     expect(chaos.findOverlaps(chaos.buildSpans(STREAMS.LEGIT_RECLAIM), MS)).toEqual([]);
-    // 边界：重领起点刚好落在下界之内（1000 + 400 之内）时**应当**判重叠 —— 这正是 F-1R 要抓的形态
-    const tight = [ev(7, 1, "start", 1000, 1), ev(7, 2, "start", 1399, 1), ev(7, 2, "end", 2000, 1)];
-    expect(chaos.findOverlaps(chaos.buildSpans(tight), MS).length).toBe(1);
   });
 
   it("★★ F-1R DUP_KILLED（同一 job 被两个 worker 同时执行、其中一个被 SIGKILL）：必须判 1 处重叠", () => {
@@ -100,6 +98,9 @@ describe("chaos C 断言：按 (jobId, attempt) 分组配对（review-D.md F-1 /
     expect(overlaps.length, "重复执行 + 其中一个被杀必须被判重叠（否则对重复执行的检测退化成概率性）").toBe(1);
     expect(overlaps[0].prev.attempt).toBe(1);
     expect(overlaps[0].cur.attempt).toBe(2);
+    // 下界口径的**边界**：重领起点落在 `start + MS` 之内（1399 < 1000+400）时同样必须判重叠
+    const tight = [ev(7, 1, "start", 1000, 1), ev(7, 2, "start", 1399, 1), ev(7, 2, "end", 2000, 1)];
+    expect(chaos.findOverlaps(chaos.buildSpans(tight), MS).length, "落在下界之内 ⇒ 判重叠").toBe(1);
   });
 
   it("★★ 漏判的**机械守卫**：findOverlaps 缺 fallbackMs（或非正值）必须**抛错**，不许静默退化成'整段跳过'", () => {
