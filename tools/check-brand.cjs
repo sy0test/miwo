@@ -334,10 +334,10 @@ const EXEMPTIONS = [
   {
     scope: "*",
     match: { re: "toonflow:\\/\\/", flags: "gi" },
-    min: 9,
+    min: 11,
     reason:
       "Phase 1e 已删除全部**运行时**引用（apps/web 的 13 处：App.vue 2 / titleBar.vue 2（整文件已删）/ about.vue 3 / hello.vue 1 / agentConfog.vue 1 / devConfig.vue 1 / requestConfig.vue 1 / pages/workbench/index.vue 2）。" +
-      "剩下的 9 处**全部是门禁/工具自身**：本文件（协议正则、规则 2 的文案、本条豁免的 reason）×6 + tools/rename-brand.cjs 的 PROTO 保护串 ×3（改名工具的保护规则本质就是写出被保护的字符串）。" +
+      "剩下的 11 处**全部是门禁/工具自身**（实测 `git grep -c`：本文件 8 + tools/rename-brand.cjs 3）：协议正则、规则 2 的文案、正面断言的文案、本条豁免的 reason 等；rename-brand 的 PROTO 保护串（改名工具的保护规则本质就是写出被保护的字符串）。" +
       "运行时零命中由文件末尾的正面断言兜底（`runtimeProtocolHits` 必须恰好 0），不靠这条 min。",
   },
 
