@@ -43,7 +43,8 @@ export function mediaKindOf(filePath: string | undefined): "image" | "video" | "
 }
 
 class OSS {
-  private rootDir: string;
+  /** 媒体根目录（Phase 1e：`storage/local.ts` 需要它作为 `MediaStorage.rootDir` ⇒ 由 private 改 readonly）。 */
+  readonly rootDir: string;
   private initPromise: Promise<void>;
 
   constructor() {

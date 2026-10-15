@@ -123,6 +123,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   if (storageDriver !== "local" && storageDriver !== "s3") {
     throw new ConfigError(`MIWO_STORAGE_DRIVER 只能是 local 或 s3，实际 "${storageDriver}"`);
   }
+  if (storageDriver === "s3") {
+    // Phase 2 才实现；在此之前"接受 s3 但按 local 跑"是**静默的错误**（部署者以为已切对象存储）。
+    // 这里故意让它 fail-fast —— `createStorage()` 里有同一条守卫（双保险：配置层 + 装配层）。
+    throw new ConfigError("MIWO_STORAGE_DRIVER=s3 尚未实现（Phase 2 落地 S3Storage），Phase 1 请用 local");
+  }
 
   const trustProxyRaw = optional(env, "MIWO_TRUST_PROXY");
   const trustProxy = trustProxyRaw === undefined ? (rawEnv === "prod" ? 1 : 0) : Number(trustProxyRaw);
