@@ -182,23 +182,30 @@ export async function cutSourceClips(
 
         const clipRel = outDirRel + "/seg-" + segmentIndex + ".mp4";
         const clipAbs = await oss.getAbsPath(clipRel);
-        // 复用判据（G9）：路径一致 + 文件存在。**时长**再由下面自校验确认（差 >0.1s 记 warn，
-        // 需要重切时由 cleanStale / 人工处理；这里不因为 warn 就重切，避免每次都全量重切）。
+        // 复用判据（G9）：路径一致 + 文件存在 + **切片已静音**。
+        // 为什么要查静音：把带原声的源片当参考视频发给 Seedance 时，模型会照搬背景音/台词；
+        // 所以历史切片（升级前带音轨）必须重切一次，不能只因为文件在就跳过。
         if (onlyMissing && seg.clipPath === clipRel && fs.existsSync(clipAbs)) {
-          skipped++;
-          // 已经有切片：也要补登记（历史上只写了 clipPath 的段，升级后第一次「重切」即可补齐资产）
-          await ensureClipAsset(db, {
-            projectId,
-            scriptId,
-            scriptName: script.name,
-            segmentIndex,
-            clipPath: clipRel,
-            userId: script.userId != null ? Number(script.userId) : undefined,
-          }).catch(() => undefined);
-          return;
+          const existing = await deps.probeVideo(clipAbs).catch(() => null);
+          if (existing && !existing.hasAudio) {
+            skipped++;
+            // 已经有切片：也要补登记（历史上只写了 clipPath 的段，升级后第一次「重切」即可补齐资产）
+            await ensureClipAsset(db, {
+              projectId,
+              scriptId,
+              scriptName: script.name,
+              segmentIndex,
+              clipPath: clipRel,
+              userId: script.userId != null ? Number(script.userId) : undefined,
+            }).catch(() => undefined);
+            return;
+          }
+          // 带音轨 → 继续往下重切（本次会切成静音）
         }
         try {
-          await deps.cutClip(srcAbs, clamped, clipAbs, meta.hasAudio);
+          // 参考片段一律**去掉音轨**：只剩画面给 Seedance 做动作/节奏参考，
+          // 否则模型会连原片的背景音和台词一起照搬（真机反馈）。
+          await deps.cutClip(srcAbs, clamped, clipAbs, false);
           await oss.writeFile(clipRel, await fs.promises.readFile(clipAbs));
           const want = clamped.reduce((sum, [a, b]) => sum + (b - a), 0);
           const got = (await deps.probeVideo(clipAbs)).duration;
