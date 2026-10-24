@@ -26,6 +26,41 @@ export class CutSourceError extends Error {
 
 type Issue = { level: "error" | "warn"; segmentIndex?: number; message: string };
 
+/**
+ * 把切出来的原片片段登记成 **素材资产**（`o_assets.type = "clip"` + `o_image`）。
+ *
+ * 为什么必须登记：工作台的「添加参考」是从**资产库**里选素材的（`assetsCheck({ types: [..., "clip"] })`）。
+ * 如果只写 `o_segment.clipPath`，用户把某段的参考片删掉之后，就再也**选不回来**了 —— 真机反馈
+ * 「源视频切片不在资产的素材列表里」。登记后它和手传的素材一样可复用/可再次选中。
+ *
+ * 幂等：以 `o_image.filePath = clipPath` 为唯一判据（同一段重切路径不变，不会重复建资产）。
+ * 失败不阻断切片主流程（资产表异常时仍应把原片切出来）。
+ */
+async function ensureClipAsset(
+  db: any,
+  o: { projectId: number; scriptId: number; scriptName?: string; segmentIndex: number; clipPath: string; userId?: number },
+): Promise<void> {
+  const name = "第" + o.segmentIndex + "段原片" + (o.scriptName ? "（" + o.scriptName + "）" : "");
+  const img = await db("o_image").where({ filePath: o.clipPath, type: "clip" }).first("id", "assetsId");
+  if (img?.assetsId) {
+    await db("o_assets").where("id", img.assetsId).update({ name });
+    return;
+  }
+  const assetRow: Record<string, any> = {
+    type: "clip",
+    projectId: o.projectId,
+    scriptId: o.scriptId,
+    name,
+    startTime: Date.now(),
+  };
+  if (o.userId != null) assetRow.userId = o.userId;
+  const [assetId] = await db("o_assets").insert(assetRow);
+  const imageRow: Record<string, any> = { filePath: o.clipPath, type: "clip", assetsId: assetId, state: "已完成" };
+  if (o.userId != null) imageRow.userId = o.userId;
+  const [imageId] = await db("o_image").insert(imageRow);
+  await db("o_assets").where("id", assetId).update({ imageId });
+}
+
 export type CutSourceDeps = {
   probeVideo(file: string): Promise<{ duration?: number; hasAudio: boolean }>;
   cutClip(src: string, ranges: [number, number][], out: string, hasAudio: boolean): Promise<void>;
@@ -143,6 +178,15 @@ export async function cutSourceClips(
         // 需要重切时由 cleanStale / 人工处理；这里不因为 warn 就重切，避免每次都全量重切）。
         if (onlyMissing && seg.clipPath === clipRel && fs.existsSync(clipAbs)) {
           skipped++;
+          // 已经有切片：也要补登记（历史上只写了 clipPath 的段，升级后第一次「重切」即可补齐资产）
+          await ensureClipAsset(db, {
+            projectId,
+            scriptId,
+            scriptName: script.name,
+            segmentIndex,
+            clipPath: clipRel,
+            userId: script.userId != null ? Number(script.userId) : undefined,
+          }).catch(() => undefined);
           return;
         }
         try {
@@ -155,6 +199,14 @@ export async function cutSourceClips(
             issues.push({ level: "warn", segmentIndex, message: "片段 " + segmentIndex + " 成片 " + got.toFixed(3) + "s，区间跨度 " + want.toFixed(3) + "s，差 " + (got - want).toFixed(3) + "s" });
           }
           await db("o_segment").where("id", seg.id).update({ clipPath: clipRel });
+          await ensureClipAsset(db, {
+            projectId,
+            scriptId,
+            scriptName: script.name,
+            segmentIndex,
+            clipPath: clipRel,
+            userId: script.userId != null ? Number(script.userId) : undefined,
+          }).catch(() => undefined);
           clips.push({ segmentIndex, clipPath: clipRel, sec: got ?? want });
         } catch (e: any) {
           issues.push({ level: "error", segmentIndex, message: "片段 " + segmentIndex + " 切片失败：" + (e?.message ?? String(e)) });
@@ -168,7 +220,14 @@ export async function cutSourceClips(
     const wanted = new Set(segments.map((s: any) => "seg-" + Number(s.segmentIndex) + ".mp4"));
     for (const f of fs.readdirSync(outDirAbs)) {
       if (!wanted.has(f)) {
-        await oss.deleteFile(outDirRel + "/" + f);
+        const stalePath = outDirRel + "/" + f;
+        await oss.deleteFile(stalePath);
+        // 同步清掉指向该文件的 clip 素材（段已不存在，留着只会是死链）
+        const staleImgs = await db("o_image").where({ filePath: stalePath, type: "clip" }).select("id", "assetsId");
+        for (const img of staleImgs) {
+          if (img.assetsId != null) await db("o_assets").where("id", img.assetsId).del();
+          await db("o_image").where("id", img.id).del();
+        }
         removed++;
       }
     }

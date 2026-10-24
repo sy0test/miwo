@@ -654,7 +654,10 @@ onUnmounted(() => {
           flex-direction: column;
           .promptInput {
             flex: 1;
-            min-height: 0;
+            /* 给 contenteditable 一个**确定高度**：否则卡片跟着内容长高、滚动条长到整页上，
+               表现就是「提示词框没有滚动条、超出的字看不到」。 */
+            height: min(38vh, 340px);
+            min-height: 160px;
             overflow-y: auto;
           }
         }

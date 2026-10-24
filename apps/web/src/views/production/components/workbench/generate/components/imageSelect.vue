@@ -35,8 +35,9 @@
                 <span class="mediaLabel">音频</span>
               </div>
             </t-tooltip>
-            <div v-else-if="item.fileType == 'video'" class="mediaPreview videoPreview">
+            <div v-else-if="item.fileType == 'video'" class="mediaPreview videoPreview" @click.stop="openVideoPreview(item.src)">
               <video class="uploadPreview" :src="item.src" preload="metadata" muted />
+              <div class="playHint">▶ 预览</div>
             </div>
           </template>
           <template v-else>
@@ -93,8 +94,9 @@
                 <i-acoustic size="20" />
                 <span class="mediaLabel">音频</span>
               </div>
-              <div v-else-if="imageList?.[index]?.fileType == 'video'" class="mediaPreview videoPreview">
+              <div v-else-if="imageList?.[index]?.fileType == 'video'" class="mediaPreview videoPreview" @click.stop="openVideoPreview(imageList?.[index]!.src!)">
                 <video class="uploadPreview" :src="imageList?.[index]!.src" preload="metadata" muted />
+                <div class="playHint">▶ 预览</div>
               </div>
             </template>
             <template v-else>
@@ -162,6 +164,11 @@
         </div>
       </div>
     </t-dialog>
+
+    <!-- 视频参考素材预览：卡片上的 <video> 是静音静帧，没有控制条；点卡片在这里播放 -->
+    <t-dialog v-model:visible="videoPreviewVisible" :header="false" :footer="false" width="720px" placement="center" destroy-on-close>
+      <video :src="videoPreviewSrc" controls autoplay style="width: 100%; max-height: 70vh; background: #000" />
+    </t-dialog>
   </div>
 </template>
 
@@ -181,6 +188,14 @@ const imageList = defineModel<UploadItem[]>({
 });
 //分镜选择弹窗
 const storyboardDialogVisible = ref(false);
+//视频参考素材预览弹窗
+const videoPreviewVisible = ref(false);
+const videoPreviewSrc = ref("");
+function openVideoPreview(src?: string | null) {
+  if (!src) return;
+  videoPreviewSrc.value = src;
+  videoPreviewVisible.value = true;
+}
 //拖动排序时给 Sortable 用的横向滚动容器
 const uploadBoxRef = ref<HTMLDivElement | null>(null);
 
@@ -200,7 +215,7 @@ const isDragMode = computed(() => Array.isArray(parseMode(props.mode as string))
  * 卡片里的按钮点击会被吞掉（真机表现：鼠标悬停是拖动用的手型，× 点不动删不掉资产）。
  * 配合 `:preventOnFilter="false"`，被忽略区域的点击照常触发。
  */
-const dragIgnoreSelector = ".clearBtn, .imageToolsWrap";
+const dragIgnoreSelector = ".clearBtn, .imageToolsWrap, .mediaPreview";
 
 /** 实际渲染的槽位：单图模式只渲染第一格，多参模式全渲染 */
 const displayItems = computed<UploadItem[]>(() => (props.mode == "singleImage" ? imageList.value.slice(0, 1) : imageList.value));
@@ -595,8 +610,22 @@ function splitImage(index: number) {
         }
       }
       &.videoPreview {
+        position: relative;
         background: #000;
         overflow: hidden;
+        cursor: pointer;
+        .playHint {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          padding: 2px 8px;
+          border-radius: 10px;
+          background: rgba(0, 0, 0, 0.55);
+          color: #fff;
+          font-size: 11px;
+          pointer-events: none;
+        }
       }
     }
     .clearBtn {
