@@ -1,9 +1,11 @@
 # 谜沃 / MirrorWorld（miwo）
 
-多租户 AI 短剧生产平台。本仓库由上游项目 ToonFlow 复制改造而来（品牌与技术标识符已更名）。
+多租户 AI 短剧生产平台：剧本、资产、分镜、视频一条链，另支持「出海转绘」项目类型。
 
-**设计文档**：`../../docs/superpowers/specs/2026-10-12-miwo-saas-design.md`
-**Phase 0 计划**：`../../docs/superpowers/plans/2026-10-12-miwo-phase0-repo-bootstrap.md`
+**项目文档**：
+[转绘现状契约](docs/redraw-status-contract.md) ｜ [转绘交付待办](docs/redraw-todo.md) ｜
+[转绘三层设计](docs/superpowers/specs/2026-10-05-redraw-three-layer-pipeline-design.md) ｜
+[解析层实现记录](docs/superpowers/plans/2026-10-05-redraw-A-analysis-layer.md)
 
 ## 目录
 
@@ -50,7 +52,7 @@ pnpm.cmd dev
   `node tools/check-config-single-source.cjs`（`pnpm.cmd run verify:config`，已进 CI）机械断言。
   **实测口径**：扫描 281 个 `.ts`，观测到 9 处 `process.env` 读取 = `config.ts` 内部 7 处 + 赋值左侧（写，非读）2 处；
   唯一的显式豁免是**四条标准代理变量** + 两条登记在案的例外（见下）。
-- 历史遗留变量名 `TOONFLOW_PROXY` 已在 Phase 1c **重命名为 `MIWO_PROXY`**（旧名不再读取；`proxy.ts` 的日志与注释同步更新）。
+- 代理变量统一收进 `config.proxyUrl`（`MIWO_PROXY`；`proxy.ts` 的日志与注释同步）。
   下表是这次收口的**逐条对账**（旧表里的 10 个非 `MIWO_` 变量 + 2 个额外项）：
 
   | 变量（旧名） | 原读取位置 | 现在归属 | 状态 |
@@ -60,7 +62,6 @@ pnpm.cmd dev
   | `FFPROBE_PATH` | `utils/ffmpeg.ts:16` | `config.ffmpeg.probePath`（`MIWO_FFPROBE_PATH`） | ✅ 已收进 config |
   | `FFMPEG_TIMEOUT` | `utils/ffmpeg.ts:19` | `config.ffmpeg.timeoutMs`（`MIWO_FFMPEG_TIMEOUT_MS`，缺省 600000） | ✅ 已收进 config，且**非法值改为 fail-fast**（旧写法 `Number("abc")` = NaN = 永不超时） |
   | `REDRAW_PREP` | `routes/redraw/analyzeSource.ts:33` | `config.redrawPrepScript`（`MIWO_REDRAW_PREP`） | ✅ 已收进 config（缺省值与原字面量**逐字一致**） |
-  | `TOONFLOW_PROXY` | `proxy.ts:98` | `config.proxyUrl`（**`MIWO_PROXY`**） | ✅ 已**重命名**并收进 config |
   | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | `proxy.ts:99` | **保留原名** | ⛔ **不迁**：undici 的 `EnvHttpProxyAgent` 只认这四个标准名（改名即失效）；是门禁豁免表里的四条 |
   | `MIWO_DATA_DIR`（迁移脚本） | `db/migrations/003_vendor_asset_sync.ts:37` | **保留**（仍直读 env） | ⛔ 登记豁免：迁移文件由 knex 迁移器独立加载，不能依赖应用级 `config` 单例 |
   | `MIWO_GEN_DB_TYPES`（门控） | `utils/db.ts:41` | **保留**（仍直读 env） | ⛔ 登记豁免：它是"这次是哪个脚本在跑"的**门控变量**，不是可调配置；进 `config` 或 `.env.example` 都会改变语义 |
@@ -417,6 +418,13 @@ pnpm.cmd run verify:manual-test -- -Port 10689
   口令是 argon2id，连续 5 次失败锁 15 分钟。验签密钥的优先级是 `o_setting.jwtSecret`（新）→
   `o_setting.tokenKey`（旧，仅兼容）→ `config.jwtSecret`（兜底），**每请求现读**（见 `apps/api/src/auth/secret.ts`）。
 
+## 媒体访问（Phase 1e）
+
+- `/oss` 与 `/assets` 使用签名 URL，签名有效期为 **24 小时**；受保护的静态资源与 SPA 根路径同步。
+- 验收：`pnpm.cmd run verify:phase1e`；跳过 HTTP 检查：`node apps/api/scripts/verify-phase1e.cjs --no-http`。独立生成测试媒体：`node apps/api/scripts/verify-phase1e.cjs --gen-media "<data-dir>|<relative-path>"`（经生产 `oss.writeFile` 与签名器写入/签名）。
+- 完整验收使用临时 SQLite 数据库和数据目录；不读取或复制 dev 库。HTTP 模式验证签名、过期/篡改/跨路径拒绝、Range、SPA 与匿名访问控制。
+- S3 支持属于 **Phase 2**；当前默认仍使用本地存储。
+
 ### 5. 测试（含**降级口径**与**验收基线**）
 
 ```powershell
@@ -432,7 +440,7 @@ $env:MIWO_TEST_SLOW="1"; pnpm.cmd exec vitest run          # 慢用例（约 60s
 | 门禁 | 命令 | 期望 |
 |---|---|---|
 | 默认套件 | `pnpm.cmd exec vitest run`（`apps/api` 下） | **449 passed \| 10 skipped** |
-| Phase 0 验收 | `node apps/api/scripts/verify-phase0.cjs` | **43/43** |
+| Phase 0 验收 | `node apps/api/scripts/verify-phase0.cjs` | **45/45** |
 | Phase 1a 验收 | `pnpm.cmd run verify:phase1a` | **76/76**（本机口径；CI 用 `verify:phase1a:ci`） |
 | Phase 1b 验收 | `pnpm.cmd run verify:phase1b` | **17/17**（另有 1 项 MySQL 口径**未实测**） |
 | Phase 1c 媒体验收 | `pnpm.cmd run verify:phase1c-media` | **34/34** |
@@ -677,7 +685,7 @@ pnpm.cmd run db:compare -- --manifest=$out                                  # �
 - ⚠ **导出对源库只读**：脚本以 `{ readonly: true }` 打开 SQLite，并断言**导出前后源库 sha256 相等**、
   未新出现 `-wal`/`-shm`/`-journal` 伴随文件；不满足就退出码 1。
   `apps/api/data/db2.sqlite` 的 sha256 是硬约束，任何验收都不许改写它。
-- ⚠ **用户机真实库（`%APPDATA%\ToonFlow\data\db2.sqlite`）不在搬迁范围**：脚本对它**硬拒绝**
+- ⚠ **用户机真实库（Windows `%APPDATA%` 下应用数据目录里的 `db2.sqlite`）不在搬迁范围**：脚本对它**硬拒绝**
   （连只读打开都不做）。搬迁只针对仓库里的 dev 库快照。
 - ⚠ **导出物是机密**：`o_setting.ndjson` 里有老库那一行**真实 `tokenKey`（JWT 密钥）**、
   `o_vendorConfig.ndjson` 的 `inputValues` 里存着真 API key。所以
@@ -872,7 +880,7 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
 ## 任务队列（Phase 1d 起）
 
 - **存储**：`o_job`（MySQL 表驱动，无 Redis）；`o_gate` 是 vendor 分池的槽位租约（跨进程限流）。
-- **执行**：worker 进程（`data/serve/worker.js`，`pnpm.cmd --filter @miwo/api run worker` 开发用）；
+- **执行**：worker 进程（`data/serve/worker.js`）；本机 `pnpm.cmd --filter @miwo/api run dev` 同时启动 API 与 worker，`dev:api` / `worker` 可单独启动；
   api 进程只入队 + 推事件（`job:update` 到 `user:{userId}` room）。
 - **语义**：租约（默认 60s，心跳 15s）+ 过期回收 + 幂等（`dedupeActive` 可空唯一列）+ 重试退避 + 死信（`state='dead'`）。
 - **卡死恢复**：Phase 1a 删掉的"启动时把生成中改判失败"由本阶段的**租约回收 + 产物对账**接管；
@@ -898,7 +906,7 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
 - ⚠ 前置条件：`src/types/{auto-imports,components}.d.ts` 被 `.gitignore` 忽略、由 vite 插件在构建时生成。
   **先生成它们（跑一次 `pnpm --filter @miwo/web run build-only`）再跑 `vue-tsc` 是 47 条；不先生成则是 961 条 / 85 个文件**
   （缺 `ref`/`onMounted`/`storeToRefs` 这类全局自动导入）。任何"数目对不上"的复测都要先确认这一点。
-- **全部是上游继承缺陷**（迁移前的原前端仓库是同一份继承代码，同样的写法、同样不可用），不是本仓复制走样。
+- **全部是历史遗留缺陷**（迁移前的旧前端实现同样存在这些写法与不可用点），不是本轮改造引入。
 
 | 类别 | 数量 | 典型位置与症状 |
 |---|---|---|
@@ -936,7 +944,7 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
    > CI 上跑的是 **`pnpm run verify:phase1a:ci`**（= 同一个脚本 + `--ci`），**不是**本机口径。
    > 该脚本里有两条**本机专属**检查，在全新树（`git archive HEAD`）上**必然失败**：
    >   ① 旧仓库 sha256 冻结（同上，读被 gitignore 的 `tools/.phase0-old-baseline.json`）；
-   >   ② `verify:legacy-freeze --check` 需要**仓库外**两个旧仓（`code/toonflow-upstream` / `code/toonflow-web`），
+   >   ② `verify:legacy-freeze --check` 需要**仓库外**的旧版代码仓（路径见脚本参数），
    >      无 remote 的 runner 上不可能有 —— `record-legacy-freeze.cjs` 自己就写明"**缺仓库不算通过**"。
    > 实跑证据：全新树里跑本机口径 = **EXIT 1**（这正是"CI 强制跑一条本机专属命令"的必然后果）。
    > `--ci` 把这两条**显式记为「CI 不适用」**（`[信息]` 前缀、**不计入** `通过 N / M`），
@@ -980,7 +988,7 @@ pnpm.cmd run db:repair-stuck -- --older-than=3600000 # 也可以直接给毫秒�
 | 13 | `data/vendor/*.ts` 的 13 个适配器与 `vendor.json` 模板的对账结果 | 观察项 | Task 10 Step 5 的输出；本阶段只报告不写盘（`003_vendor_asset_sync` 的 `up` 只登记不写文件） |
 | 14 | `apps/api/LICENSE`、`data/vendor/*.ts` 的 `author` 字段（写着**旧品牌名**）、前端 i18n 品牌残留 | Phase 1c / Phase 3 | Phase 0 ledger 的既有 deferred 裁定（本阶段不动，`check-brand` 有**逐条带理由**的豁免机制） |
 | 15 | `NOTICES.txt` 仍列 electron 系许可证 | Phase 1c | Phase 0 ledger（用 `pnpm license` 重生成） |
-| 16 | `deploy/` 的容器路径整体未验证 + 无 `.dockerignore` | Phase 1d 准入前必修 | Phase 0 ledger **N1**；`seed/*.ndjson` 在容器里也要能读到 —— **代码侧**由 `002_platform_seed` 的三条候选路径处理，**产物侧**由 Task 12 Step 4（裁定 60）的构建拷贝处理（源目录缺失即 `exit 1`，不静默）。**【Phase 1d 更新】`.dockerignore` 已落地**（`deploy/.dockerignore`，Phase 0 ledger N1 结清）；**容器路径本身仍未在真机验证**（本机无 Docker），见 `deploy/README.md` §3 / `apps/api/README-jobs.md` §7 U6 |
+| 16 | `deploy/` 的容器路径整体未验证 + Docker 忽略文件位置不正确 | Phase 1d 准入前必修 | Phase 0 ledger **N1**；`seed/*.ndjson` 在容器里也要能读到 —— **代码侧**由 `002_platform_seed` 的三条候选路径处理，**产物侧**由 Task 12 Step 4（裁定 60）的构建拷贝处理（源目录缺失即 `exit 1`，不静默）。**【Phase 1d 更新】**Docker 忽略规则现位于仓库根 `.dockerignore`，与 Compose 的根 build context 一致，并排除真实 `.env`；**容器路径本身仍未在真机验证**（本机无 Docker），见 `deploy/README.md` §3 / `apps/api/README-jobs.md` §7 U6 |
 | 17 | **4 个运维路由的租户处置**（`deleteAllData.ts` / `clearData.ts` / `importData.ts` / `getSwitchAiDevTool.ts`，共 7 处在 import 图上） | Phase 1b | **【L3 补登记·Ruling 45】** 本阶段摘的是"**每次启动无条件执行**"的调用；这 4 处是**用户请求时的 handler**，已逐条豁免 + 理由（带"必须真实命中否则报红"的活性断言）。`check-dead-ddl.cjs` 的豁免一旦不再命中就会逼人清理清单。**1b 必须把这 4 个 handler 纳入隔离处置的明确范围** |
 | 18 | **全新库 `login` 仍 400**；`app.ts:167` 的 **444 分支已不可达** | Phase 1c | **【L3 补登记·Ruling 58③ + Ruling 64】** ① `login`/socket 三处仍读库里的 `o_setting.tokenKey`，而 `002` **不 seed** 它 ⇒ **全新库上登录仍 400**。**不得宣称"全新库完整可用"**。② `config.ts` 的模块级 `loadConfig()` 对 `MIWO_JWT_SECRET` 是 fail-fast（≥32B）⇒ `config.jwtSecret` **恒非空** ⇒ `app.ts:167` 的 `if (!tokenKey) return 444` **不可达**，全仓无测试覆盖它（已就地标注 unreachable + 原因，不删）。本阶段已补"库值优先 / 配置兜底"的优先级回归网（`tests/auth-token-key.test.ts`） |
 | 19 | **无 id 的 4 张关联表用全列 `OFFSET` 分页（O(n²)）** | Phase 1b / 1e（搬迁工作） | **【L3 补登记·Ruling 106】** `importTable` 对无 id 表按全列 `OFFSET` 分页；老库这 4 张最大 926 行看不出来。**真实库若远超此量级，建议先单独压测再做正式搬迁**（否则搬迁耗时随行数**平方**增长，可能从分钟级变成小时级） |
