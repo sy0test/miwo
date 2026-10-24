@@ -48,6 +48,7 @@ import ChatPanel from "./components/ChatPanel.vue";
 import { stageText as stageTextOf, jobRunning as jobIsRunning, jobText } from "@/views/redraw/logic";
 import projectStore from "@/stores/project";
 import useRedrawStore from "@/stores/redraw";
+import axios from "@/utils/axios";
 
 const route = useRoute();
 const router = useRouter();
@@ -199,7 +200,14 @@ async function generate() {
   if (jobRunning.value || generatingLocal.value) return;
   generatingLocal.value = true;
   try {
-    const res: any = await store.confirmFast();
+    // 直接调接口：不依赖 store 的新 action（开发态 HMR 时旧 Pinia 实例可能没有新方法）
+    const raw: any = await axios.post("/redraw/confirmStoryboard", {
+      projectId: projectId.value,
+      scriptId: scriptId.value,
+      fast: true,
+    });
+    const res: any = raw?.data ?? raw;
+    await store.refresh();
     const cut = res?.cut;
     const issues = Array.isArray(cut?.issues) ? cut.issues : [];
     const errs = issues.filter((i: any) => i?.level === "error");
