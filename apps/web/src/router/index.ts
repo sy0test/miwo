@@ -66,7 +66,7 @@ const router = createRouter({
         },
         {
           path: "/production",
-          component: () => import("@/views/production/index.vue"),
+          component: () => import("@/views/production/entry.vue"),
         },
         {
           path: "/assets",
