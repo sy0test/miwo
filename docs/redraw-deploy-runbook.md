@@ -99,6 +99,25 @@ docker compose logs --tail=120 api worker
 **期望日志**：`已应用迁移：...016_redraw_pipeline`、`[服务启动成功]`；worker 正常轮询。
 如果两个服务同时迁移报 “Migration table is already locked”，等 10 秒再 `docker compose restart api`（历史已知现象）。
 
+## 3.5 服务端自检（启动后先跑这 4 条）
+
+```bash
+cd /opt/miwo/deploy
+# 1) ASR 运行时真的能 import（venv 是悬空链接时 ls 查不出来）
+docker compose exec api /app/apps/api/asr/.venv/bin/python -c "import faster_whisper; print('asr ok')"
+# 2) 新技能是否被播种到运行时数据目录（seed 已改为「补缺失文件」，不再整目录 skip）
+docker compose exec api sh -lc 'ls -l "$MIWO_DATA_DIR/skills/feicai/redraw-storyboard-skill/SKILL.md"'
+# 3) 迁移 016 是否应用
+docker compose logs api | grep -i "016_redraw_pipeline"
+# 4) 部署行是否补齐（1Panel 的 MySQL 终端里跑）
+#    SELECT `key` FROM o_agentDeploy WHERE `key` LIKE 'redrawAgent:%';
+#    期望两行：redrawAgent:reconcileAgent / redrawAgent:storyboardAgent
+```
+
+> ⚠ 如果这个库以前应用过**旧版 016**（只加列、没有 deploy 行），016 不会重跑 ⇒ 第 4 条会缺行。
+> 处置：手工执行两条 insert（按 key 判存在），或临时把该行从 `knex_migrations` 删掉后重启让 016 重跑（谨慎，先备份）。
+> 今晚的目标库只到 015，正常不会遇到。
+
 ## 4. 真机验收（浏览器）
 
 1. `Ctrl+F5` 强刷（前端是单文件内联包，必须强刷）。
