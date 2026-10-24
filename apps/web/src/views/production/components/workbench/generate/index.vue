@@ -635,7 +635,9 @@ onUnmounted(() => {
       min-height: 0;
       .videoPrompt {
         width: 100%;
-        height: 100%;
+        /* 给卡片一个**确定的**高度：否则内部 flex 链一路 auto，contenteditable 会跟着内容长高，
+           滚动条跑到整页上（表现：提示词框没有滚动条、超出的字看不到）。 */
+        height: min(34vh, 320px);
         overflow: hidden;
         display: flex;
         flex-direction: column;
@@ -653,12 +655,37 @@ onUnmounted(() => {
           display: flex;
           flex-direction: column;
           .promptInput {
-            flex: 1;
-            /* 给 contenteditable 一个**确定高度**：否则卡片跟着内容长高、滚动条长到整页上，
-               表现就是「提示词框没有滚动条、超出的字看不到」。 */
-            height: min(38vh, 340px);
-            min-height: 160px;
-            overflow-y: auto;
+            /* 卡片高度已固定 → 这里只负责吃掉剩余高度，让 contenteditable 自己滚 */
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+            :deep(.textareaWrapper) {
+              height: 100%;
+              min-height: 0;
+            }
+            :deep(.promptEditor) {
+              height: 100%;
+              min-height: 0;
+              /* scroll（不是 auto）：滚动条轨道常驻可见，用户一眼能看出这里可以滚 */
+              overflow-y: scroll;
+              scrollbar-width: thin;
+              scrollbar-gutter: stable;
+            }
+            :deep(.promptEditor)::-webkit-scrollbar {
+              width: 10px;
+            }
+            :deep(.promptEditor)::-webkit-scrollbar-thumb {
+              /* 主题变量 --td-scrollbar-color 在暗色下是 10% 白，几乎看不见；用 hover 档（30%）保证可见 */
+              background: var(--td-scrollbar-hover-color);
+              border-radius: 5px;
+            }
+            :deep(.promptEditor)::-webkit-scrollbar-thumb:hover {
+              background: var(--td-scrollbar-hover-color);
+            }
+            :deep(.promptEditor)::-webkit-scrollbar-track {
+              background: var(--td-bg-color-secondarycontainer);
+              border-radius: 5px;
+            }
           }
         }
       }

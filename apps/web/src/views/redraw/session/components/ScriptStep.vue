@@ -38,6 +38,7 @@ function save() {
   .editor {
     flex: 1;
     min-height: 320px;
+    max-height: calc(100vh - 460px);
     padding: 12px;
     border: 1px solid var(--td-component-border);
     border-radius: 8px;
@@ -46,6 +47,20 @@ function save() {
     font-size: 14px;
     line-height: 1.7;
     resize: vertical;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-gutter: stable;
+    &::-webkit-scrollbar {
+      width: 10px;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: var(--td-scrollbar-hover-color);
+      border-radius: 5px;
+    }
+    &::-webkit-scrollbar-track {
+      background: var(--td-bg-color-secondarycontainer);
+      border-radius: 5px;
+    }
   }
   .foot {
     .count {
