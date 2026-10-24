@@ -16,6 +16,22 @@ export interface EpisodeState {
   clipsReady: boolean;
   segmentCap: number;
   capConfirmed?: boolean;
+  /** 后端返回的当前活跃转绘任务（queued/running）；前端用来显示生成中 + 进度 */
+  job?: { id: number; type: string; state: string; stage: string | null; progress: number | null } | null;
+}
+
+export function jobRunning(ep: EpisodeState | null | undefined): boolean {
+  return Boolean(ep?.job && (ep.job.state === "queued" || ep.job.state === "running"));
+}
+
+/** 生成中提示文案：任务类型 + 阶段 + 进度 */
+export function jobText(ep: EpisodeState | null | undefined): string {
+  const j = ep?.job;
+  if (!j) return "";
+  const label = j.type === "redraw.storyboard" ? "转绘分镜" : j.type === "redraw.prepare" ? "解析" : "转绘";
+  const stage = stageText(j.stage);
+  const pct = j.progress == null ? "" : " · " + Math.round(Number(j.progress)) + "%";
+  return label + (stage && stage !== "分析中" ? " · " + stage : "") + pct;
 }
 
 export interface PrimaryAction {

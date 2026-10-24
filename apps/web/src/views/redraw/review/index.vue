@@ -15,9 +15,11 @@
     <t-alert v-if="failed" theme="error" message="转绘分镜生成失败：可以点「重跑转绘层」，或到任务中心看失败原因。" />
     <t-alert v-if="showConfirmHint" theme="info" :message="confirmHint" />
 
-    <div v-if="extracting || generating" class="waiting fc c">
+    <div v-if="waiting" class="waiting fc c">
       <t-loading size="large" />
-      <div class="waitText">{{ extracting ? "解析中…完成后自动刷新" : "转绘分镜生成中…完成后会自动刷新" }}</div>
+      <div class="waitText">{{ waitingText }}</div>
+      <t-progress v-if="jobPct != null" :percentage="jobPct" theme="line" style="width: 320px" />
+      <div class="waitTip">没有流式输出，这是后台任务进度；完成后会自动刷新</div>
     </div>
 
     <template v-else>
@@ -71,6 +73,7 @@
 <script setup lang="ts">
 import projectStore from "@/stores/project";
 import useRedrawStore from "@/stores/redraw";
+import { jobRunning as jobIsRunning, jobText } from "@/views/redraw/logic";
 
 const route = useRoute();
 const router = useRouter();
@@ -80,10 +83,21 @@ const scriptId = computed(() => Number(route.params.scriptId ?? 0));
 const loading = ref(false);
 const extracting = computed(() => Number(store.episode?.extractState ?? 1) === 0);
 const failed = computed(() => Number(store.episode?.redrawState ?? 0) === -1);
-/** 已认账、正在生成转绘分镜（redrawState=2 且还没有转绘版）—— 这是"没有提示"的根因 */
+/** 后端返回的活跃任务：解析/生成分镜/切原片都算"正在跑"（不再靠状态猜） */
+const jobRunning = computed(() => jobIsRunning(store.episode));
+const jobPct = computed(() => {
+  const p = store.episode?.job?.progress;
+  return p == null ? null : Math.max(0, Math.min(100, Math.round(Number(p))));
+});
 const generating = computed(
   () => !extracting.value && Number(store.episode?.redrawState ?? 0) === 2 && store.storyboard.redraw.length === 0,
 );
+const waiting = computed(() => jobRunning.value || extracting.value || generating.value);
+const waitingText = computed(() => {
+  if (jobRunning.value) return (jobText(store.episode) || "转绘任务") + " 进行中…完成后自动刷新";
+  if (extracting.value) return "源片解析中…完成后自动刷新";
+  return "转绘分镜生成中…完成后自动刷新";
+});
 const title = computed(() => "转绘确认 · " + (store.scriptName || "第 " + scriptId.value + " 集"));
 const canConfirm = computed(() => Number(store.episode?.redrawState ?? 0) === 3 && store.storyboard.redraw.length > 0);
 /** 按钮为什么点不了 —— 必须写在界面上，而不是只灰着 */
@@ -91,12 +105,16 @@ const confirmHint = computed(() => {
   const rd = Number(store.episode?.redrawState ?? 0);
   if (rd === -1) return "生成失败：先重跑转绘层";
   if (rd === 1) return "还没完成资产认账：先回会话页确认资产";
-  if (rd === 2) return "转绘分镜还没生成：点「重跑转绘层」生成后再确认";
+  if (rd === 2) {
+    return store.storyboard.redraw.length
+      ? "当前显示的是上次生成的转绘版（已回退/未确认）；点「重跑转绘层」重新生成后再确认"
+      : "转绘分镜还没生成：点「重跑转绘层」生成后再确认";
+  }
   if (rd === 4) return "已经确认过了，可以直接去制作";
   if (!store.storyboard.redraw.length) return "还没有转绘版可确认";
   return "";
 });
-const showConfirmHint = computed(() => !canConfirm.value && !extracting.value && !generating.value && !!confirmHint.value);
+const showConfirmHint = computed(() => !canConfirm.value && !waiting.value && !!confirmHint.value);
 
 function descOf(s: any): string {
   return String(s?.videoDesc ?? s?.desc ?? "");
@@ -130,13 +148,17 @@ let timer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   timer = setInterval(async () => {
     const rd = Number(store.episode?.redrawState ?? 0);
-    if (extracting.value || generating.value || rd === 3) {
+    // 有活跃任务时一定要轮询：任务结束会改 redrawState，页面不能停在旧状态上
+    if (jobRunning.value || extracting.value || generating.value || rd === 3) {
       await store.refresh();
       if (Number(store.episode?.redrawState ?? 0) >= 3) {
         await store.loadStoryboard();
       }
+      if (!jobRunning.value && Number(store.episode?.redrawState ?? 0) === -1) {
+        await store.loadStoryboard();
+      }
     }
-  }, 4000);
+  }, 3000);
 });
 onUnmounted(() => timer && clearInterval(timer));
 
@@ -201,6 +223,7 @@ async function confirm() {
     gap: 12px;
     color: var(--td-text-color-placeholder);
     .waitText { font-size: 13px; }
+    .waitTip { font-size: 12px; opacity: 0.8; }
   }
   .summary {
     .sumTitle { font-weight: 600; margin-bottom: 6px; }

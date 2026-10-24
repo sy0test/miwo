@@ -71,6 +71,15 @@ export default defineStore("redraw", () => {
       clipsReady: Boolean(raw?.clipsReady ?? raw?.clipsCut ?? false),
       segmentCap: Number(raw?.segmentCap ?? raw?.redrawMaxSegmentSec ?? 15),
       capConfirmed: Boolean(raw?.capConfirmed ?? false),
+      job: raw?.job
+        ? {
+            id: Number(raw.job.id),
+            type: String(raw.job.type ?? ""),
+            state: String(raw.job.state ?? ""),
+            stage: raw.job.stage ?? null,
+            progress: raw.job.progress == null ? null : Number(raw.job.progress),
+          }
+        : null,
     };
     segmentCap.value = episode.value.segmentCap;
     if (typeof raw?.capConfirmed === "boolean") capConfirmed.value = raw.capConfirmed;

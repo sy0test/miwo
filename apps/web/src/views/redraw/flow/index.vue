@@ -4,7 +4,9 @@
       <div class="f ac" style="gap: 12px">
         <h2 class="title">转绘制作</h2>
         <t-select :value="scriptId" :options="episodeOptions" size="small" style="width: 220px" placeholder="选择一集" @change="onSelect" />
-        <t-tag :theme="store.statusView.theme" variant="light">{{ store.statusView.label }}</t-tag>
+        <t-tag :theme="jobRunning ? 'primary' : store.statusView.theme" variant="light">
+          {{ jobRunning ? jobText(store.episode) || "生成中" : store.statusView.label }}
+        </t-tag>
       </div>
       <div class="f ac" style="gap: 8px">
         <t-button variant="outline" size="small" @click="reload">刷新</t-button>
@@ -53,6 +55,7 @@ import projectStore from "@/stores/project";
 import useRedrawStore from "@/stores/redraw";
 import ChatPanel from "@/views/redraw/session/components/ChatPanel.vue";
 import workbenchDialog from "@/views/production/components/workbench/index.vue";
+import { jobRunning as jobIsRunning, jobText } from "@/views/redraw/logic";
 
 const router = useRouter();
 const { project } = storeToRefs(projectStore());
@@ -67,6 +70,8 @@ provide("episodesId", scriptId);
 
 const rd = computed(() => Number(store.episode?.redrawState ?? 0));
 const analyzed = computed(() => Number(store.episode?.segmentCount ?? 0) > 0);
+const jobRunning = computed(() => jobIsRunning(store.episode));
+const sbGenerating = computed(() => jobRunning.value && String(store.episode?.job?.type ?? "").startsWith("redraw.storyboard"));
 
 const nodes = computed(() => {
   const s = store.episode;
@@ -90,17 +95,44 @@ const nodes = computed(() => {
       button: "去认账", action: () => router.push("/redraw/session/" + scriptId.value),
     },
     {
-      key: "storyboard", title: "转绘分镜", tag: rd.value >= 3 ? "已生成" : "未生成",
-      tagTheme: rd.value >= 3 ? "success" : "default", state: rd.value >= 3 ? "done" : "todo", primary: rd.value === 2,
-      desc: "段数 " + (s?.segmentCount ?? 0) + " · 单段上限 " + (s?.segmentCap ?? 15) + "s",
-      button: rd.value >= 3 ? "并排确认" : "先完成认账",
-      action: () => router.push(rd.value >= 3 ? "/redraw/review/" + scriptId.value : "/redraw/session/" + scriptId.value),
+      key: "storyboard", title: "转绘分镜",
+      tag: sbGenerating.value ? "生成中" : rd.value >= 3 ? "已生成" : rd.value === 2 ? "待生成" : "未解锁",
+      tagTheme: sbGenerating.value ? "primary" : rd.value >= 3 ? "success" : "default",
+      state: rd.value >= 3 ? "done" : "todo",
+      primary: rd.value === 2 && !jobRunning.value,
+      desc: sbGenerating.value
+        ? (jobText(store.episode) || "生成中") + "…页面会自动刷新"
+        : "段数 " + (s?.segmentCount ?? 0) + " · 单段上限 " + (s?.segmentCap ?? 15) + "s",
+      button: sbGenerating.value ? "生成中…" : rd.value >= 3 ? "并排确认" : rd.value === 2 ? "生成转绘分镜" : "先完成认账",
+      action: async () => {
+        if (jobRunning.value) return;
+        await store.refresh();
+        const now = Number(store.episode?.redrawState ?? 0);
+        if (now >= 3) {
+          router.push("/redraw/review/" + scriptId.value);
+        } else if (now === 2) {
+          try {
+            await store.generateStoryboard();
+            window.$message.success("已开始生成转绘分镜");
+            await store.refresh();
+          } catch (e: any) {
+            window.$message.error(e?.message ?? "生成失败");
+          }
+        } else {
+          router.push("/redraw/session/" + scriptId.value);
+        }
+      },
     },
     {
       key: "confirm", title: "确认", tag: rd.value >= 4 ? "已确认" : "待确认",
       tagTheme: rd.value >= 4 ? "success" : "default", state: rd.value >= 4 ? "done" : "todo", primary: false,
       desc: "确认后覆盖源片分镜，进入生成",
-      button: "去确认", action: () => router.push("/redraw/review/" + scriptId.value),
+      button: "去确认",
+      action: async () => {
+        await store.refresh();
+        if (Number(store.episode?.redrawState ?? 0) >= 3) router.push("/redraw/review/" + scriptId.value);
+        else window.$message.warning("先生成转绘分镜，才能并排确认");
+      },
     },
     {
       key: "generate", title: "工作台", tag: rd.value >= 4 ? "可生成" : "未解锁",
@@ -133,6 +165,16 @@ function onSelect(v: number) {
 }
 
 onMounted(reload);
+
+// 生成是后台任务（没有 streaming）：页面必须轮询，否则 tag/按钮会停在旧状态
+let timer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  timer = setInterval(async () => {
+    if (!scriptId.value) return;
+    await store.refresh();
+  }, 3000);
+});
+onUnmounted(() => timer && clearInterval(timer));
 </script>
 
 <style lang="scss" scoped>

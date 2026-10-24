@@ -304,6 +304,15 @@ export type EpisodeState = {
   segmentCap: number;
   /** 时长步骤是否已确认（且与当前 segmentCap 一致） */
   capConfirmed: boolean;
+  /** 这一集当前在跑的转绘任务（queued/running）；没有则 null。
+   *  前端用它显示「生成中 + 进度条」，而不是靠猜状态 —— 转绘分镜是长任务、没有 streaming。 */
+  job: {
+    id: number;
+    type: string;
+    state: string;
+    stage: string | null;
+    progress: number | null;
+  } | null;
 };
 
 /** 时长确认记录的工作区 key（M2 的会话页第③步） */
@@ -366,6 +375,36 @@ export async function getEpisodeState(
   const segmentCap = num(project.redrawMaxSegmentSec) || 15;
   const cap = await readCapConfirm(db, { projectId, scriptId });
 
+  // 当前活跃的转绘任务（o_job.payload 里有 projectId/scriptId；表是 platform 表，查询不受租户过滤）
+  let job: EpisodeState["job"] = null;
+  try {
+    const activeJobs = await db("o_job")
+      .whereIn("state", ["queued", "running"])
+      .andWhere("type", "like", "redraw.%")
+      .orderBy("id", "desc")
+      .limit(20);
+    for (const j of activeJobs) {
+      let payload: any = null;
+      try {
+        payload = JSON.parse(String(j.payload ?? "{}"));
+      } catch {
+        continue;
+      }
+      if (Number(payload?.scriptId) === scriptId && Number(payload?.projectId) === projectId) {
+        job = {
+          id: Number(j.id),
+          type: String(j.type),
+          state: String(j.state),
+          stage: j.stage ?? null,
+          progress: j.progress == null ? null : Number(j.progress),
+        };
+        break;
+      }
+    }
+  } catch {
+    job = null;
+  }
+
   return {
     extractState: typeof script.extractState === "number" ? script.extractState : null,
     redrawState: normalizeRedrawState(script.redrawState),
@@ -377,5 +416,6 @@ export async function getEpisodeState(
     clipsReady,
     segmentCap,
     capConfirmed: Boolean(cap && cap.seconds === segmentCap),
+    job,
   };
 }

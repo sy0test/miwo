@@ -10,6 +10,11 @@
       <t-button variant="outline" size="small" @click="showChat = !showChat">{{ showChat ? "收起助手" : "转绘助手" }}</t-button>
     </div>
     <StatusStepper v-model="step" :access="store.stepAccess" />
+    <div v-if="jobRunning" class="jobBar f ac">
+      <t-loading size="small" />
+      <span class="jobText">{{ jobText(store.episode) }}… 后台生成中，完成后自动刷新</span>
+      <t-progress v-if="jobPct != null" :percentage="jobPct" theme="line" style="width: 240px" />
+    </div>
     <div class="body f">
       <div class="main">
         <t-alert v-if="store.error" theme="error" :message="store.error" class="err" />
@@ -26,7 +31,9 @@
       </div>
       <div class="f ac" style="gap: 8px">
         <t-button v-if="step !== 3" theme="primary" :loading="store.busy" @click="next">{{ step === 1 ? "保存并继续" : "下一步" }}</t-button>
-        <t-button v-else theme="primary" :disabled="!canGenerateFinal" :loading="store.busy" @click="generate">生成转绘分镜</t-button>
+        <t-button v-else theme="primary" :disabled="!canGenerateFinal || jobRunning || generatingLocal" :loading="store.busy || generatingLocal" @click="generate">
+          {{ jobRunning || generatingLocal ? "生成中…" : "生成转绘分镜" }}
+        </t-button>
       </div>
     </div>
   </div>
@@ -38,7 +45,7 @@ import ScriptStep from "./components/ScriptStep.vue";
 import AssetStep from "./components/AssetStep.vue";
 import DurationStep from "./components/DurationStep.vue";
 import ChatPanel from "./components/ChatPanel.vue";
-import { stageText as stageTextOf } from "@/views/redraw/logic";
+import { stageText as stageTextOf, jobRunning as jobIsRunning, jobText } from "@/views/redraw/logic";
 import projectStore from "@/stores/project";
 import useRedrawStore from "@/stores/redraw";
 
@@ -54,6 +61,12 @@ const showChat = ref(false);
 
 const title = computed(() => "转绘会话 · " + (store.scriptName || "第 " + scriptId.value + " 集"));
 const stageText = computed(() => (store.episode?.extractState === 0 ? stageTextOf(store.episode?.stage) : ""));
+const jobRunning = computed(() => jobIsRunning(store.episode));
+const jobPct = computed(() => {
+  const p = store.episode?.job?.progress;
+  return p == null ? null : Math.max(0, Math.min(100, Math.round(Number(p))));
+});
+const generatingLocal = ref(false);
 const capOk = computed(() => (store.segments || []).every((s: any) => Number(s.duration ?? 0) <= Number(store.segmentCap || 15)));
 const canGenerateFinal = computed(() => store.stepAccess.canGenerate && capOk.value);
 const stepHint = computed(() => {
@@ -78,8 +91,8 @@ onMounted(async () => {
 let timer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   timer = setInterval(() => {
-    if (store.episode?.extractState === 0) store.refresh();
-  }, 4000);
+    if (store.episode?.extractState === 0 || jobRunning.value || generatingLocal.value) store.refresh();
+  }, 3000);
 });
 onUnmounted(() => timer && clearInterval(timer));
 
@@ -179,13 +192,17 @@ function onAgentStep(payload: { step?: number }) {
 }
 
 async function generate() {
+  if (jobRunning.value || generatingLocal.value) return;
+  generatingLocal.value = true;
   try {
     await store.generateStoryboard();
     await store.refresh();
-    window.$message.success("转绘分镜已开始生成");
+    window.$message.success("已提交生成，转到确认页可看进度");
     router.push("/redraw/review/" + scriptId.value);
   } catch (e: any) {
     window.$message.error(e?.message ?? "生成失败");
+  } finally {
+    generatingLocal.value = false;
   }
 }
 </script>
@@ -195,6 +212,14 @@ async function generate() {
   height: 100%;
   padding: 16px;
   gap: 12px;
+  .jobBar {
+    padding: 6px 12px;
+    border-radius: 8px;
+    background: var(--td-bg-color-secondarycontainer);
+    gap: 10px;
+    font-size: 12px;
+    color: var(--td-text-color-secondary);
+  }
   .header {
     .title {
       font-size: 18px;
