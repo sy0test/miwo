@@ -84,6 +84,8 @@ export interface MiwoConfig {
   gridFont: string;
   /** 出网代理（原 `TOONFLOW_PROXY`，Phase 1c Task 10 **重命名**为 `MIWO_PROXY`）；空 = 直连/读标准代理变量。 */
   proxyUrl: string;
+  /** 不走代理的额外主机/域名（逗号分隔；追加到内置的 localhost/内网名单之后）。 */
+  proxyNoProxy?: string;
   /**
    * 数据库目标（spec §5.1 的联合类型：sqlite 分支 dev/回归，mysql 分支部署）。
    *
@@ -224,6 +226,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     timeoutMs: toInt(env, "MIWO_ASR_TIMEOUT_MS", 20 * 60 * 1000, 1000),
   } satisfies MiwoAsrConfig;
   const proxyUrl = optional(env, "MIWO_PROXY") ?? "";
+  const proxyNoProxy = optional(env, "MIWO_NO_PROXY") ?? "";
   // G10：拼贴图标签只用 ASCII（编号/秒数），DejaVu 就够；可用 MIWO_GRID_FONT 指向别的字体
   const gridFont = optional(env, "MIWO_GRID_FONT") ?? "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
@@ -242,6 +245,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     ffmpeg: { path: ffmpegPath, probePath: ffprobePath, timeoutMs: ffmpegTimeoutMs },
     asr,
     proxyUrl,
+    proxyNoProxy,
     gridFont,
     db,
   };

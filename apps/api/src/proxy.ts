@@ -19,7 +19,9 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { config } from "@/config";
 
 /** 本地与私有网段不走代理：应用自身端口、局域网内的服务端/中转站 */
-const NO_PROXY = ["localhost", "127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"].join(",");
+const NO_PROXY_BASE = ["localhost", "127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
+/** 额外直连名单（`MIWO_NO_PROXY`，逗号分隔）：典型场景是「中转站在国内、只有外网要走代理」。 */
+const NO_PROXY = [...NO_PROXY_BASE, ...String(config.proxyNoProxy ?? "").split(",").map((s) => s.trim()).filter(Boolean)].join(",");
 
 const REG_PATH = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 
