@@ -307,6 +307,7 @@ describe("getEpisodeState：前端契约字段", () => {
       clipsReady: 1,
       segmentCap: 15,
       capConfirmed: false,
+      job: null,
     });
   });
 });

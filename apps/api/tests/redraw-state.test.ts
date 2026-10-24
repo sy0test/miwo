@@ -333,6 +333,7 @@ describe("getEpisodeState", () => {
       clipsReady: 1,
       segmentCap: 30,
       capConfirmed: false,
+      job: null,
     });
 
     // 同一项目的另一集：上限跟项目走（7007 显式设了 30）

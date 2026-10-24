@@ -55,6 +55,8 @@ export interface MiwoAsrConfig {
   scriptPath: string;
   /** 单集转写超时（毫秒），缺省 20 分钟 */
   timeoutMs: number;
+  /** 是否强制 HuggingFace Hub 离线（标准第三方变量 HF_HUB_OFFLINE；缺省 true，模型已固化本地） */
+  hubOffline: boolean;
 }
 
 export interface MiwoConfig {
@@ -224,6 +226,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     pythonPath: optional(env, "MIWO_ASR_PYTHON") ?? "",
     scriptPath: optional(env, "MIWO_ASR_SCRIPT") ?? "",
     timeoutMs: toInt(env, "MIWO_ASR_TIMEOUT_MS", 20 * 60 * 1000, 1000),
+    // HF_HUB_OFFLINE 是 huggingface 库认的标准变量名，不能改名；统一从 config 读，避免散落直读
+    hubOffline: (optional(env, "HF_HUB_OFFLINE") ?? "1") !== "0",
   } satisfies MiwoAsrConfig;
   const proxyUrl = optional(env, "MIWO_PROXY") ?? "";
   const proxyNoProxy = optional(env, "MIWO_NO_PROXY") ?? "";

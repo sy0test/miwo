@@ -190,7 +190,7 @@ export const defaultAsrRunner: AsrRunner = (inv) =>
         env: {
           ...process.env,
           PYTHONIOENCODING: "utf-8",
-          HF_HUB_OFFLINE: process.env.HF_HUB_OFFLINE ?? "1",
+          HF_HUB_OFFLINE: config.asr.hubOffline ? "1" : "0",
           HF_HUB_DISABLE_TELEMETRY: "1",
         },
       });
