@@ -25,6 +25,7 @@ import { mediaAuthGuard, normalizeMediaRelPathInside, redactMediaQueryString, re
 import { parseThumbnailSize } from "@/utils/thumbnail-size";
 import isPathInside from "is-path-inside";
 import { config } from "@/config";
+import { checkAsrRuntime } from "@/utils/asr";
 
 const app = express();
 const server = http.createServer(app);
@@ -469,7 +470,18 @@ export default async function startServe(randomPort: Boolean = false) {
       if (config.asr.driver === "off") {
         console.warn("[redraw] MIWO_ASR_DRIVER=off：转绘「开始分析」会在预处理·转写阶段失败（解析需要词级时间戳）");
       } else {
-        console.log(`[redraw] ASR 驱动: ${config.asr.driver}（模型 ${config.asr.model} / ${config.asr.compute}）`);
+        // 只说"驱动=local"不够：python 落到系统解释器、或 venv 里没装 faster-whisper，
+        // 启动时看起来一切正常，点「开始分析」才在转写阶段失败（本机实测踩过）。
+        const asr = checkAsrRuntime();
+        if (asr.okay) {
+          console.log(`[redraw] ASR 可用: ${asr.python}（模型 ${config.asr.model} / ${config.asr.compute}）`);
+        } else {
+          console.warn(
+            `[redraw] ⚠ ASR 不可用：python=${asr.python}；${asr.message}\n` +
+              `         转绘「开始分析」会在预处理·转写阶段失败。\n` +
+              `         修法：在 apps/api/asr 下建 venv 并 pip install -r requirements.txt，或设置 MIWO_ASR_PYTHON 指向装好 faster-whisper 的 python。`,
+          );
+        }
       }
       resolve(realPort);
     });

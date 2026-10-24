@@ -12,7 +12,7 @@
  *  · 超时 = AsrTimeoutError（20 分钟/集，CPU int8 medium 的实测上限留余量）；
  *  · 其它非 0 = AsrError（带 stderr 尾部，客户能看懂为什么）。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -96,11 +96,58 @@ export function resolveAsrScript(explicit?: string): string {
   return candidates[0];
 }
 
-/** python 解释器：显式配置 > 平台约定（venv 由部署脚本 / 镜像提供）。 */
+/**
+ * python 解释器解析顺序：
+ *   1. 显式参数 / MIWO_ASR_PYTHON；
+ *   2. **仓库内的 dev venv**（apps/api/asr/.venv，本地开发按 requirements 建一次就能用）；
+ *   3. 打包布局里的镜像 venv（apps/api/asr/.venv，Dockerfile 拷进来的）；
+ *   4. 平台约定（python / python3）。
+ * 第 2/3 步是"本地能跑起来"的关键：否则手工 `pnpm dev` 会落到系统 Python，
+ * 报 “No module named faster_whisper” 而启动时又看不出来（见 app.ts 的 ASR 自检）。
+ */
 export function resolvePython(explicit?: string): string {
   if (explicit && explicit.trim()) return explicit.trim();
   if (config.asr.pythonPath && config.asr.pythonPath.trim()) return config.asr.pythonPath.trim();
+  const venvPython = process.platform === "win32" ? "Scripts/python.exe" : "bin/python";
+  const candidates = [
+    path.resolve(__dirname, "../../../asr/.venv", venvPython), // dev: apps/api/src/utils/asr -> apps/api/asr/.venv
+    path.resolve(__dirname, "../../asr/.venv", venvPython), // packed: apps/api/data/serve -> apps/api/asr/.venv
+    path.resolve(process.cwd(), "asr", ".venv", venvPython),
+  ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
   return process.platform === "win32" ? "python" : "python3";
+}
+
+/** 启动自检：python 能不能 import faster_whisper。失败时返回可操作的原因（app.ts 打印）。 */
+export function checkAsrRuntime(timeoutMs = 8000): {
+  okay: boolean;
+  python: string;
+  script: string;
+  message: string;
+} {
+  const python = resolvePython();
+  const script = resolveAsrScript();
+  try {
+    const r = spawnSync(python, ["-c", "import faster_whisper"], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      windowsHide: true,
+      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+    });
+    if (r.error) return { okay: false, python, script, message: r.error.message };
+    if (r.status !== 0) {
+      const detail = String(r.stderr || r.stdout || "")
+        .trim()
+        .split(/\r?\n/)
+        .filter((l) => l.trim())
+        .slice(-3)
+        .join(" | ");
+      return { okay: false, python, script, message: detail || ("退出码 " + String(r.status)) };
+    }
+    return { okay: true, python, script, message: "" };
+  } catch (e: any) {
+    return { okay: false, python, script, message: e?.message ?? String(e) };
+  }
 }
 
 /** 默认 runner：spawn python，超时强杀（协作式中断对 Python 子进程无效，必须 kill）。 */
@@ -220,7 +267,10 @@ export async function transcribe(wavAbs: string, o: TranscribeOptions = {}): Pro
     }
     if (res.code !== 0) {
       const reason = res.error ? res.error.message : "退出码 " + String(res.code);
-      throw new AsrError("ASR 失败（" + reason + "）：" + (tail(res.stderr) || "没有 stderr 输出"));
+      // 把实际用的 python 带进错误里：本机最坑的一种失败是"启动看起来正常，分析时才发现
+      // python 落到系统解释器、没有 faster_whisper"，只报 stderr 会让人以为是代码问题。
+      const python = resolvePython(o.pythonPath);
+      throw new AsrError("ASR 失败（" + reason + "，python=" + python + "）：" + (tail(res.stderr) || "没有 stderr 输出"));
     }
     if (!fs.existsSync(outPath)) {
       throw new AsrError("ASR 退出码 0 但没有产物文件：" + outPath);
