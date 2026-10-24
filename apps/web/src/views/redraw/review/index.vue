@@ -52,51 +52,16 @@
           <div v-if="!sourceRows.length" class="empty">源片版快照为空</div>
         </div>
         <div class="col">
-          <div class="colTitle">转绘版（videoDesc 按镜头表格展开）</div>
+          <div class="colTitle">转绘版</div>
+          <div v-for="s in redrawRows" :key="'r' + s.index" class="segCard" :class="s.cls">
+            <div class="segHead f ac jb">
+              <span class="segNo">段 {{ s.index }}</span>
+              <span class="segDur">{{ s.duration }}s</span>
+            </div>
+            <div class="segRange">{{ s.sourceRange || "-" }}</div>
+            <div class="segDesc">{{ s.desc || "（无描述）" }}</div>
+          </div>
           <div v-if="!redrawRows.length" class="empty">还没有转绘版（生成完成后出现）</div>
-          <table v-else class="segTable">
-            <colgroup>
-              <col style="width: 46px" />
-              <col style="width: 56px" />
-              <col style="width: 110px" />
-              <col style="width: 36px" />
-              <col style="width: 240px" />
-              <col style="width: 52px" />
-              <col style="width: 72px" />
-              <col style="width: 100px" />
-              <col style="width: 130px" />
-              <col style="width: 170px" />
-              <col style="width: 100px" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th style="width: 46px">段</th>
-                <th style="width: 56px">时长</th>
-                <th style="width: 110px">源片区间</th>
-                <th v-for="h in vdHeaders" :key="h">{{ h }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="(r, ri) in redrawFlat" :key="ri">
-                <tr v-if="r.type === 'intro'" :class="r.cls">
-                  <td colspan="11" class="introRow">{{ r.text }}</td>
-                </tr>
-                <tr v-else-if="r.type === 'single'" :class="r.cls">
-                  <td class="c">{{ r.seg }}</td>
-                  <td class="c">{{ r.duration }}s</td>
-                  <td class="range">{{ r.range || "-" }}</td>
-                  <td colspan="8">{{ r.text || "（无描述）" }}</td>
-                </tr>
-                <tr v-else :class="[r.cls, r.first ? '' : 'cont']">
-                  <!-- 每镜一行、段信息重复（不用 rowspan：rowspan 在多镜/说明行混排时会串列） -->
-                  <td class="c segCell">{{ r.seg }}</td>
-                  <td class="c">{{ r.duration }}s</td>
-                  <td class="range">{{ r.range || "-" }}</td>
-                  <td v-for="(c, ci) in r.cells" :key="ci">{{ c }}</td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
         </div>
       </div>
     </template>
@@ -181,41 +146,15 @@ function descOf(s: any): string {
   return String(s?.videoDesc ?? s?.desc ?? "");
 }
 
-/** videoDesc 的列（与生成技能输出一致：序号 | 画面描述 | 时长 | 景别 | 运镜 | 光影氛围 | 台词 | 音效） */
-const vdHeaders = ["镜", "画面描述", "时长", "景别", "运镜", "光影氛围", "台词", "音效"];
 
-/** 把 videoDesc 拆成「说明行 + 表格行」：表格行以 | 开头，一行一镜 */
-function parseVideoDesc(text: string): { intro: string[]; rows: string[][] } {
-  const intro: string[] = [];
-  const rows: string[][] = [];
-  for (const raw of String(text || "").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.startsWith("|")) {
-      const cells = line
-        .replace(/^\|/, "")
-        .replace(/\|$/, "")
-        .split("|")
-        .map((c) => c.trim());
-      rows.push(cells);
-    } else {
-      intro.push(line);
-    }
-  }
-  return { intro, rows };
-}
 function rowsOf(list: any[]) {
-  return (list || []).map((s: any, i: number) => {
-    const desc = descOf(s);
-    return {
-      index: Number(s.index ?? s.segmentIndex ?? i + 1),
-      duration: s.duration ?? "-",
-      sourceRange: s.sourceRange ?? "",
-      desc,
-      parsed: parseVideoDesc(desc),
-      cls: "",
-    };
-  });
+  return (list || []).map((s: any, i: number) => ({
+    index: Number(s.index ?? s.segmentIndex ?? i + 1),
+    duration: s.duration ?? "-",
+    sourceRange: s.sourceRange ?? "",
+    desc: descOf(s),
+    cls: "",
+  }));
 }
 const sourceRows = computed(() => rowsOf(store.storyboard.source));
 const redrawRows = computed(() => {
@@ -228,32 +167,7 @@ const redrawRows = computed(() => {
   });
 });
 
-/** 右侧表格的扁平行：说明行 / 单镜行 / 多镜行（段/时长/源片区间用 rowspan 合并） */
-const redrawFlat = computed<any[]>(() => {
-  const out: any[] = [];
-  for (const s of redrawRows.value as any[]) {
-    const id = Number(s.index);
-    const intro = (s.parsed?.intro ?? []).join(" ");
-    if (intro) out.push({ type: "intro", seg: id, text: intro, cls: s.cls });
-    const shots: string[][] = s.parsed?.rows ?? [];
-    if (!shots.length) {
-      out.push({ type: "single", seg: id, duration: s.duration, range: s.sourceRange, text: s.desc, cls: s.cls });
-      continue;
-    }
-    shots.forEach((cells: string[], i: number) => {
-      out.push({
-        type: "shot",
-        seg: id,
-        duration: s.duration,
-        range: s.sourceRange,
-        cells,
-        first: i === 0,
-        cls: s.cls,
-      });
-    });
-  }
-  return out;
-});
+
 
 onMounted(async () => {
   await store.loadEpisode(scriptId.value);
@@ -366,58 +280,11 @@ async function confirm() {
       flex: 1;
       min-width: 0;
       overflow-y: auto;
-      overflow-x: auto;
       background: var(--td-bg-color-container);
       border-radius: 12px;
       padding: 12px;
     }
-    /* 转绘版字段多，给它更宽的展示区 */
-    .col:last-child { flex: 1.7; }
     .colTitle { font-weight: 600; margin-bottom: 8px; }
-  }
-  .segTable {
-    width: 100%;
-    /* 11 列（段/时长/区间 + 8 个镜头字段）在窄容器里会挤成一条线：固定列宽 + 下限，超出横向滚动 */
-    min-width: 1120px;
-    table-layout: fixed;
-    border-collapse: collapse;
-    font-size: 12px;
-    th,
-    td {
-      border-bottom: 1px solid var(--td-component-border);
-      padding: 8px 10px;
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: var(--td-bg-color-container);
-      font-weight: 600;
-      white-space: nowrap;
-    }
-    .c { text-align: center; white-space: nowrap; }
-    .range { color: var(--td-text-color-placeholder); white-space: pre-wrap; }
-    .desc { line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
-    .segCell { font-weight: 600; background: var(--td-bg-color-secondarycontainer); }
-    tr.cont .segCell,
-    tr.cont td:nth-child(2),
-    tr.cont td:nth-child(3) {
-      color: var(--td-text-color-placeholder);
-      font-weight: 400;
-    }
-    .introRow {
-      background: var(--td-bg-color-secondarycontainer);
-      color: var(--td-text-color-secondary);
-      line-height: 1.7;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    td { line-height: 1.6; word-break: break-word; }
-    tr.changed td {
-      background: var(--td-warning-color-light);
-    }
   }
   .segCard {
     border: 1px solid var(--td-component-border);
