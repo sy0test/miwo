@@ -92,7 +92,10 @@ export default router.post(
       db: u.db as any,
       userId,
       estimateMicro: (trx) => resolveSubmissionEstimate(trx, model, videoPricingUnit(resolution), duration),
-      idempotencyKey: `job:${userId}:video.generate:${scriptId}:${trackId}`,
+      // ⚠ 每次提交带新的 uuid：同一段重复生成时 jobId/refId 会变，用固定 key 会触发
+      //   "idempotency key was reused with different reservation input"（真机 500）。
+      //   防重复点击已由 job 的 dedupeKey（user+script+track）保证，不靠这里。
+      idempotencyKey: `job:${userId}:video.generate:${scriptId}:${trackId}:${uuidv4()}`,
       createBusinessRows: async (trx) => {
         const [videoId] = await trx("o_video").insert({
           filePath: videoPath, time: Date.now(), state: "生成中", scriptId, projectId, videoTrackId: trackId,

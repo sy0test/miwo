@@ -110,7 +110,8 @@ export default router.post(
       estimateMicro: (trx) => resolveSubmissionEstimate(
         trx, model, videoPricingUnit(resolution), tasks.reduce((total, item) => total + item.duration, 0),
       ),
-      idempotencyKey: `job:${userId}:video.batchGenerate:${scriptId}:${tasks.map((t) => t.trackId).join(",")}`,
+      // 同上：每次批量提交是新 job（refId 变），固定 key 会在"生成完再点一次"时 500
+      idempotencyKey: `job:${userId}:video.batchGenerate:${scriptId}:${tasks.map((t) => t.trackId).join(",")}:${uuidv4()}`,
       createBusinessRows: async (trx) => {
         const items = [] as Array<{ videoId: number; videoPath: string; trackId: number }>;
         for (const task of tasks) {
