@@ -28,7 +28,7 @@ test("status view follows redrawState first, then extractState", () => {
   assert.equal(statusViewFor({ extractState: -1, redrawState: 0 }).label, "失败");
   assert.equal(statusViewFor({ extractState: 1, redrawState: 1 }).label, "待认账");
   assert.equal(statusViewFor({ extractState: 1, redrawState: 2 }).label, "资产已确认");
-  assert.equal(statusViewFor({ extractState: 1, redrawState: 3 }).label, "可制作");
+  assert.equal(statusViewFor({ extractState: 1, redrawState: 3 }).label, "转绘待确认");
   assert.equal(statusViewFor({ extractState: 1, redrawState: 4 }).label, "可生成");
   assert.equal(statusViewFor({ extractState: 2, redrawState: 0 }).label, "等待提取");
 });
@@ -39,9 +39,9 @@ test("primary action covers the whole redraw state machine", () => {
   assert.equal(primaryActionFor({ ...base, redrawState: -1 }).action, "analyze");
   assert.equal(primaryActionFor({ ...base, redrawState: 0 }).action, "analyze");
   assert.equal(primaryActionFor({ ...base, redrawState: 1 }).route, "session");
-  assert.equal(primaryActionFor({ ...base, redrawState: 2 }).route, "session");
-  assert.equal(primaryActionFor({ ...base, redrawState: 3 }).route, "/production/canvas");
-  assert.equal(primaryActionFor({ ...base, redrawState: 4 }).route, "/production/canvas");
+  assert.equal(primaryActionFor({ ...base, redrawState: 2 }).action, "generateStoryboard");
+  assert.equal(primaryActionFor({ ...base, redrawState: 3 }).route, "review");
+  assert.equal(primaryActionFor({ ...base, redrawState: 4 }).route, "/production");
   assert.equal(primaryActionFor(base, { busy: true }).disabled, true);
 });
 

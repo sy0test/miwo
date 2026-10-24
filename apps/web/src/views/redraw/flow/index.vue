@@ -32,13 +32,20 @@
           </div>
         </div>
         <div class="tip">
-          流程：源片分析 → 转绘会话（剧本/资产/时长）→ 进入分镜板 → 生成视频。
-          （已去掉「生成转绘分镜 / 并排确认」两步，资产确认后直接进分镜板。）
+          流程：源片分析 → 转绘会话（剧本/资产/时长）→ 生成转绘分镜 → 并排确认 → 工作台生成视频。
+          任何一步都可以点节点回到对应页面。
         </div>
       </div>
       <ChatPanel v-if="showChat" class="chat" :project-id="projectId" :script-id="scriptId" />
     </div>
 
+    <!--
+      ⚠ 必须等 scriptId 就绪、且在打开时才挂载：
+      生成面板的 generate/index.vue 在 onMounted 里就用注入的 episodesId 拉 getGenerateData。
+      如果组件在页面加载时就挂载（scriptId 还是 0），那一次请求拿到空轨道之后不会再拉 ——
+      真机症状：前面步骤全绿，打开「生成面板」是空的、时长显示 NaN。
+    -->
+    <workbenchDialog v-if="workbenchVisible && scriptId" :key="scriptId" v-model:visible="workbenchVisible" />
   </div>
 </template>
 
@@ -47,6 +54,7 @@ import axios from "@/utils/axios";
 import projectStore from "@/stores/project";
 import useRedrawStore from "@/stores/redraw";
 import ChatPanel from "@/views/redraw/session/components/ChatPanel.vue";
+import workbenchDialog from "@/views/production/components/workbench/index.vue";
 import { jobRunning as jobIsRunning, jobText } from "@/views/redraw/logic";
 
 const router = useRouter();
@@ -56,10 +64,14 @@ const projectId = computed(() => Number(project.value?.id ?? 0));
 const list = ref<any[]>([]);
 const scriptId = ref(0);
 const showChat = ref(false);
+const workbenchVisible = ref(false);
+
+provide("episodesId", scriptId);
 
 const rd = computed(() => Number(store.episode?.redrawState ?? 0));
 const analyzed = computed(() => Number(store.episode?.segmentCount ?? 0) > 0);
 const jobRunning = computed(() => jobIsRunning(store.episode));
+const sbGenerating = computed(() => jobRunning.value && String(store.episode?.job?.type ?? "").startsWith("redraw.storyboard"));
 
 const nodes = computed(() => {
   const s = store.episode;
@@ -83,21 +95,50 @@ const nodes = computed(() => {
       button: "去认账", action: () => router.push("/redraw/session/" + scriptId.value),
     },
     {
-      key: "board", title: "分镜板",
-      tag: jobRunning.value ? "生成中" : rd.value >= 4 ? "可制作" : rd.value >= 2 ? "待确认" : "未解锁",
-      tagTheme: jobRunning.value ? "primary" : rd.value >= 4 ? "success" : "default",
-      state: rd.value >= 4 ? "done" : "todo",
-      primary: rd.value >= 2 && rd.value < 4 && !jobRunning.value,
-      desc: jobRunning.value
-        ? (jobText(store.episode) || "任务") + "…页面会自动刷新"
-        : "资产确认后直接进分镜板：查看分镜、打开生成面板生成视频",
-      button: jobRunning.value ? "处理中…" : rd.value >= 4 ? "打开分镜板" : "继续会话",
+      key: "storyboard", title: "转绘分镜",
+      tag: sbGenerating.value ? "生成中" : rd.value >= 3 ? "已生成" : rd.value === 2 ? "待生成" : "未解锁",
+      tagTheme: sbGenerating.value ? "primary" : rd.value >= 3 ? "success" : "default",
+      state: rd.value >= 3 ? "done" : "todo",
+      primary: rd.value === 2 && !jobRunning.value,
+      desc: sbGenerating.value
+        ? (jobText(store.episode) || "生成中") + "…页面会自动刷新"
+        : "段数 " + (s?.segmentCount ?? 0) + " · 单段上限 " + (s?.segmentCap ?? 15) + "s",
+      button: sbGenerating.value ? "生成中…" : rd.value >= 3 ? "并排确认" : rd.value === 2 ? "生成转绘分镜" : "先完成认账",
       action: async () => {
         if (jobRunning.value) return;
         await store.refresh();
-        if (Number(store.episode?.redrawState ?? 0) >= 4) router.push("/production/canvas");
-        else router.push("/redraw/session/" + scriptId.value);
+        const now = Number(store.episode?.redrawState ?? 0);
+        if (now >= 3) {
+          router.push("/redraw/review/" + scriptId.value);
+        } else if (now === 2) {
+          try {
+            await store.generateStoryboard();
+            window.$message.success("已开始生成转绘分镜");
+            await store.refresh();
+          } catch (e: any) {
+            window.$message.error(e?.message ?? "生成失败");
+          }
+        } else {
+          router.push("/redraw/session/" + scriptId.value);
+        }
       },
+    },
+    {
+      key: "confirm", title: "确认", tag: rd.value >= 4 ? "已确认" : "待确认",
+      tagTheme: rd.value >= 4 ? "success" : "default", state: rd.value >= 4 ? "done" : "todo", primary: false,
+      desc: "确认后覆盖源片分镜，进入生成",
+      button: "去确认",
+      action: async () => {
+        await store.refresh();
+        if (Number(store.episode?.redrawState ?? 0) >= 3) router.push("/redraw/review/" + scriptId.value);
+        else window.$message.warning("先生成转绘分镜，才能并排确认");
+      },
+    },
+    {
+      key: "generate", title: "工作台", tag: rd.value >= 4 ? "可生成" : "未解锁",
+      tagTheme: rd.value >= 4 ? "success" : "default", state: rd.value >= 4 ? "done" : "todo", primary: rd.value >= 4,
+      desc: "按段生成视频（带资产绑定）",
+      button: "打开生成面板", action: () => { if (rd.value >= 4) workbenchVisible.value = true; },
     },
   ];
 });

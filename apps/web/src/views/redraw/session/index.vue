@@ -32,7 +32,7 @@
       <div class="f ac" style="gap: 8px">
         <t-button v-if="step !== 3" theme="primary" :loading="store.busy" @click="next">{{ step === 1 ? "保存并继续" : "下一步" }}</t-button>
         <t-button v-else theme="primary" :disabled="!canGenerateFinal || jobRunning || generatingLocal" :loading="store.busy || generatingLocal" @click="generate">
-          {{ generatingLocal ? "正在进入…" : "进入分镜板" }}
+          {{ jobRunning || generatingLocal ? "生成中…" : "生成转绘分镜" }}
         </t-button>
       </div>
     </div>
@@ -73,7 +73,7 @@ const stepHint = computed(() => {
   if (step.value === 1) return "剧本可以不改，直接继续";
   if (step.value === 2) return store.stepAccess.step3 ? "资产已全部确认" : store.stepAccess.blockedReason ?? "";
   if (!capOk.value) return "有段超过单段上限，请回解析层调整";
-  return canGenerateFinal.value ? "确认后直接进入分镜板（无需再生成/确认转绘分镜）" : store.stepAccess.blockedReason ?? "";
+  return canGenerateFinal.value ? "可以生成转绘分镜" : store.stepAccess.blockedReason ?? "";
 });
 
 onMounted(async () => {
@@ -191,26 +191,16 @@ function onAgentStep(payload: { step?: number }) {
   if (s >= 1 && s <= 3 && s > step.value) step.value = s;
 }
 
-/**
- * 新流程：资产/时长确认后直接进分镜板（不再走「生成转绘分镜 → 并排确认」）。
- * confirmFast 沿用解析阶段的分镜、把状态顺推到 4，并自动切好原片。
- */
 async function generate() {
   if (jobRunning.value || generatingLocal.value) return;
   generatingLocal.value = true;
   try {
-    const res: any = await store.confirmFast();
-    const cut = res?.cut;
-    const issues = Array.isArray(cut?.issues) ? cut.issues : [];
-    const errs = issues.filter((i: any) => i?.level === "error");
-    if (errs.length) {
-      window.$message.warning("已进入分镜板；有 " + errs.length + " 段切片失败：" + errs[0]?.message);
-    } else {
-      window.$message.success("已进入分镜板");
-    }
-    router.push("/production/canvas");
+    await store.generateStoryboard();
+    await store.refresh();
+    window.$message.success("已提交生成，转到确认页可看进度");
+    router.push("/redraw/review/" + scriptId.value);
   } catch (e: any) {
-    window.$message.error(e?.message ?? "进入分镜板失败");
+    window.$message.error(e?.message ?? "生成失败");
   } finally {
     generatingLocal.value = false;
   }

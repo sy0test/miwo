@@ -21,19 +21,11 @@ const router = express.Router();
  */
 export default router.post(
   "/",
-  validateFields({ projectId: z.number(), scriptId: z.number(), fast: z.boolean().optional() }),
+  validateFields({ projectId: z.number(), scriptId: z.number() }),
   async (req, res) => {
     try {
-      const { projectId, scriptId, fast } = req.body;
+      const { projectId, scriptId } = req.body;
       await requireOwnedScript(u.db, projectId, scriptId);
-      // fast=true：「资产确认 → 直接进分镜板」的新流程：不再生成/并排确认转绘分镜，
-      // 沿用解析阶段已落库的分镜，把状态从 2 顺推 3→4（不做越级写，保持状态机白名单干净）。
-      if (fast) {
-        const row = await u.db("o_script").where({ id: scriptId, projectId }).first("redrawState");
-        if (Number(row?.redrawState ?? 0) === REDRAW_STATE.ASSETS_OK) {
-          await transitionRedrawState(u.db, { projectId, scriptId, to: REDRAW_STATE.STORYBOARD_READY, errorReason: null });
-        }
-      }
       await transitionRedrawState(u.db, { projectId, scriptId, to: REDRAW_STATE.CONFIRMED, errorReason: null });
 
       let cut: { total: number; cut: number; skipped: number; removed: number; issues: unknown[] } | null = null;

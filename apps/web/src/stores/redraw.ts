@@ -215,26 +215,10 @@ export default defineStore("redraw", () => {
     }
   }
 
-  /**
-   * 新流程：资产确认后直接进分镜板（跳过分镜生成 + 并排确认）。
-   * 后端 fast=true：沿用解析阶段的分镜，状态 2 → 3 → 4，并自动切原片。
-   */
-  async function confirmFast() {
-    busy.value = true;
-    try {
-      const raw = await post("redraw/confirmStoryboard", { fast: true });
-      await refresh();
-      return raw;
-    } finally {
-      busy.value = false;
-    }
-  }
-
   async function confirmStoryboard() {
     busy.value = true;
     try {
       const raw = await post("redraw/confirmStoryboard");
-      await loadStoryboard();
       await refresh();
       return raw;
     } finally {
@@ -292,7 +276,7 @@ export default defineStore("redraw", () => {
     loading, saving, busy, error, segmentCap, capConfirmed,
     allConfirmed, stepAccess, primaryAction, secondaryActions, statusView,
     loadEpisode, refresh, loadScript, saveScript, loadAssets, bindDraft, createAsset, updateAsset,
-    confirmAssets, confirmSegmentCap, loadStoryboard, generateStoryboard, confirmStoryboard, confirmFast, rollbackStoryboard,
+    confirmAssets, confirmSegmentCap, loadStoryboard, generateStoryboard, confirmStoryboard, rollbackStoryboard,
     analyze, cut,
   };
 });
