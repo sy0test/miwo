@@ -37,7 +37,13 @@
       <ChatPanel v-if="showChat" class="chat" :project-id="projectId" :script-id="scriptId" />
     </div>
 
-    <workbenchDialog v-model:visible="workbenchVisible" />
+    <!--
+      ⚠ 必须等 scriptId 就绪、且在打开时才挂载：
+      生成面板的 generate/index.vue 在 onMounted 里就用注入的 episodesId 拉 getGenerateData。
+      如果组件在页面加载时就挂载（scriptId 还是 0），那一次请求拿到空轨道之后不会再拉 ——
+      真机症状：前面步骤全绿，打开「生成面板」是空的、时长显示 NaN。
+    -->
+    <workbenchDialog v-if="workbenchVisible && scriptId" :key="scriptId" v-model:visible="workbenchVisible" />
   </div>
 </template>
 
