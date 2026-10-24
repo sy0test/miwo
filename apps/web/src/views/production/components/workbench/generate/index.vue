@@ -656,31 +656,6 @@ onUnmounted(() => {
             flex: 1;
             min-height: 0;
             overflow-y: auto;
-            /* ⚠ 不再依赖父级 flex 高度链：contenteditable 用「height:auto + max-height」自己决定
-               何时开始滚。父链里任何一层 height 变成 auto，height:100% 都会退化成 content 高度
-               （真机症状：卡片把文字裁掉、看起来有轨道但滚不动）。 */
-            :deep(.textareaWrapper) {
-              height: auto !important;
-              min-height: 0;
-            }
-            :deep(.promptEditor) {
-              height: auto !important;
-              max-height: min(34vh, 260px);
-              overflow-y: auto;
-              scrollbar-width: thin;
-              scrollbar-gutter: stable;
-            }
-            :deep(.promptEditor)::-webkit-scrollbar {
-              width: 10px;
-            }
-            :deep(.promptEditor)::-webkit-scrollbar-thumb {
-              background: var(--td-scrollbar-hover-color);
-              border-radius: 5px;
-            }
-            :deep(.promptEditor)::-webkit-scrollbar-track {
-              background: var(--td-bg-color-secondarycontainer);
-              border-radius: 5px;
-            }
           }
         }
       }

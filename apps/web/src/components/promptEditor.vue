@@ -392,17 +392,34 @@ function handlePaste(e: ClipboardEvent) {
 .promptEditor {
   width: 100%;
   height: 100%;
+  /* 内容超过这个高度就在**编辑框内部**滚：父级 flex 高度链不可靠（某层 auto 时 height:100%
+     会退化成内容高度，卡片把文字裁掉、看起来有轨道却滚不动）。max-height 是兜底判据。 */
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
   box-sizing: border-box;
   border: none;
   outline: none;
   padding: 10px;
-  overflow-y: auto;
   font-size: 13px;
   line-height: 1.6;
   color: var(--td-text-color-primary);
   white-space: pre-wrap;
   word-break: break-all;
   cursor: text;
+
+  &::-webkit-scrollbar {
+    width: 10px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--td-scrollbar-hover-color);
+    border-radius: 5px;
+  }
+  &::-webkit-scrollbar-track {
+    background: var(--td-bg-color-secondarycontainer);
+    border-radius: 5px;
+  }
 
   &:empty::before {
     content: attr(data-placeholder);
