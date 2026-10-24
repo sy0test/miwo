@@ -204,14 +204,15 @@ describe("状态转移白名单", () => {
     expect(canRedrawTransition(-1, 2)).toBe(false);
   });
 
-  it("重跑/回退：2/3/4 可回 1；3/4 可回 3；4 可回 2（回退到源片版）；其它回退拒绝", () => {
+  it("重跑/回退：2/3/4 可回 1；3/4 可回 3；3/4 可回 2（回退到源片版）；其它回退拒绝", () => {
     for (const from of [2, 3, 4]) expect(canRedrawTransition(from, 1)).toBe(true);
     expect(canRedrawTransition(3, 3)).toBe(true);
     expect(canRedrawTransition(4, 3)).toBe(true);
     expect(canRedrawTransition(4, 1)).toBe(true);
-    // spec §4.2 的新转移表：4 → 2 = 用户「回退到源片版」（转绘分镜作废、资产仍算确认）
+    // spec §4.2 的新转移表：3/4 → 2 = 用户「回退到源片版」（转绘分镜作废、资产仍算确认）
     expect(canRedrawTransition(4, 2)).toBe(true);
-    expect(canRedrawTransition(3, 2)).toBe(false);
+    expect(canRedrawTransition(3, 2)).toBe(true);
+    expect(canRedrawTransition(2, 2)).toBe(true);
     expect(canRedrawTransition(2, 0)).toBe(false);
   });
 

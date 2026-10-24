@@ -55,7 +55,7 @@ export function isRedrawState(v: unknown): v is RedrawState {
  *
  *  · 正向：0→1→2→3→4（每一步都要求前一步的产物已落库）；
  *  · 重跑：2/3/4 都可以回到 1（重新解析，旧资产绑定保留，分镜被替换）；
- *  · 回退：3/4 可以回 3（「重跑转绘」）；4 → 2（「回退到源片版」= 丢掉转绘版、保留已确认资产）；
+ *  · 回退：3/4 可以回 3（「重跑转绘」）；3/4 → 2（「回退到源片版」= 丢掉转绘版、保留已确认资产）；
  *  · 失败：任意状态 → -1（幂等：-1→-1 允许）；失败后 0（重传）/1（重试解析）。
  *  · **重复写同一状态一律允许**（幂等："确认资产"点两次不该报错）。
  *
@@ -67,6 +67,7 @@ const ALLOWED_TRANSITIONS: Record<number, readonly number[]> = {
   [REDRAW_STATE.ASSETS_OK]: [REDRAW_STATE.PARSED, REDRAW_STATE.ASSETS_OK, REDRAW_STATE.STORYBOARD_READY, REDRAW_STATE.FAILED],
   [REDRAW_STATE.STORYBOARD_READY]: [
     REDRAW_STATE.PARSED,
+    REDRAW_STATE.ASSETS_OK, // 回退到源片版：确认前也可以退回「资产已确认」，丢掉转绘版
     REDRAW_STATE.STORYBOARD_READY,
     REDRAW_STATE.CONFIRMED,
     REDRAW_STATE.FAILED,
