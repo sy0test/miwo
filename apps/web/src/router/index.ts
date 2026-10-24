@@ -69,6 +69,11 @@ const router = createRouter({
           component: () => import("@/views/production/entry.vue"),
         },
         {
+          // 转绘：资产确认后直接进分镜板（跳过转绘分镜生成/并排确认两步）
+          path: "/production/canvas",
+          component: () => import("@/views/production/index.vue"),
+        },
+        {
           path: "/assets",
           component: () => import("@/views/assets/index.vue"),
         },

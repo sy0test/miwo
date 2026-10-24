@@ -71,7 +71,7 @@ export function statusViewFor(ep: { extractState?: number | null; redrawState?: 
   if (rd === -1 || ex === -1) return { label: "失败", theme: "danger" };
   if (rd === 1) return { label: "待认账", theme: "warning" };
   if (rd === 2) return { label: "资产已确认", theme: "warning" };
-  if (rd === 3) return { label: "转绘待确认", theme: "warning" };
+  if (rd === 3) return { label: "可制作", theme: "success" };
   if (rd === 4) return { label: "可生成", theme: "success" };
   if (ex === 1) return { label: "已解析", theme: "success" };
   if (ex === 2) return { label: "等待提取", theme: "default" };
@@ -88,9 +88,10 @@ export function primaryActionFor(ep: EpisodeState | null, opts: { busy?: boolean
   }
   if (ep.redrawState === 0) return { key: "analyze", label: "开始分析", theme: "primary", action: "analyze" };
   if (ep.redrawState === 1) return { key: "reconcile", label: "去认账", theme: "primary", route: "session" };
-  if (ep.redrawState === 2) return { key: "storyboard", label: "生成转绘分镜", theme: "primary", action: "generateStoryboard" };
-  if (ep.redrawState === 3) return { key: "review", label: "去确认", theme: "primary", route: "review" };
-  if (ep.redrawState === 4) return { key: "produce", label: "去制作", theme: "success", route: "/production" };
+  // 新流程：资产确认后进入会话第③步（时长），确认完直接进分镜板；不再生成/并排确认转绘分镜
+  if (ep.redrawState === 2) return { key: "session", label: "继续会话", theme: "primary", route: "session" };
+  if (ep.redrawState === 3) return { key: "board", label: "去分镜板", theme: "primary", route: "/production/canvas" };
+  if (ep.redrawState === 4) return { key: "board", label: "去分镜板", theme: "success", route: "/production/canvas" };
   return { key: "analyze", label: "开始分析", theme: "primary", action: "analyze" };
 }
 
