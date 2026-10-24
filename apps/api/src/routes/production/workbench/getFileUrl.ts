@@ -37,9 +37,23 @@ export default router.post(
             totalFilePaths.push(...assetsPaths.map(i => ({ id: i.id, filePath: i.filePath, sources: "assets" })))
         }
 
+        // 转绘的原片参考片段（sources:"clip"）：v2 在 o_segment.clipPath，legacy 在 o_storyboard.clipPath。
+        // 以前没有这条分支 ⇒ 前端 warmUpUrls 拿不到 clip 的签名 URL，缓存回退成没有 /oss 前缀、没有签名的裸路径，
+        // 真机症状就是「原片切片不在素材列表里 / 点开也播不了」（403/404）。
+        const clipIds = items.filter((item: any) => item.sources == "clip").map((item: any) => item.id)
+        if (clipIds.length) {
+            const clipRows = engine === "v2"
+                ? await u.db("o_segment").whereIn("id", clipIds).select("id", "clipPath")
+                : await u.db("o_storyboard").whereIn("id", clipIds).select("id", "clipPath");
+            totalFilePaths.push(...clipRows.map((i: any) => ({ id: i.id, filePath: i.clipPath, sources: "clip" })))
+        }
+
         await Promise.all(
             totalFilePaths.map(async (item: { id: string, filePath: string, sources: string }) => {
-                result[`${item.id}:${item.sources}`] = item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : "";
+                // 视频不能走缩略图分支（&size=20 是给图片看的；对 mp4 生成缩略图会失败并返回不可播的 URL）
+                result[`${item.id}:${item.sources}`] = item.filePath
+                    ? (item.sources === "clip" ? await u.oss.getFileUrl(item.filePath) : await u.oss.getSmallImageUrl(item.filePath))
+                    : "";
             }))
 
         res.status(200).send(success({ data: result }));

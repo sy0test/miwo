@@ -69,7 +69,7 @@
           </div>
           <div class="source">
             <t-tag size="small">
-              {{ item.sources == "storyboard" ? $t("workbench.generate.storyboard") : $t("workbench.generate.assets") }}
+              {{ item.sources == "storyboard" ? $t("workbench.generate.storyboard") : item.sources == "clip" ? "原片" : $t("workbench.generate.assets") }}
             </t-tag>
           </div>
         </div>
@@ -118,7 +118,7 @@
             </div>
             <div class="source">
               <t-tag size="small">
-                {{ imageList?.[index]?.sources == "storyboard" ? $t("workbench.generate.storyboard") : $t("workbench.generate.assets") }}
+                {{ imageList?.[index]?.sources == "storyboard" ? $t("workbench.generate.storyboard") : imageList?.[index]?.sources == "clip" ? "原片" : $t("workbench.generate.assets") }}
               </t-tag>
             </div>
           </div>
