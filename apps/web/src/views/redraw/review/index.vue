@@ -13,10 +13,11 @@
 
     <t-alert v-if="store.error" theme="error" :message="store.error" />
     <t-alert v-if="failed" theme="error" message="转绘分镜生成失败：可以点「重跑转绘层」，或到任务中心看失败原因。" />
+    <t-alert v-if="showConfirmHint" theme="info" :message="confirmHint" />
 
-    <div v-if="extracting" class="waiting fc c">
+    <div v-if="extracting || generating" class="waiting fc c">
       <t-loading size="large" />
-      <div class="waitText">转绘分镜生成中…完成后会自动刷新</div>
+      <div class="waitText">{{ extracting ? "解析中…完成后自动刷新" : "转绘分镜生成中…完成后会自动刷新" }}</div>
     </div>
 
     <template v-else>
@@ -60,7 +61,9 @@
         <t-button variant="outline" :disabled="store.busy" @click="rollback">回退到源片版</t-button>
         <t-button variant="outline" :disabled="store.busy" @click="regenerate">重跑转绘层</t-button>
       </div>
-      <t-button theme="primary" :disabled="!canConfirm" :loading="store.busy" @click="confirm">确认覆盖并进入制作</t-button>
+      <t-tooltip :content="canConfirm ? '' : confirmHint" :disabled="canConfirm" placement="top">
+        <t-button theme="primary" :disabled="!canConfirm" :loading="store.busy" @click="confirm">确认覆盖并进入制作</t-button>
+      </t-tooltip>
     </div>
   </div>
 </template>
@@ -77,8 +80,23 @@ const scriptId = computed(() => Number(route.params.scriptId ?? 0));
 const loading = ref(false);
 const extracting = computed(() => Number(store.episode?.extractState ?? 1) === 0);
 const failed = computed(() => Number(store.episode?.redrawState ?? 0) === -1);
+/** 已认账、正在生成转绘分镜（redrawState=2 且还没有转绘版）—— 这是"没有提示"的根因 */
+const generating = computed(
+  () => !extracting.value && Number(store.episode?.redrawState ?? 0) === 2 && store.storyboard.redraw.length === 0,
+);
 const title = computed(() => "转绘确认 · " + (store.scriptName || "第 " + scriptId.value + " 集"));
 const canConfirm = computed(() => Number(store.episode?.redrawState ?? 0) === 3 && store.storyboard.redraw.length > 0);
+/** 按钮为什么点不了 —— 必须写在界面上，而不是只灰着 */
+const confirmHint = computed(() => {
+  const rd = Number(store.episode?.redrawState ?? 0);
+  if (rd === -1) return "生成失败：先重跑转绘层";
+  if (rd === 1) return "还没完成资产认账：先回会话页确认资产";
+  if (rd === 2) return "转绘分镜还没生成：点「重跑转绘层」生成后再确认";
+  if (rd === 4) return "已经确认过了，可以直接去制作";
+  if (!store.storyboard.redraw.length) return "还没有转绘版可确认";
+  return "";
+});
+const showConfirmHint = computed(() => !canConfirm.value && !extracting.value && !generating.value && !!confirmHint.value);
 
 function descOf(s: any): string {
   return String(s?.videoDesc ?? s?.desc ?? "");
@@ -111,7 +129,8 @@ onMounted(async () => {
 let timer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   timer = setInterval(async () => {
-    if (extracting.value || Number(store.episode?.redrawState ?? 0) === 3) {
+    const rd = Number(store.episode?.redrawState ?? 0);
+    if (extracting.value || generating.value || rd === 3) {
       await store.refresh();
       if (Number(store.episode?.redrawState ?? 0) >= 3) {
         await store.loadStoryboard();
@@ -152,8 +171,15 @@ async function regenerate() {
 }
 async function confirm() {
   try {
-    await store.confirmStoryboard();
-    window.$message.success("已确认覆盖，正在进入制作");
+    const res: any = await store.confirmStoryboard();
+    const cut = res?.cut;
+    const issues = Array.isArray(cut?.issues) ? cut.issues : [];
+    const errs = issues.filter((i: any) => i?.level === "error");
+    if (errs.length) {
+      window.$message.warning("已确认，但有 " + errs.length + " 段切片失败：" + errs[0]?.message + "（可在源片页「重切」）");
+    } else {
+      window.$message.success("已确认覆盖，正在进入制作");
+    }
     router.push("/production");
   } catch (e: any) {
     window.$message.error(e?.message ?? "确认失败");

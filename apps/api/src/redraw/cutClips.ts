@@ -143,14 +143,22 @@ export async function cutSourceClips(
           issues.push({ level: "error", segmentIndex, message: "片段 " + segmentIndex + " 下没有镜，无法确定源片区间" });
           return;
         }
+        // 段级区间优先：转绘分镜重写后，段内镜数可能和源片不同，多出来的镜没有 sourceRange
+        // （真机症状：seg 9/11 的第二镜区间为空 ⇒ 整段切不出来 ⇒ 工作台这两段没有原片参考）。
+        // 段上的 sourceRange 是解析层按整个片段聚合好的，比逐镜更可靠。
         const ranges: [number, number][] = [];
-        for (const sh of segShots) {
-          const parsed = parseRanges(String(sh.sourceRange ?? "").trim());
-          if (!parsed) {
-            issues.push({ level: "error", segmentIndex, message: "片段 " + segmentIndex + " 的镜 " + sh.shotIndex + " 区间解析不出来：" + String(sh.sourceRange ?? "") });
-            return;
+        const segRanges = parseRanges(String(seg.sourceRange ?? "").trim());
+        if (segRanges && segRanges.length) {
+          ranges.push(...segRanges);
+        } else {
+          for (const sh of segShots) {
+            const parsed = parseRanges(String(sh.sourceRange ?? "").trim());
+            if (!parsed) {
+              issues.push({ level: "error", segmentIndex, message: "片段 " + segmentIndex + " 的镜 " + sh.shotIndex + " 区间解析不出来：" + String(sh.sourceRange ?? "") });
+              return;
+            }
+            ranges.push(...parsed);
           }
-          ranges.push(...parsed);
         }
         const clamped: [number, number][] = [];
         for (const [a, b] of ranges) {
