@@ -55,11 +55,24 @@
           <div class="colTitle">转绘版（videoDesc 按镜头表格展开）</div>
           <div v-if="!redrawRows.length" class="empty">还没有转绘版（生成完成后出现）</div>
           <table v-else class="segTable">
+            <colgroup>
+              <col style="width: 46px" />
+              <col style="width: 56px" />
+              <col style="width: 110px" />
+              <col style="width: 36px" />
+              <col style="width: 240px" />
+              <col style="width: 52px" />
+              <col style="width: 72px" />
+              <col style="width: 100px" />
+              <col style="width: 130px" />
+              <col style="width: 170px" />
+              <col style="width: 100px" />
+            </colgroup>
             <thead>
               <tr>
                 <th style="width: 46px">段</th>
                 <th style="width: 56px">时长</th>
-                <th style="width: 130px">源片区间</th>
+                <th style="width: 110px">源片区间</th>
                 <th v-for="h in vdHeaders" :key="h">{{ h }}</th>
               </tr>
             </thead>
@@ -74,12 +87,11 @@
                   <td class="range">{{ r.range || "-" }}</td>
                   <td colspan="8">{{ r.text || "（无描述）" }}</td>
                 </tr>
-                <tr v-else :class="r.cls">
-                  <template v-if="r.first">
-                    <td class="c segCell" :rowspan="r.rowspan">{{ r.seg }}</td>
-                    <td class="c" :rowspan="r.rowspan">{{ r.duration }}s</td>
-                    <td class="range" :rowspan="r.rowspan">{{ r.range || "-" }}</td>
-                  </template>
+                <tr v-else :class="[r.cls, r.first ? '' : 'cont']">
+                  <!-- 每镜一行、段信息重复（不用 rowspan：rowspan 在多镜/说明行混排时会串列） -->
+                  <td class="c segCell">{{ r.seg }}</td>
+                  <td class="c">{{ r.duration }}s</td>
+                  <td class="range">{{ r.range || "-" }}</td>
                   <td v-for="(c, ci) in r.cells" :key="ci">{{ c }}</td>
                 </tr>
               </template>
@@ -236,7 +248,6 @@ const redrawFlat = computed<any[]>(() => {
         range: s.sourceRange,
         cells,
         first: i === 0,
-        rowspan: shots.length,
         cls: s.cls,
       });
     });
@@ -366,8 +377,9 @@ async function confirm() {
   }
   .segTable {
     width: 100%;
-    /* 11 列（段/时长/区间 + 8 个镜头字段）在窄容器里会挤成一条线：给个下限，超出横向滚动 */
-    min-width: 980px;
+    /* 11 列（段/时长/区间 + 8 个镜头字段）在窄容器里会挤成一条线：固定列宽 + 下限，超出横向滚动 */
+    min-width: 1120px;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 12px;
     th,
@@ -389,6 +401,12 @@ async function confirm() {
     .range { color: var(--td-text-color-placeholder); white-space: pre-wrap; }
     .desc { line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
     .segCell { font-weight: 600; background: var(--td-bg-color-secondarycontainer); }
+    tr.cont .segCell,
+    tr.cont td:nth-child(2),
+    tr.cont td:nth-child(3) {
+      color: var(--td-text-color-placeholder);
+      font-weight: 400;
+    }
     .introRow {
       background: var(--td-bg-color-secondarycontainer);
       color: var(--td-text-color-secondary);
