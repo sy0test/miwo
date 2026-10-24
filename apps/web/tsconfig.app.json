@@ -4,6 +4,7 @@
   "compilerOptions": {
     "ignoreDeprecations": "5.0",
     "composite": true,
+    "types": ["vite/client"],
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,

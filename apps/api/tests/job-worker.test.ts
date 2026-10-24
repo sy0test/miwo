@@ -23,6 +23,7 @@ import { JOB_POLICY, type JobPolicy } from "@/jobs/policy";
 import { createJobRegistry, type JobRegistry } from "@/jobs/registry";
 import { createJobStore, type JobStore } from "@/jobs/store";
 import type { JobContext, JobDefinition } from "@/jobs/types";
+import { currentAiBillingContext } from "@/billing/context";
 import { startWorkerLoop } from "@/jobs/worker";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-job-worker-"));
@@ -54,11 +55,13 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
   it("跑完所有已入队任务；并发峰值不超过 globalMaxRunning", async () => {
     let running = 0;
     let peak = 0;
+    const billingContexts: Array<{ context: ReturnType<typeof currentAiBillingContext>; jobId: string }> = [];
     const def: JobDefinition<{ ms: number }> = {
       type: "t.peak", timeoutMs: 5_000, maxAttempts: 1, pool: "p",
       parse: (raw) => raw as { ms: number },
       dedupeKey: () => null,
-      handle: async (_ctx: JobContext, p: { ms: number }) => {
+      handle: async (ctx: JobContext, p: { ms: number }) => {
+        billingContexts.push({ context: currentAiBillingContext(), jobId: String(ctx.jobId) });
         running += 1; peak = Math.max(peak, running);
         await sleep(p.ms);
         running -= 1;
@@ -76,6 +79,8 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
     await runner.stop();
     const s = await store.stats();
     expect(s.succeeded).toBe(6);
+    expect(billingContexts).toHaveLength(6);
+    expect(billingContexts.every(({ context, jobId }) => context.userId === 1 && context.jobId === jobId && context.requestId.startsWith("job:"))).toBe(true);
     expect(peak).toBeLessThanOrEqual(2);
     expect(peak).toBeGreaterThan(0); // 反恒真：证明真的并发跑过
     await db.destroy();
@@ -209,6 +214,219 @@ describe("worker 循环（spec §9.2/§9.3）", () => {
     const row = (await store.list({ limit: 5, scope: { all: true } }))[0];
     expect(row.state).toBe("dead");
     expect(row.lastError).toMatch(/超时|中止/);
+    await db.destroy();
+  });
+
+  it("settles a submitted job's measured usage and releases the unused reservation", async () => {
+    const def: JobDefinition<Record<string, never>> = {
+      type: "t.billed-success", timeoutMs: 5_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as Record<string, never>,
+      dedupeKey: () => null,
+      handle: async (ctx: JobContext) => {
+        await db("o_usage").insert({
+          userId: 71, jobId: ctx.jobId, vendorId: "test", model: "m1", callType: "image",
+          costMicro: "15", requestId: "request-1", providerCallId: "provider-call-1",
+          unit: "image", quantity: "1", usageStatus: "success", createdAt: Date.now(),
+        });
+        return { ok: true };
+      },
+    };
+    const { db, store, registry, policy } = await setup([def]);
+    await db("o_account").insert({ userId: 71, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+    const { submitBilledJob } = await import("@/billing/submit");
+    const submitted = await submitBilledJob({
+      db, userId: 71, estimateMicro: 50n, idempotencyKey: "reserve:worker-success",
+      createBusinessRows: async () => ({}),
+      enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId: 71, payload: {} }),
+    });
+    const runner = startWorkerLoop({ store, registry, workerId: "w-test", policy, log: () => {} });
+    for (let i = 0; i < 100; i += 1) {
+      if ((await store.get(Number(submitted.jobId), { all: true }))?.state === "succeeded") break;
+      await sleep(20);
+    }
+    await runner.stop();
+    expect(await db("o_account").where({ userId: 71 }).first()).toMatchObject({ balanceMicro: 85, frozenMicro: 0 });
+    expect(await db("o_ledger").where({ userId: 71 }).select("type", "amountMicro", "refType", "refId").orderBy("id")).toMatchObject([
+      { type: "freeze", amountMicro: 50, refType: "job", refId: submitted.jobId },
+      { type: "consume", amountMicro: -15, refType: "reservation" },
+    ]);
+    expect(await store.succeed(Number(submitted.jobId), "w-test", { duplicate: true })).toBe(false);
+    expect(await db("o_ledger").where({ userId: 71 }).count({ count: "*" }).first()).toMatchObject({ count: 2 });
+    await db.destroy();
+  });
+
+  it("settles measured usage on terminal failure and cancellation", async () => {
+    for (const outcome of ["failure", "cancel"] as const) {
+      const userId = outcome === "failure" ? 73 : 74;
+      const def: JobDefinition<Record<string, never>> = {
+        type: `t.billed-${outcome}`, timeoutMs: 5_000, maxAttempts: 1, pool: "p",
+        parse: (raw) => raw as Record<string, never>, dedupeKey: () => null,
+        handle: async () => ({}),
+      };
+      const { db, store } = await setup([def]);
+      await db("o_account").insert({ userId, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+      const { submitBilledJob } = await import("@/billing/submit");
+      const submitted = await submitBilledJob({
+        db, userId, estimateMicro: 50n, idempotencyKey: `reserve:${outcome}`,
+        createBusinessRows: async () => ({}),
+        enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId, payload: {} }),
+      });
+      await store.claim({ workerId: "w-test", limit: 1 });
+      await db("o_usage").insert({
+        userId, jobId: submitted.jobId, vendorId: "test", model: "m1", callType: "image",
+        costMicro: "15", requestId: `request-${outcome}`, providerCallId: `provider-${outcome}`,
+        unit: "image", quantity: "1", usageStatus: "success", createdAt: Date.now(),
+      });
+      if (outcome === "failure") await store.fail(Number(submitted.jobId), "w-test", "handler failed");
+      else await store.cancel(Number(submitted.jobId), "cancelled after provider call");
+
+      expect(await db("o_account").where({ userId }).first()).toMatchObject({ balanceMicro: 85, frozenMicro: 0 });
+      expect(await db("o_ledger").where({ userId }).select("type", "amountMicro").orderBy("id")).toMatchObject([
+        { type: "freeze", amountMicro: 50 },
+        { type: "consume", amountMicro: -15 },
+      ]);
+      await db.destroy();
+    }
+  });
+
+  it("retains the reservation when a provider admission has no durable usage event", async () => {
+    const userId = 76;
+    const def: JobDefinition<Record<string, never>> = {
+      type: "t.billed-admitted", timeoutMs: 5_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as Record<string, never>, dedupeKey: () => null,
+      handle: async () => ({}),
+    };
+    const { db, store } = await setup([def]);
+    await db("o_account").insert({ userId, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+    const { submitBilledJob } = await import("@/billing/submit");
+    const submitted = await submitBilledJob({
+      db, userId, estimateMicro: 50n, idempotencyKey: "reserve:admitted-no-usage",
+      createBusinessRows: async () => ({}),
+      enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId, payload: {} }),
+    });
+    await store.claim({ workerId: "w-test", limit: 1 });
+    await db("o_usageAdmission").insert({
+      userId, providerCallId: "provider-call-pending", vendorId: "test", model: "m1",
+      dayStart: Date.now(), admittedAt: Date.now(), jobId: submitted.jobId,
+      requestId: "request-pending", callType: "image",
+    });
+
+    await store.fail(Number(submitted.jobId), "w-test", "provider outcome unavailable");
+
+    expect(await db("o_account").where({ userId }).first()).toMatchObject({ balanceMicro: 100, frozenMicro: 50 });
+    expect(await db("o_ledger").where({ userId }).select("type").orderBy("id")).toMatchObject([{ type: "freeze" }]);
+    await db.destroy();
+  });
+
+  it("settles billed reservations when an exhausted worker lease is reclaimed", async () => {
+    const userId = 75;
+    const def: JobDefinition<Record<string, never>> = {
+      type: "t.billed-expired", timeoutMs: 5_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as Record<string, never>, dedupeKey: () => null,
+      handle: async () => ({}),
+    };
+    const { db, store } = await setup([def]);
+    await db("o_account").insert({ userId, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+    const { submitBilledJob } = await import("@/billing/submit");
+    const submitted = await submitBilledJob({
+      db, userId, estimateMicro: 50n, idempotencyKey: "reserve:expired",
+      createBusinessRows: async () => ({}),
+      enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId, payload: {} }),
+    });
+    await store.claim({ workerId: "w-test", limit: 1 });
+    await db("o_job").where({ id: submitted.jobId }).update({ leaseUntil: Date.now() - 1 });
+
+    expect(await store.reclaimExpired()).toEqual({ requeued: 0, dead: 1 });
+    expect(await db("o_account").where({ userId }).first()).toMatchObject({ balanceMicro: 100, frozenMicro: 0 });
+    expect(await db("o_ledger").where({ userId }).select("type", "amountMicro").orderBy("id")).toMatchObject([
+      { type: "freeze", amountMicro: 50 },
+      { type: "release", amountMicro: -50 },
+    ]);
+    await db.destroy();
+  });
+
+  it("retains a reservation when successful job usage is uncertain", async () => {
+    const def: JobDefinition<Record<string, never>> = {
+      type: "t.billed-uncertain", timeoutMs: 5_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as Record<string, never>,
+      dedupeKey: () => null,
+      handle: async (ctx: JobContext) => {
+        await db("o_usage").insert({
+          userId: 72, jobId: ctx.jobId, vendorId: "test", model: "m1", callType: "image",
+          costMicro: "15", requestId: "request-uncertain", providerCallId: "provider-call-uncertain",
+          unit: "image", quantity: "1", usageStatus: "uncertain", createdAt: Date.now(),
+        });
+        return { ok: true };
+      },
+    };
+    const { db, store, registry, policy } = await setup([def]);
+    await db("o_account").insert({ userId: 72, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+    const { submitBilledJob } = await import("@/billing/submit");
+    const submitted = await submitBilledJob({
+      db, userId: 72, estimateMicro: 50n, idempotencyKey: "reserve:worker-uncertain",
+      createBusinessRows: async () => ({}),
+      enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId: 72, payload: {} }),
+    });
+    const runner = startWorkerLoop({ store, registry, workerId: "w-test", policy, log: () => {} });
+    for (let i = 0; i < 100; i += 1) {
+      if ((await store.get(Number(submitted.jobId), { all: true }))?.state === "succeeded") break;
+      await sleep(20);
+    }
+    await runner.stop();
+    expect(await db("o_account").where({ userId: 72 }).first()).toMatchObject({ balanceMicro: 100, frozenMicro: 50 });
+    expect(await db("o_ledger").where({ userId: 72 }).select("type")).toMatchObject([{ type: "freeze" }]);
+    await db.destroy();
+  });
+
+  it("keeps a reservation through retry and releases it after terminal failure", async () => {
+    const def: JobDefinition<Record<string, never>> = {
+      type: "t.billed-retry", timeoutMs: 5_000, maxAttempts: 2, pool: "p",
+      parse: (raw) => raw as Record<string, never>, dedupeKey: () => null,
+      handle: async () => { throw new Error("known terminal failure"); },
+    };
+    const { db, store } = await setup([def]);
+    await db("o_account").insert({ userId: 73, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+    const { submitBilledJob } = await import("@/billing/submit");
+    const submitted = await submitBilledJob({
+      db, userId: 73, estimateMicro: 50n, idempotencyKey: "reserve:worker-retry",
+      createBusinessRows: async () => ({}),
+      enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId: 73, payload: {} }),
+    });
+    const firstClaim = await store.claim({ workerId: "w-test", limit: 1 });
+    expect(firstClaim[0]?.id).toBe(Number(submitted.jobId));
+    expect(await store.fail(Number(submitted.jobId), "w-test", "retryable failure")).toBe("queued");
+    expect(await db("o_account").where({ userId: 73 }).first()).toMatchObject({ balanceMicro: 100, frozenMicro: 50 });
+    await db("o_job").where({ id: Number(submitted.jobId) }).update({ nextAttemptAt: 0 });
+    const secondClaim = await store.claim({ workerId: "w-test", limit: 1 });
+    expect(secondClaim[0]?.id).toBe(Number(submitted.jobId));
+    expect(await store.fail(Number(submitted.jobId), "w-test", "known terminal failure")).toBe("dead");
+    expect(await db("o_account").where({ userId: 73 }).first()).toMatchObject({ balanceMicro: 100, frozenMicro: 0 });
+    expect(await db("o_ledger").where({ userId: 73 }).select("type", "refType").orderBy("id")).toMatchObject([
+      { type: "freeze", refType: "job" }, { type: "release", refType: "job-failure" },
+    ]);
+    await db.destroy();
+  });
+
+  it("releases a canceled job reservation once", async () => {
+    const def: JobDefinition<Record<string, never>> = {
+      type: "t.billed-cancel", timeoutMs: 5_000, maxAttempts: 1, pool: "p",
+      parse: (raw) => raw as Record<string, never>, dedupeKey: () => null,
+      handle: async () => ({ ok: true }),
+    };
+    const { db, store } = await setup([def]);
+    await db("o_account").insert({ userId: 74, balanceMicro: "100", frozenMicro: "0", version: 0, updatedAt: 1 });
+    const { submitBilledJob } = await import("@/billing/submit");
+    const submitted = await submitBilledJob({
+      db, userId: 74, estimateMicro: 50n, idempotencyKey: "reserve:worker-cancel",
+      createBusinessRows: async () => ({}),
+      enqueue: async (trx) => store.enqueueInTransaction(trx, { type: def.type, userId: 74, payload: {} }),
+    });
+    expect(await store.cancel(Number(submitted.jobId), "user canceled")).toBe(true);
+    expect(await store.cancel(Number(submitted.jobId), "duplicate cancel")).toBe(false);
+    expect(await db("o_account").where({ userId: 74 }).first()).toMatchObject({ balanceMicro: 100, frozenMicro: 0 });
+    expect(await db("o_ledger").where({ userId: 74 }).select("type", "refType").orderBy("id")).toMatchObject([
+      { type: "freeze", refType: "job" }, { type: "release", refType: "job-cancel" },
+    ]);
     await db.destroy();
   });
 

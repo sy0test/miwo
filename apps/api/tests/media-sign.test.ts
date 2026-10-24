@@ -13,12 +13,11 @@
  *   `apps/api/scripts/verify-phase1c-media.cjs` 的**真进程 + 真 HTTP** 作证（那里跑整条链）。
  *
  * ⚠ 本文件**不碰** `apps/api/data`（那是用户真实数据的只读快照）：媒体目录一律用
- *   `os.tmpdir()` 下的一次性目录 + `MIWO_MEDIA_DIR` 之外的注入方式 —— 见下面的 `ossFixture()`。
+ *   工作树 `.test-tmp` 下的一次性目录 + `MIWO_MEDIA_DIR` 之外的注入方式 —— 见下面的 `ossFixture()`。
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import express from "express";
 import morgan from "morgan";
@@ -41,7 +40,9 @@ import {
 } from "@/utils/mediaSign";
 import u from "@/utils";
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "miwo-media-sign-"));
+const TMP_ROOT = path.join(process.cwd(), ".test-tmp");
+fs.mkdirSync(TMP_ROOT, { recursive: true });
+const TMP = fs.mkdtempSync(path.join(TMP_ROOT, "media-sign-"));
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 /**
@@ -271,8 +272,9 @@ describe("ms 5-8. 出口侧：getFileUrl / getSmallImageUrl 产出的 URL", () =
       const url = await u.oss.getFileUrl("/ending.mp4", "assets");
       expect(new URL(url).pathname).toBe("/assets/ending.mp4");
       const parsed = new URL(url);
-      expect(verifyMediaSig("ending.mp4", parsed.searchParams.get("exp") ?? "", parsed.searchParams.get("sig") ?? "")).toBe(true);
-      expect(verifyMediaSig("assets/ending.mp4", parsed.searchParams.get("exp") ?? "", parsed.searchParams.get("sig") ?? ""), "带挂载点的形态不该通过（守卫拿到的是挂载点之后的部分）").toBe(false);
+      expect(verifyMediaSig("ending.mp4", parsed.searchParams.get("exp") ?? "", parsed.searchParams.get("sig") ?? "", Date.now(), "assets")).toBe(true);
+      expect(verifyMediaSig("ending.mp4", parsed.searchParams.get("exp") ?? "", parsed.searchParams.get("sig") ?? ""), "assets 签名不能用于默认 oss namespace").toBe(false);
+      expect(verifyMediaSig("assets/ending.mp4", parsed.searchParams.get("exp") ?? "", parsed.searchParams.get("sig") ?? "", Date.now(), "assets"), "带挂载点的形态不该通过（守卫拿到的是挂载点之后的部分）").toBe(false);
     });
   });
 
@@ -355,6 +357,29 @@ describe("ms 9-13. 守卫与静态资源：真 HTTP 两端", () => {
         expect(r.body, `${label} 不得泄漏绝对路径`).not.toMatch(/[A-Za-z]:[\\/]|miwo-media-sign-/);
         expect(r.body, `${label} 不得含堆栈`).not.toMatch(/\bat \w/);
       }
+    });
+  });
+
+  it("★ 跨挂载重放：/oss 的签名不能授权 /assets 的同名文件", async () => {
+    await withMediaTree(async (dirs) => {
+      const ossBody = mediaBytes("oss namespace");
+      const assetsBody = mediaBytes("assets namespace");
+      fs.writeFileSync(path.join(dirs.oss, "shared.bin"), ossBody);
+      fs.writeFileSync(path.join(dirs.assets, "shared.bin"), assetsBody);
+      const build = (app: express.Express) => mountStaticAssets(app, () => undefined);
+      const ossQuery = signMediaQuery("shared.bin");
+
+      const ownNamespace = await serveAndFetch(build, { path: `/oss/shared.bin?${ossQuery}` });
+      expect(ownNamespace.status).toBe(200);
+      expect(ownNamespace.bytes).toBe(ossBody.length);
+
+      const replayed = await serveAndFetch(build, { path: `/assets/shared.bin?${ossQuery}` });
+      expect(replayed.status, "跨 namespace 重放必须拒绝").toBe(403);
+
+      const assetsQuery = signMediaQuery("shared.bin", MEDIA_TTL_SEC, "assets");
+      const assetsOwnNamespace = await serveAndFetch(build, { path: `/assets/shared.bin?${assetsQuery}` });
+      expect(assetsOwnNamespace.status, "assets namespace 自己签发的签名正常放行").toBe(200);
+      expect(assetsOwnNamespace.bytes).toBe(assetsBody.length);
     });
   });
 
@@ -502,6 +527,20 @@ describe("ms 9-13. 守卫与静态资源：真 HTTP 两端", () => {
         "合法路径 + 无效的图片内容：要么生成失败降级（404/403），但**绝不能** 5xx —— 实测 404（sharp 认不出这个假 png，降级到 static）",
       ).toContain(okRes.status);
       expect(okRes.status, "★ 与越界那条的 403 区分开：合法路径不会被守卫拦（它走的是另一条分支）").not.toBe(500);
+    });
+  });
+
+  it("empty size query returns 400 instead of original media", async () => {
+    await withMediaTree(async (dirs) => {
+      fs.writeFileSync(path.join(dirs.oss, "empty-size.bin"), "original media");
+      const q = new URLSearchParams(signMediaQuery("empty-size.bin"));
+      const result = await rawFetch(
+        (app) => mountStaticAssets(app, () => undefined),
+        `/oss/empty-size.bin?${q}&size=`,
+      );
+
+      expect(result.status).toBe(400);
+      expect(result.body).not.toContain("original media");
     });
   });
 

@@ -365,6 +365,30 @@ describe("Task 9 · 供应商凭据不回传 / 提交代码接口不存在 / del
     }
   }, 90000);
 
+  it("★ A2b masked credential round-trips preserve the stored secret", async () => {
+    const db = createKnex(dbConfigOf(dataDir));
+    try {
+      const token = await signAs(db, ADMIN_USER, "admin");
+      await db("o_vendorConfig").where("id", "miwo").update({
+        inputValues: JSON.stringify({ apiKey: FAKE_KEY, baseUrl: "https://api.toonflow.net/v1" }),
+      });
+      const res = await request("POST", url("/api/setting/vendorConfig/updateVendorInputs"), {
+        token,
+        body: { id: "miwo", inputValues: { apiKey: "***", baseUrl: "https://updated.example/v1" } },
+      });
+      expect(res.status, `masked credential round-trip must succeed: ${res.body.slice(0, 200)}`).toBe(200);
+      const row: any = await db("o_vendorConfig").where("id", "miwo").first();
+      const stored = JSON.parse(String(row.inputValues));
+      expect(stored.apiKey, "the mask sentinel must not replace the configured key").toBe(FAKE_KEY);
+      expect(stored.baseUrl, "unmasked settings in the same save must still update").toBe("https://updated.example/v1");
+    } finally {
+      await db("o_vendorConfig").where("id", "miwo").update({
+        inputValues: JSON.stringify({ apiKey: FAKE_KEY, baseUrl: "https://api.toonflow.net/v1" }),
+      });
+      await db.destroy();
+    }
+  }, 90000);
+
   it("★ A3 普通用户打 getVendorList ⇒ **403**（与 Task 4 的矩阵互为印证，且响应里没有 key）", async () => {
     const db = createKnex(dbConfigOf(dataDir));
     try {

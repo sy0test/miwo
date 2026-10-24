@@ -1,17 +1,9 @@
 /**
- * 绕过口清单的**代码侧**判据（Phase 1b / Task 3 新增）。
+ * systemDb 绕过口清单的代码侧判据，作为 tenant exception inventory 的第二道测试保障。
  *
- * 为什么需要这个文件（而不是只靠 `tools/check-tenant-exceptions.cjs`）：
- *   `systemDb` 是 `utils/db.ts` 的**唯一显式绕过口**，但当前那道门禁的判据是
- *   「命名导入 `{ db }`」（spec 附录 B.1 的旧口径）。Task 3 删掉 `export { db }` 之后，
- *   6 个实例级运维接口 + `lib/fixDB.ts` 统一写成 `import { systemDb as db }` ——
- *   门禁**碰巧**还能枚举到它们（`as db` 落进了它的正则），但那是**巧合，不是设计**：
- *   谁把别名改成别的名字（`import { systemDb }`），门禁就再也看不见他了。
- *
- *   所以这里补一条**不依赖巧合**的逐文件断言：清单里的每个文件**各自**必须显式导入
- *   `systemDb`，且**全仓**导入 `systemDb` 的文件集合必须**恰好等于**这份清单
- *   （新增使用者 ⇒ 本用例红）。计划 **Task 8** 会把这份判据升级进门禁
- *   （`systemDbUsers` 字段 + 显式扫描），届时本文件仍作为测试侧的第二道保险保留。
+ * `systemDb` 是受控的管理查询绕过口。清单中的每个文件必须显式导入它，全仓导入者集合
+ * 必须与清单完全相等；新增或移除使用者时，此处和 `tools/check-tenant-exceptions.cjs`
+ * 的显式 `systemDbUsers` inventory 都要求同步审查。
  *
  * ⚠ 判据是**逐行正则**（`m` 标志，行首 `import`）：只认真正的 import 语句，
  *   注释里提到 `systemDb`（例如 `lib/fixDB.ts:38`）不会被误判成使用者。
@@ -24,7 +16,7 @@ const API_ROOT = path.resolve(__dirname, "..");
 const SRC = path.join(API_ROOT, "src");
 
 /**
- * 唯一绕过口 `systemDb` 的**登记清单**（相对 `src/`）：实例级运维 + 启动期 bootstrap。
+ * 唯一绕过口 `systemDb` 的**登记清单**（相对 `src/`）：实例级运维与管理端用户组成员存在性检查。
  *
  * ⚠ **Phase 1b Task 7 收窄：7 → 6。** `routes/other/deleteAllData.ts` 原本在列（它用 `systemDb`
  *   配合 `initDB(db, true)` 清整库）；Task 7 按 Lead 裁定把它改成**无条件 501 停用**（连 admin 也打不动），
@@ -37,6 +29,7 @@ const SRC = path.join(API_ROOT, "src");
  *   `lib/initDB.ts` 从来不在本清单里（它拿的是**传入的** Knex 参数，不 import `systemDb`）。
  */
 const SYSTEM_DB_USERS = [
+  "routes/billing/admin/groups.ts",
   "routes/setting/dbConfig/clearData.ts",
   "routes/setting/dbConfig/clearTable.ts",
   "routes/setting/dbConfig/dbInfo.ts",
@@ -78,8 +71,8 @@ function walk(dir: string, out: string[] = []): string[] {
 const rel = (abs: string) => path.relative(API_ROOT, abs).split(path.sep).join("/");
 const read = (apiRelPath: string) => fs.readFileSync(path.join(API_ROOT, apiRelPath), "utf8");
 
-describe("唯一绕过口 systemDb 的登记清单（Task 3）", () => {
-  it("5 个豁免文件**各自**显式导入 systemDb（逐个断言，不依赖门禁正则的巧合）", () => {
+describe("唯一绕过口 systemDb 的登记清单", () => {
+  it("6 个登记文件各自显式导入 systemDb", () => {
     for (const r of SYSTEM_DB_USERS) {
       const abs = path.join(API_ROOT, "src", r);
       expect(fs.existsSync(abs), `${r} 必须存在`).toBe(true);

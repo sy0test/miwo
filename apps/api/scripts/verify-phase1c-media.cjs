@@ -97,17 +97,19 @@ fs.writeFileSync(path.join(WEB_DIR, "app.js"), "console.log('shell');\n");
 
 // ---------- 签名（与 src/utils/mediaSign.ts 同算法，独立实现一遍）----------
 /** 域分离：媒体密钥 = HMAC-SHA256(key="miwo:media:"（**作为 HMAC 密钥**）, msg=MIWO_JWT_SECRET)。
- *  ⚠ 与 `src/utils/mediaSign.ts` 的 `mediaSignKey()` 必须逐字一致（两边各自独立实现，互相验证）。 */
+ *  ⚠ 与 `src/utils/mediaSign.ts` 的 `mediaSignKey()` 必须逐字一致（两边各自独立实现，互相验证）。
+ *  对象签名还覆盖 namespace（oss/assets），避免跨存储命名空间复用同一签名。 */
 const mediaKey = crypto.createHmac("sha256", SIGN_DOMAIN).update(SECRET).digest();
 const normalize = (p) => String(p ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
-const sign = (rel, exp) => crypto.createHmac("sha256", mediaKey).update(`${SIGN_DOMAIN}${normalize(rel)}|${exp}`).digest("base64url").slice(0, 43);
+const sign = (rel, exp, root = "oss") =>
+  crypto.createHmac("sha256", mediaKey).update(`${SIGN_DOMAIN}${root}/${normalize(rel)}|${exp}`).digest("base64url").slice(0, 43);
 const DEFAULT_TTL_SEC = 24 * 3600; // = src/utils/mediaSign.ts 的 MEDIA_TTL_SEC
-const query = (rel, ttlSec = DEFAULT_TTL_SEC) => {
+const query = (rel, ttlSec = DEFAULT_TTL_SEC, root = "oss") => {
   // ⚠ `ttlSec` 必须给默认值：漏传时 `undefined * 1000` = NaN ⇒ `exp=NaN` ⇒ 守卫一律 403
   //   （实测踩到：A/B/C 三组整片假红，而 D 组 200 掩盖了它）。
   const exp = String(Date.now() + ttlSec * 1000);
   if (!/^\d+$/.test(exp)) throw new Error(`签名 exp 非法：${exp}（ttlSec=${ttlSec}）`);
-  return `exp=${exp}&sig=${sign(rel, exp)}`;
+  return `exp=${exp}&sig=${sign(rel, exp, root)}`;
 };
 
 /**
@@ -515,7 +517,7 @@ async function main() {
     );
     const api = await request(PORT, "GET", "/api/project/getProject");
     record("D", "★ `/api/*` 的鉴权语义未变：无 token ⇒ 401（不是 403、更不是 200）", api.status === 401, `HTTP ${api.status}`);
-    const assetsSigned = await request(PORT, "GET", `/assets/ending.bin?${query("ending.bin")}`);
+    const assetsSigned = await request(PORT, "GET", `/assets/ending.bin?${query("ending.bin", DEFAULT_TTL_SEC, "assets")}`);
     const assetsUnsigned = await request(PORT, "GET", "/assets/ending.bin");
     record(
       "D",

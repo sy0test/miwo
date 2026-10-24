@@ -152,10 +152,14 @@ export function errorHandler(err: any, req: Request, res: Response, _next: NextF
  */
 export function mountStaticAssets(target: express.Express, log: (msg: string) => void = console.log): void {
   // ── /oss：用户媒体。守卫 → 缩略图分支 → 静态 ──
-  const ossDir = u.getPath("oss");
+  const ossDir = config.storageDriver === "s3" ? path.join(u.oss.rootDir, "oss") : u.getPath("oss");
   if (!fs.existsSync(ossDir)) fs.mkdirSync(ossDir, { recursive: true });
   log(`文件目录: ${ossDir}`);
   const smallImageDir = path.join(ossDir, "smallImage");
+  const hydrateS3Media = (root: "oss" | "assets") => (req: Request, res: Response, next: NextFunction): void => {
+    if (config.storageDriver !== "s3") return next();
+    u.oss.getAbsPath(req.path, root).then(() => next()).catch(() => res.status(404).end());
+  };
 
   /**
    * `?size=<WxH|百分比>` 的缩略图分支。**整体在守卫之后**（否则一个没有签名的请求就能：
@@ -168,7 +172,9 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
    * ⚠ 这里**不泄漏路径**：越界一律 `403` + 空 body（不回显请求路径、也不说检查了哪个路径）。
    */
   const thumbnailBranch = (req: Request, res: Response, next: NextFunction): void => {
-    if (!req.query.size) return next();
+    const sizes = new URL(req.originalUrl, "http://localhost").searchParams.getAll("size");
+    if (sizes.length === 0) return next();
+    if (sizes.length !== 1) return void res.status(400).json({ code: 400, message: "size 参数只能出现一次" });
     // ⚠ 越界（含 `..` 逃逸）在**任何 path.join / mkdir / sendFile 之前**就判掉：
     //   后面的 `ensureThumbnail` 会 mkdir -p 再落盘，越界等于把服务变成"任意路径写入器"。
     const rel = normalizeMediaRelPathInside(req.path);
@@ -178,7 +184,7 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
     // ⚠ Phase 1e Task 01 Step 3b：`?size=` 的解析抽到 `utils/thumbnail-size.ts`（可单测 + **显式上界**）。
     //   签名是**路径域**的（query 不参与）⇒ 任何拿到过一条合法媒体 URL 的人都能自由改 `size`，
     //   所以"上界"是这块唯一的收口；非法/越界一律 **400**（不再静默降级返回原图）。
-    const parsed = parseThumbnailSize(req.query.size);
+    const parsed = parseThumbnailSize(sizes[0]);
     if (!parsed.ok) return void res.status(400).json({ code: 400, message: parsed.reason });
     const sizeSubDir = parsed.subDir;
     const sizeOpts: ThumbnailSize = parsed.opts;
@@ -193,8 +199,9 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
     // 双保险：写入目标必须在 `oss/smallImage` 之内（不是只要"在 oss 内" —— 否则能写到 `oss/` 根下）
     if (!isPathInside(smallImagePath, smallImageDir)) return void res.status(403).end();
 
-    ensureThumbnail(originalPath, smallImagePath, sizeOpts).then((thumbnailPath) => {
+    ensureThumbnail(originalPath, smallImagePath, sizeOpts).then(async (thumbnailPath) => {
       if (thumbnailPath) {
+        if (config.storageDriver === "s3") await u.oss.writeFile(smallImageRel, await fs.promises.readFile(thumbnailPath));
         res.sendFile(thumbnailPath);
       } else {
         // 缩略图生成失败，降级返回原图
@@ -207,6 +214,7 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
     "/oss",
     optionalMediaAuth,
     mediaAuthGuard,
+    hydrateS3Media("oss"),
     thumbnailBranch,
     express.static(ossDir, { acceptRanges: true, maxAge: "1h", immutable: false }),
   );
@@ -219,13 +227,14 @@ export function mountStaticAssets(target: express.Express, log: (msg: string) =>
   //   现在没炸是因为 `data/web` 目前只有 `index.html`（本轮 e2e 的 SPA 壳夹具也是手写的）。
   //   Phase 3 前端重绘时必须先决定：① 前端改 `build.assetsDir`（推荐），或 ② `/assets` 让位于 SPA。
   //   注意**不能**靠"把 `/assets` 挂到 SPA 之后"来回避：那等于让用户产物裸奔（1b-11 的本体）。
-  const assetsDir = u.getPath("assets");
+  const assetsDir = config.storageDriver === "s3" ? path.join(u.oss.rootDir, "assets") : u.getPath("assets");
   if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
   log(`文件目录: ${assetsDir}`);
   target.use(
     "/assets",
     optionalMediaAuth,
     mediaAuthGuard,
+    hydrateS3Media("assets"),
     express.static(assetsDir, { acceptRanges: true, maxAge: "1h", immutable: false }),
   );
 
@@ -449,6 +458,20 @@ export default async function startServe(randomPort: Boolean = false) {
       process.once("SIGTERM", stopRelay);
       process.once("SIGINT", stopRelay);
       console.log(`[服务启动成功]: http://localhost:${realPort}`);
+      /**
+       * 转绘预处理自检。
+       *
+       * 预处理脚本是转绘「开始分析」的**外部硬依赖**（切点检测 + 转写，见 `routes/redraw/analyzeSource.ts`）。
+       * 它以前有一个"开发机绝对路径"的缺省值 ⇒ 换机器后 `existsSync` 为假，用户点按钮只看到一个 500。
+       * 现在缺省是空（未配置），启动时就在这里明确说清楚，省掉一轮"为什么转绘按钮报错"的排查。
+       */
+      if (!config.redrawPrepScript) {
+        console.warn("[redraw] 未配置 MIWO_REDRAW_PREP：转绘「开始分析」会返回 500（预处理脚本是外部依赖）");
+      } else if (!fs.existsSync(config.redrawPrepScript)) {
+        console.warn(`[redraw] MIWO_REDRAW_PREP 指向的文件不存在：${config.redrawPrepScript}（转绘「开始分析」会 500）`);
+      } else {
+        console.log(`[redraw] 预处理脚本: ${config.redrawPrepScript}`);
+      }
       resolve(realPort);
     });
   });

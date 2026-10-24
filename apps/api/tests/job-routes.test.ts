@@ -25,8 +25,12 @@ import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from
 import generateVideo from "@/routes/production/workbench/generateVideo";
 import batchGenerateVideo from "@/routes/production/workbench/batchGenerateVideo";
 import batchGeneratePrompt from "@/routes/production/workbench/batchGeneratePrompt";
+import { estimateTextInvocationTokens } from "@/utils/ai";
+import { buildPromptBatchInput, loadPromptBatchContext } from "@/jobs/handlers/promptBatch";
+import { runWithTenant } from "@/db/tenant-context";
 
-const USER: AuthFixtureUser = { id: 5151, username: "job-routes-1", role: "user" };
+const RUN_ID = Date.now() % 1_000_000;
+const USER: AuthFixtureUser = { id: 1_000_000 + RUN_ID, username: `job-routes-${RUN_ID}`, role: "user" };
 const PROJECT = 900001;
 const TRACK_A = 5150;
 const TRACK_B = 5152;
@@ -35,8 +39,12 @@ const SCRIPT = 9001;
 const ASSET = 900010;
 const ASSET_IMAGE = 900011;
 const ASSET_NEW = 900012;
+const PROMPT_MODEL = "prompt-call-model";
+const PROMPT_TOKEN_MODEL = "prompt-token-model";
 
 let server: http.Server;
+let priorAgentUseMode: any;
+let priorUniversalDeploy: any[] = [];
 let token = "";
 
 function post(port: number, path: string, body: unknown, tok?: string): Promise<{ status: number; json: any }> {
@@ -99,6 +107,26 @@ const count = async (q: any): Promise<number> => Number(((await q.first()) as an
 beforeAll(async () => {
   await seedAuthUsers(systemDb, [USER]);
   token = await mintAccess(USER);
+  await systemDb("o_account").insert({ userId: USER.id, balanceMicro: "1000000000", frozenMicro: "0", version: 0, updatedAt: 1 }).onConflict("userId").merge();
+  const routeModels = ["test-model", "generic-only", "single-replay", "batch-replay", "missing-tier", PROMPT_MODEL, PROMPT_TOKEN_MODEL];
+  await systemDb("o_price").where("vendorId", "miwo").whereIn("model", routeModels).del();
+  priorAgentUseMode = await systemDb("o_setting").where("key", "agentUseMode").first();
+  priorUniversalDeploy = await systemDb("o_agentDeploy").where("key", "universalAi").select("*");
+  await systemDb("o_agentDeploy").where("key", "universalAi").del();
+  await systemDb("o_agentDeploy").insert({ key: "universalAi", modelName: `miwo:${PROMPT_MODEL}`, vendorId: "miwo", model: PROMPT_MODEL, maxOutputTokens: 64, type: "text" });
+  await systemDb("o_setting").insert({ key: "agentUseMode", value: "0" }).onConflict("key").merge();
+  await systemDb("o_price").insert([
+    { vendorId: "miwo", model: "test-model", unit: "video_second", unitPriceMicro: "1000", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "test-model", unit: "video_second_480p", unitPriceMicro: "2000", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "test-model", unit: "video_second_720p", unitPriceMicro: "3000", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "generic-only", unit: "video_second", unitPriceMicro: "700", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "single-replay", unit: "video_second", unitPriceMicro: "700", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "batch-replay", unit: "video_second", unitPriceMicro: "700", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "missing-tier", unit: "video_second", unitPriceMicro: "1000", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: "missing-tier", unit: "video_second_720p", unitPriceMicro: "3000", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: PROMPT_MODEL, unit: "call", unitPriceMicro: "25000", effectiveFrom: 1, createdBy: USER.id },
+    { vendorId: "miwo", model: PROMPT_TOKEN_MODEL, unit: "token", unitPriceMicro: "10", effectiveFrom: 1, createdBy: USER.id },
+  ]);
   // 路由要读 o_project.videoRatio（生产上项目一定存在；这里显式种一条）
   await systemDb("o_project").insert({ id: PROJECT, userId: USER.id, name: "job-routes", videoRatio: "16:9", createTime: 1 }).onConflict("id").merge();
   await systemDb("o_image").insert({ id: ASSET_IMAGE, userId: USER.id, assetsId: 0, state: "已完成", filePath: "job-routes/a.png", type: "role" }).onConflict("id").merge();
@@ -124,10 +152,80 @@ afterAll(async () => {
   await systemDb("o_assets").whereIn("id", [ASSET, ASSET_NEW]).del();
   await systemDb("o_image").where("id", ASSET_IMAGE).del();
   await systemDb("o_project").where("id", PROJECT).del();
+  await systemDb("o_price").where("vendorId", "miwo").whereIn("model", ["test-model", "generic-only", "single-replay", "batch-replay", "missing-tier", PROMPT_MODEL, PROMPT_TOKEN_MODEL]).del();
+  await systemDb("o_agentDeploy").where("key", "universalAi").del();
+  if (priorUniversalDeploy.length) await systemDb("o_agentDeploy").insert(priorUniversalDeploy);
+  if (priorAgentUseMode) await systemDb("o_setting").insert(priorAgentUseMode).onConflict("key").merge();
+  else await systemDb("o_setting").where("key", "agentUseMode").del();
+  await systemDb("o_ledger").where({ userId: USER.id }).del();
+  await systemDb("o_account").where({ userId: USER.id }).del();
   await removeAuthUsers(systemDb, [USER.id]);
 });
 
 describe("generateVideo 路由 → 入队（Phase 1d）", () => {
+  it.each([
+    ["480p", 5161, 10_000n],
+    ["720p", 5162, 15_000n],
+  ])("freezes the %s estimate using its tier price", async (resolution, trackId, expectedMicro) => {
+    const port = (server.address() as AddressInfo).port;
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const res = await post(port, "/api/production/workbench/generateVideo", {
+      ...body(trackId), resolution,
+    }, token);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const frozenAfter = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    expect(frozenAfter - frozenBefore).toBe(expectedMicro);
+    const job = await systemDb("o_job").where("id", res.json.jobIds[0]).first();
+    expect(JSON.parse(job.payload).resolution).toBe(resolution);
+  });
+
+  it("freezes the generic estimate for an un-tiered model", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const res = await post(port, "/api/production/workbench/generateVideo", {
+      ...body(5163), model: "miwo:generic-only", resolution: "480p", duration: 4,
+    }, token);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const frozenAfter = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    expect(frozenAfter - frozenBefore).toBe(2_800n);
+  });
+
+  it("replays an accepted generic-price request after the opposite tier becomes effective", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const request = { ...body(5168), model: "miwo:single-replay", resolution: "480p" };
+    const first = await post(port, "/api/production/workbench/generateVideo", request, token);
+    expect(first.status, JSON.stringify(first.json)).toBe(200);
+    const frozenAfterFirst = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const videosAfterFirst = await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }));
+    const jobsAfterFirst = await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }));
+    await systemDb("o_price").insert({
+      vendorId: "miwo", model: "single-replay", unit: "video_second_720p", unitPriceMicro: "9000", effectiveFrom: 1, createdBy: USER.id,
+    });
+
+    const replay = await post(port, "/api/production/workbench/generateVideo", request, token);
+
+    expect(replay.status, JSON.stringify(replay.json)).toBe(200);
+    expect(replay.json.jobIds).toEqual(first.json.jobIds);
+    expect(replay.json.data).toBe(first.json.data);
+    expect(await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }))).toBe(videosAfterFirst);
+    expect(await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }))).toBe(jobsAfterFirst);
+    expect(BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro)).toBe(frozenAfterFirst);
+  });
+
+  it("rejects a missing requested tier without creating a video or job", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const videosBefore = await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }));
+    const jobsBefore = await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }));
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const res = await post(port, "/api/production/workbench/generateVideo", {
+      ...body(5164), model: "miwo:missing-tier", resolution: "480p",
+    }, token);
+    expect(res.status).not.toBe(200);
+    expect(await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }))).toBe(videosBefore);
+    expect(await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }))).toBe(jobsBefore);
+    expect(BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro)).toBe(frozenBefore);
+  });
+
   it("★ 1s 内返回；data 是数字 videoId；jobIds 是新顶层字段；只产生一条 o_job 且 payload 无 base64", async () => {
     const port = (server.address() as AddressInfo).port;
     const before = await count(systemDb("o_job").where("type", "video.generate").count({ n: "*" }));
@@ -217,6 +315,62 @@ describe("generateVideo 路由 → 入队（Phase 1d）", () => {
 });
 
 describe("batchGenerateVideo 路由 → 入队（data 是数组，形状不许变）", () => {
+  it("freezes the sum of batch durations using the requested tier and preserves resolution", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const res = await post(port, "/api/production/workbench/batchGenerateVideo", {
+      projectId: PROJECT, scriptId: SCRIPT, model: "miwo:test-model", mode: "text", resolution: "720p",
+      trackData: [
+        { trackId: 5165, prompt: "p1", duration: 2, uploadData: [{ id: ASSET, sources: "assets" }] },
+        { trackId: 5166, prompt: "p2", duration: 3, uploadData: [{ id: ASSET, sources: "assets" }] },
+      ],
+    }, token);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const frozenAfter = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    expect(frozenAfter - frozenBefore).toBe(15_000n);
+    const job = await systemDb("o_job").where("id", res.json.jobIds[0]).first();
+    expect(JSON.parse(job.payload).resolution).toBe("720p");
+    expect(JSON.parse(job.payload).items.map((item: any) => item.duration)).toEqual([2, 3]);
+  });
+
+  it("replays an accepted generic-price batch after the opposite tier becomes effective", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const request = {
+      projectId: PROJECT, scriptId: SCRIPT, model: "miwo:batch-replay", mode: "text", resolution: "720p",
+      trackData: [{ trackId: 5169, prompt: "p1", duration: 5, uploadData: [{ id: ASSET, sources: "assets" }] }],
+    };
+    const first = await post(port, "/api/production/workbench/batchGenerateVideo", request, token);
+    expect(first.status, JSON.stringify(first.json)).toBe(200);
+    const frozenAfterFirst = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const videosAfterFirst = await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }));
+    const jobsAfterFirst = await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }));
+    await systemDb("o_price").insert({
+      vendorId: "miwo", model: "batch-replay", unit: "video_second_480p", unitPriceMicro: "9000", effectiveFrom: 1, createdBy: USER.id,
+    });
+
+    const replay = await post(port, "/api/production/workbench/batchGenerateVideo", request, token);
+
+    expect(replay.status, JSON.stringify(replay.json)).toBe(200);
+    expect(replay.json.jobIds).toEqual(first.json.jobIds);
+    expect(replay.json.data).toEqual(first.json.data);
+    expect(await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }))).toBe(videosAfterFirst);
+    expect(await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }))).toBe(jobsAfterFirst);
+    expect(BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro)).toBe(frozenAfterFirst);
+  });
+
+  it("rejects a batch with an unavailable requested tier without creating videos or a job", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const videosBefore = await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }));
+    const jobsBefore = await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }));
+    const res = await post(port, "/api/production/workbench/batchGenerateVideo", {
+      projectId: PROJECT, scriptId: SCRIPT, model: "miwo:missing-tier", mode: "text", resolution: "480p",
+      trackData: [{ trackId: 5167, prompt: "p1", duration: 5, uploadData: [{ id: ASSET, sources: "assets" }] }],
+    }, token);
+    expect(res.status).not.toBe(200);
+    expect(await count(systemDb("o_video").where("projectId", PROJECT).count({ n: "*" }))).toBe(videosBefore);
+    expect(await count(systemDb("o_job").where("userId", USER.id).count({ n: "*" }))).toBe(jobsBefore);
+  });
+
   it("★ data 是 [{videoId, trackId}] 数组；jobIds 顶层；一条 video.batchGenerate", async () => {
     const port = (server.address() as AddressInfo).port;
     const before = await count(systemDb("o_job").where("type", "video.batchGenerate").count({ n: "*" }));
@@ -268,9 +422,57 @@ describe("batchGenerateVideo 路由 → 入队（data 是数组，形状不许�
  * ② 顶层多了 `jobIds`；③ `o_job` 真的多了一行且 `type="prompt.batch"`、`payload.trackData` 正确、无 base64。
  */
 describe("batchGeneratePrompt 路由 → 入队（review-C F4：第 6 个入口）", () => {
-  it("★ 真 HTTP：prompt.batch 真的被入队（handler 不再不可达），data 形状不变", async () => {
+  it("loads v2 segment storyboard data even when track info has no storyboard items", async () => {
+    const segmentId = 2_000_000 + RUN_ID;
+    const shotId = 3_000_000 + RUN_ID;
+    await systemDb("o_segment").insert({
+      id: segmentId, projectId: PROJECT, scriptId: SCRIPT, segmentIndex: 90 + RUN_ID,
+      videoDesc: "批量分镜回归正文", duration: 12, userId: USER.id,
+    });
+    await systemDb("o_shot").insert({
+      id: shotId, projectId: PROJECT, scriptId: SCRIPT, segmentIndex: 90 + RUN_ID,
+      segmentId, shotIndex: 1, userId: USER.id,
+    });
+
+    try {
+      const input = await runWithTenant({ userId: USER.id, role: "user", requestId: "batch-segment-storyboard", source: "http" }, async () => {
+        const context = await loadPromptBatchContext(PROJECT, "miwo:test-model", "text");
+        return buildPromptBatchInput(context, { trackId: segmentId, info: [] });
+      });
+      const content = input.messages[1].content;
+      expect(content).toContain("videoDesc='批量分镜回归正文'");
+      expect(content).toContain("duration='12'");
+    } finally {
+      await systemDb("o_shot").where({ id: shotId }).del();
+      await systemDb("o_segment").where({ id: segmentId }).del();
+    }
+  });
+
+  it("allows the same prompt batch to be submitted again after its prior job is terminal", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const request = {
+      projectId: PROJECT, model: "miwo:test-model", mode: "text",
+      trackData: [{ trackId: 5_180 + RUN_ID, info: [] }],
+    };
+    const first = await post(port, "/api/production/workbench/batchGeneratePrompt", request, token);
+    expect(first.status, JSON.stringify(first.json)).toBe(200);
+
+    const firstJobId = first.json.jobIds[0];
+    await systemDb("o_job").where({ id: firstJobId, userId: USER.id }).update({
+      state: "succeeded", dedupeActive: null, finishedAt: Date.now(), updatedAt: Date.now(),
+    });
+
+    const second = await post(port, "/api/production/workbench/batchGeneratePrompt", request, token);
+
+    expect(second.status, JSON.stringify(second.json)).toBe(200);
+    expect(second.json.jobIds).toHaveLength(1);
+    expect(second.json.jobIds[0]).not.toBe(firstJobId);
+  });
+
+  it("estimates prompt.batch using the actual universalAi call tariff", async () => {
     const port = (server.address() as AddressInfo).port;
     const before = await count(systemDb("o_job").where("type", "prompt.batch").count({ n: "*" }));
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
     const t0 = Date.now();
     const res = await post(
       port,
@@ -290,6 +492,8 @@ describe("batchGeneratePrompt 路由 → 入队（review-C F4：第 6 个入口�
     expect(res.json.data, "data 形状不变（仍是那句文案）").toBe("开始生成提示词");
     expect(Array.isArray(res.json.jobIds), "jobIds 是新顶层字段").toBe(true);
     expect(res.json.jobIds.length).toBe(1);
+    const frozenAfter = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    expect(frozenAfter - frozenBefore).toBe(25_000n);
     expect(ms, "接口不再等模型（进程内 pLimit 段已删除）").toBeLessThan(1_000);
 
     const after = await count(systemDb("o_job").where("type", "prompt.batch").count({ n: "*" }));
@@ -304,5 +508,34 @@ describe("batchGeneratePrompt 路由 → 入队（review-C F4：第 6 个入口�
     expect(payload.trackData[0].trackId).toBe(5170);
     expect(payload.trackData[0].info[0]).toEqual({ id: 900011, sources: "storyboard" });
     expect(job.payload).not.toContain("base64");
+  });
+
+  it("freezes token-mode cost from the same complete prompt input used by the worker", async () => {
+    const port = (server.address() as AddressInfo).port;
+    await systemDb("o_agentDeploy").where("key", "universalAi").update({ modelName: `miwo:${PROMPT_TOKEN_MODEL}` });
+    const trackData = [{ trackId: 5171, info: [{ id: 900011, sources: "storyboard" }] }];
+    const expectedTokens = await runWithTenant({ userId: USER.id, role: "user", requestId: "job-route-estimate", source: "http" }, async () => {
+      const context = await loadPromptBatchContext(PROJECT, "miwo:test-model", "text");
+      return estimateTextInvocationTokens(await buildPromptBatchInput(context, trackData[0]));
+    });
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const res = await post(port, "/api/production/workbench/batchGeneratePrompt", {
+      projectId: PROJECT, model: "miwo:test-model", mode: "text", trackData,
+    }, token);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    const frozenAfter = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    expect(frozenAfter - frozenBefore).toBe(BigInt(expectedTokens * 10));
+  });
+
+  it("rejects an empty track list before creating a job or freezing funds", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const beforeJobs = await count(systemDb("o_job").where("type", "prompt.batch").count({ n: "*" }));
+    const frozenBefore = BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro);
+    const res = await post(port, "/api/production/workbench/batchGeneratePrompt", {
+      projectId: PROJECT, model: "miwo:test-model", mode: "text", trackData: [],
+    }, token);
+    expect(res.status).toBe(400);
+    expect(await count(systemDb("o_job").where("type", "prompt.batch").count({ n: "*" }))).toBe(beforeJobs);
+    expect(BigInt((await systemDb("o_account").where({ userId: USER.id }).first("frozenMicro")).frozenMicro)).toBe(frozenBefore);
   });
 });

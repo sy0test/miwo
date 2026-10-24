@@ -26,7 +26,9 @@
  *      job 级 env 里 `MIWO_DB_DRIVER=mysql` 且 **`MIWO_TEST_MYSQL="1"`**、steps 里含
  *      `verify-mysql-migration.cjs` 与 `mysql-integration.test.ts`、且**不得**出现 `continue-on-error`。
  *      为什么：`tests/mysql-integration.test.ts` 由 `MIWO_TEST_MYSQL=1` 门控，缺 job 或缺这个变量
- *      **两种情况都是全绿** —— 那正是 Phase 0 抓过的"唯一事务守卫永不执行"（Ruling 26）的同族坑。
+ *      **两种情况都是全绿** —— 那正是 Phase 0 抓过的"唯一事务守卫永不执行"（Ruling 26）的同族坑；
+ *   8. 【Phase 1e / Task 5】api job 必须跑 seed 自检与 `verify-phase1e.cjs --no-http`，web job 必须
+ *      在 `build-only` 后跑 `sync-web-build.cjs --self-test`，避免验收命令只存在于脚本或注释里。
  *
  * 用法：node tools/check-ci-yaml.cjs
  */
@@ -60,6 +62,9 @@ function stepLabels(job) {
 }
 function stepRuns(job) {
   return (job.steps || []).map((s) => String(s.run || ""));
+}
+function exactRunIndex(job, command) {
+  return (job.steps || []).findIndex((s) => String(s.run || "").trim() === command);
 }
 function indexOfMatch(labels, re) {
   return labels.findIndex((l) => re.test(l));
@@ -265,6 +270,20 @@ if (apiJob) {
   );
   check(apiRuns.includes("pnpm --filter @miwo/api test"), "api job 缺少 `pnpm --filter @miwo/api test`");
   check(apiRuns.includes("pnpm --filter @miwo/api run build"), "api job 缺少 `pnpm --filter @miwo/api run build`");
+
+  // Phase 1e / Task 5：两条 api 验收必须是独立 run 步骤，顺序在单测之后、打包之前。
+  const seedSelfTest = "node apps/api/scripts/seed-data-dir.cjs --self-test";
+  const phase1eVerify = "node apps/api/scripts/verify-phase1e.cjs --no-http";
+  const iApiTest = apiRunArr.findIndex((r) => r.includes("pnpm --filter @miwo/api test"));
+  const iSeed = exactRunIndex(apiJob, seedSelfTest);
+  const iPhase1e = exactRunIndex(apiJob, phase1eVerify);
+  const iApiBuild = apiRunArr.findIndex((r) => r.includes("pnpm --filter @miwo/api run build"));
+  check(iSeed >= 0, "api job 缺少 Phase 1e 的播种自检（seed-data-dir.cjs --self-test）");
+  check(iPhase1e >= 0, "api job 缺少 Phase 1e 验收命令（verify-phase1e.cjs --no-http）");
+  check(
+    iApiTest >= 0 && iSeed > iApiTest && iPhase1e > iSeed && iApiBuild > iPhase1e,
+    "api job 顺序错误：单测 → seed 自检 → verify-phase1e --no-http → 后端打包",
+  );
   check(!/pnpm\s+(run\s+)?(dev|start)\b/.test(apiRuns), "api job 不得启动应用（dev/start），端到端启动验证属 Task 13");
 
   // Phase 1a / Task 11：Phase 1a 的**唯一验收命令**必须在 api job 里真的被跑到。
@@ -306,10 +325,15 @@ if (webJob) {
   const labels = stepLabels(webJob);
   const runs = stepRuns(webJob);
   const iBuildOnly = indexOfMatch(labels, /@miwo\/web run build-only/);
+  const iSyncSelfTest = exactRunIndex(webJob, "node apps/api/scripts/sync-web-build.cjs --self-test");
   const iShadow = indexOfMatch(labels, /check-no-shadow\.cjs/);
   check(iBuildOnly >= 0, "web job 缺少 `pnpm --filter @miwo/web run build-only`（Phase 0 的 web 门禁是 vite build）");
+  check(iSyncSelfTest >= 0, "web job 缺少前端产物同步自检（sync-web-build.cjs --self-test）");
   check(iShadow >= 0, "web job 缺少 `node tools/check-no-shadow.cjs`");
-  check(iBuildOnly >= 0 && iShadow > iBuildOnly, "web job 顺序错误：check-no-shadow 必须在 build-only 之后");
+  check(
+    iBuildOnly >= 0 && iSyncSelfTest > iBuildOnly && iShadow > iSyncSelfTest,
+    "web job 顺序错误：build-only → sync-web-build 自检 → check-no-shadow",
+  );
   check(
     !runs.some((r) => /vue-tsc/.test(r)),
     "web job 不得跑 vue-tsc：Phase 0 刻意移除 web 类型检查（47 条上游继承类型错误；apps/web 是 Phase 3 前端重绘的替换对象）。" +

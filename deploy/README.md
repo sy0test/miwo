@@ -30,6 +30,11 @@
    "把容器端口 publish 到宿主机"对"只绑容器回环"的进程**无效**：Docker 的端口发布走 DNAT/docker-proxy，
    连接落在容器 eth0 上，绑在容器 lo 上的 socket 收不到。host 网络模式下 api 直接绑宿主机回环，才是可达的。
    `tools/check-deploy-config.cjs` 对这条拓扑有断言（只认上面两种写法），防止退回"`expose` 一下就算完"。
+3. **前端静态根与后端数据根同源**：nginx 的 `root` 是 `${MIWO_DATA_DIR}/web`，默认 `/var/lib/miwo/data/web`；
+   systemd 从 `/etc/miwo/env` 读取环境，该文件按步骤 6 从 `deploy/.env.example` 复制。构建后用
+   `node apps/api/scripts/sync-web-build.cjs --src apps/web/dist --out /var/lib/miwo/data/web` 同步前端；
+   若更改 `MIWO_DATA_DIR`，同步更新 nginx `root`。`node tools/check-deploy-config.cjs` 校验模板路径、nginx root 与 systemd 环境文件链路；
+   它不读取真实主机上的 `/etc/miwo/env`，部署时仍需确认该文件中的值与 nginx 配置一致。
 
 ## 1. Node 版本要求
 
@@ -39,7 +44,7 @@
   `apps/api/scripts/build.ts` 的 `external` 列表里，打包产物中会留下字面 `require(ESM)`；
   Node 直到 **22.12** 才默认允许 `require()` 加载同步 ESM（更早的版本直接抛错）。
 - 自建镜像（`FROM node:22.x-...`）与系统包（Debian/Ubuntu 的 `nodejs`）都必须 >=22.12；
-  `deploy/Dockerfile` 固定用 `node:22.12-bookworm-slim`。
+  `deploy/Dockerfile` 固定用 `node:22.12-bookworm-slim`。Dockerfile 会先固定升级到 Corepack 0.31.0，修复该基础镜像内置 Corepack 缺少 pnpm 当前签名 key 的问题，再准备根 `package.json` 锁定的 pnpm。
 - **`.npmrc` 里开了 `engine-strict=true`**：Node 不满足 `engines` 时 `pnpm install` **直接失败**，
   不会留下"能装完但运行期崩"的产物。
 - 上限 `<25`：本机实测 v24.21 通过；25.x 未验证，先挡在门外。
@@ -62,11 +67,11 @@ pnpm --filter @miwo/api build
 # 4) 构建前端 —— ★ 不做这步，nginx 的 `/` 没有任何内容（/api、/oss 不受影响）
 pnpm --filter @miwo/web build        # 产出 apps/web/dist（不入库，见 .gitignore）
 
-# 5) 数据目录：{skills,modelPrompt} 必须真实存在，否则技能/提示词功能会**静默失效**
-#    ⚠ Phase 1c Task 8 起**不再需要 vendor/**：供应商适配器是编译期内置的（apps/api/src/vendors/*.ts），
-#      已经随 `pnpm --filter @miwo/api build` 打进 apps/api/data/serve/app.js。
+# 5) 数据目录：skills/modelPrompt 必须真实存在，否则技能/提示词功能会**静默失效**
+#    vendor/ 不再需要：供应商适配器随 API 构建期内置。
 install -d -o miwo -g miwo /var/lib/miwo/data
-cp -a apps/api/data/skills apps/api/data/modelPrompt /var/lib/miwo/data/
+node apps/api/scripts/seed-data-dir.cjs --src apps/api/data --out /var/lib/miwo/data --dry-run
+node apps/api/scripts/seed-data-dir.cjs --src apps/api/data --out /var/lib/miwo/data
 
 # 6) 环境变量（含 JWT 密钥，权限收紧）
 install -d -m 700 /etc/miwo
@@ -94,43 +99,60 @@ curl -I https://<域名>/
 > **worker 单元自 Phase 1d 起是真单元**（`data/serve/worker.js` 由 `pnpm --filter @miwo/api build` 产出，
 > 现在 `enable` 就能起来）—— 安装步骤、日志、与容器形态的二选一、优雅停机口径见 **§3.5**。
 
-## 3. 路径 B：Docker Compose（**未经本机验证**；Phase 1d 起含 `worker` 服务）
+## 3. 路径 B：Docker Compose + 1Panel MySQL
 
-> ⚠⚠ **本机没有 Docker，以下步骤一次都没有在容器里跑过**：`docker compose build`、镜像构建、容器启动、
-> 卷播种、**容器内 worker 启动**全部**未验证**。`deploy/Dockerfile` 与 `deploy/docker-compose.yml` 只做到
-> "与代码事实自洽 + 过一致性断言"。部署窗口必须重新验证一遍（尤其是 `deploy/Dockerfile` 的两个 `pnpm install`
-> 阶段、`.dockerignore` 对构建上下文的影响、`network_mode: host` 的真实行为）。
+> 本机没有 Docker，无法执行 Ubuntu 上的真实镜像构建和容器启动。本地会检查 Compose YAML、Dockerfile 源路径和部署断言；
+> 请在服务器首次启动后检查 API、worker 日志和健康接口。1Panel 继续管理 MySQL 与 Nginx，Compose 只运行 API/worker。
+
+1. 在 1Panel 创建 MySQL 数据库和专用用户，字符集使用 `utf8mb4`，并授予该库的迁移/读写权限。备份现有库后再首次启动，API 会自动运行版本化迁移。
+2. 上传 ZIP 并解压到 `/opt`（ZIP 顶层目录为 `miwo/`，项目路径因此是 `/opt/miwo`）。镜像构建阶段会从 `apps/web` 源码构建 SPA 并同步到镜像运行目录，服务器无需额外安装 Node 或预先生成 `apps/api/data/web`。
+   **另外要单独放 Embedding 模型**（`data/models` 属于运行时数据，不进 ZIP/镜像）：视频策划、记忆检索会用到
+   `all-MiniLM-L6-v2`，缺了会报 `Embedding 模型文件不存在: <MIWO_DATA_DIR>/models/all-MiniLM-L6-v2/onnx/model_fp16.onnx`。
+   从开发机把整个目录传上去（开发机上在 `apps/api/data/models/`）：
+
+   ```bash
+   # 在开发机执行（Windows 自带 tar/ssh）
+   tar -C <仓库>/apps/api/data/models -cf - all-MiniLM-L6-v2 \
+     | ssh root@<服务器IP> "mkdir -p /var/lib/miwo/data/models && tar -C /var/lib/miwo/data/models -xf -"
+   ```
+
+   校验：`ls /var/lib/miwo/data/models/all-MiniLM-L6-v2/onnx/model_fp16.onnx`（约 43MB）。无需重启，用到时按需加载。
+3. 配置私有环境文件：
 
 ```bash
-git clone <repo> /opt/miwo && cd /opt/miwo
+cd /opt/miwo/deploy
+cp .env.example .env
+chmod 600 .env
+nano .env
+```
 
-# 1) 前端在**宿主机**上构建（容器里只跑后端）
-pnpm install && pnpm --filter @miwo/web build
+填写 `MIWO_JWT_SECRET`、`MIWO_PUBLIC_BASE_URL` 和 `MIWO_DB_NAME` / `MIWO_DB_USER` / `MIWO_DB_PASSWORD`。`MIWO_DB_HOST`、`MIWO_DB_PORT` 必须指向 1Panel MySQL 在宿主机上可达的地址和端口；默认 `127.0.0.1:3306`，以 1Panel 实际映射为准。不要把 `.env` 上传或加入 ZIP。
 
-# 2) 环境变量
-cp deploy/.env.example deploy/.env        # 填 MIWO_JWT_SECRET / MIWO_PUBLIC_BASE_URL / 各口令
+4. 在 1Panel Nginx 配置中保留现有 TLS 与域名设置，并确认静态 root 为 `/var/lib/miwo/data/web`、`/api`、`/oss`、`/socket.io` 反代到 `127.0.0.1:10588`。如修改 `MIWO_DATA_DIR` 或 `MIWO_PORT`，同步修改 Nginx 路径/端口。
+5. 构建并启动 API 与 worker：
 
-# 3) nginx 与证书都在宿主机上（同路径 A 的第 7、8 步）
+```bash
+cd /opt/miwo/deploy
+docker compose build          # 首次约 5-10 分钟
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 api worker
+```
 
-# 4) 构建并启动（mysql + api + worker；api/worker 用 host 网络 → 绑宿主机 127.0.0.1:<MIWO_PORT>）
-cd deploy && docker compose build && docker compose up -d
+> 构建阶段要跑 `vite build`（前端单文件内联打包，峰值内存约 3.4GB）。`deploy/Dockerfile` 的 build 阶段已用
+> `NODE_OPTIONS=--max-old-space-size=4096` 抬高 Node 堆上限；**构建机至少要有 4GB 可用内存**（不足会 OOM，
+> 可先加 4GB swap：`fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`）。
 
-# 5) ★ 首次必须把运行时素材播种进 miwo-data 卷（卷为空时 skills/modelPrompt 都不存在，
-#    应用照常启动但技能/提示词会静默失效）
-#    ⚠ Phase 1c Task 8：供应商适配器已编译期内置（打进 app.js），**没有** vendor/ 要播种。
-docker compose run --rm --no-deps --entrypoint sh api \
-  -c 'cp -a /app/apps/api/data/. "$MIWO_DATA_DIR"/'
+6. 检查服务与页面：
 
-# 6) 验证（worker 的日志：docker compose logs -f worker）
-curl -sS http://127.0.0.1:<MIWO_PORT>/api/other/configHealth?summary=1
+```bash
+curl -fsS http://127.0.0.1:10588/api/other/configHealth?summary=1
 curl -I https://<域名>/
 ```
 
-> `deploy/.dockerignore`（Phase 0 ledger N1 + Phase 1d 落地）把 `node_modules`、`.git`、
-> `apps/api/data/{oss,serve,web,models,assets,db2.sqlite}`、`apps/web/dist` 等排除在构建上下文之外，
-> 但**刻意保留** `apps/api/data/{vendor,skills,modelPrompt}` 之外的素材拷贝路径（Dockerfile 要 `COPY` 它们播种）。
-> 没有它时：根 `node_modules`（GB 级）+ `.git` 全进上下文，且宿主机产物会覆盖容器里刚装好的
-> `apps/api/node_modules`（Windows 开发机上是 Junction/symlink + `*.CMD` ⇒ 构建大概率失败）。
+Compose 使用 host 网络连接 1Panel MySQL，并将 `${MIWO_DATA_DIR}` bind mount 到同一路径；首次 API 启动会播种 skills/modelPrompt 并把镜像中的 web 静态文件复制到该目录，宿主机 Nginx 可直接读取。worker 与 API 使用同一镜像、环境文件和数据目录。
+
+> 仓库根 `.dockerignore` 与 Compose 根构建上下文对齐，排除 `node_modules`、`.git`、真实 `.env`、用户媒体数据、构建输出和生成目录 `apps/api/data/web`；只允许 `.env.example` 进入 context。镜像构建阶段从 `apps/web` 源码生成静态站点并同步到 `/app/apps/api/data/web`，而 `apps/api/data/{skills,modelPrompt}` 作为首次启动素材保留。这样 ZIP 不依赖 Git 忽略的本机生成物，也不会把 Windows `node_modules` 软链接或部署密钥发送给 Docker builder。
 
 ## 3.5 worker 进程（Phase 1d 起是**真进程**）
 
@@ -139,8 +161,8 @@ curl -I https://<域名>/
 | 形态 | 启动方式 | 说明 |
 |---|---|---|
 | **systemd（主推）** | `deploy/systemd/miwo-worker.service` | 与 api 同一套前置（`pnpm install` + `pnpm --filter @miwo/api build`），只是 `ExecStart` 换成 `data/serve/worker.js` |
-| **容器** | `deploy/docker-compose.yml` 的 `worker` 服务 | 与 api **同镜像/同 build/同 env/同卷**，只换 `command`（spec §4.1） |
-| **本机开发** | `pnpm.cmd --filter @miwo/api run worker` | tsx 直跑 `src/worker.ts`，不需要 build |
+| **容器** | `deploy/docker-compose.yml` 的 `worker` 服务 | 与 api **同镜像/同 build/同 env/同数据目录 bind mount**，只换 `command`（spec §4.1） |
+| **本机开发** | `pnpm.cmd --filter @miwo/api run dev` 同时启动 API 与 worker；仅 worker 用 `run worker` | tsx + nodemon 热重载，不需要 build |
 
 安装（路径 A 第 9 步之后）：
 
@@ -225,13 +247,13 @@ systemctl status miwo-worker
   `mysql` → `mysql2`，见 `connect.ts` 的 `clientConfig()` / `createKnex()`）。
   `MIWO_DB_HOST/PORT/USER/PASSWORD/NAME` 由 `config.ts` 读入后经 `connectionConfig()` 交给 mysql2。
   ⇒ **设了 `MIWO_DB_DRIVER=mysql` 就是在用 MySQL**，不再是"接入目标"。
-- 因此**真实数据在 MySQL 卷里**（`mysql-data`），**不再是** `${MIWO_DATA_DIR}/db2.sqlite`。
-  `MIWO_DATA_DIR` 在 mysql 分支下只用于媒体/技能等本地文件，**sqlite 分支才在那里建 `db2.sqlite`**。
-  ⚠ 升级/备份/回滚的**主对象是 MySQL**（`mysqldump` 或卷快照）。
-  若你的部署**仍**显式设了 `MIWO_DB_DRIVER=sqlite`（例如迁移过渡期），那才需要一并备份
-  `${MIWO_DATA_DIR}/db2.sqlite`；**默认的 `deploy/.env.example` 是 mysql**。
-- `deploy/.env.example` 里的 `MIWO_DB_DRIVER=mysql` 与 `MIWO_DB_HOST=127.0.0.1` 是**当前生效的配置**
-  （容器拓扑下 api 走 host 网络，所以连的是宿主机回环上发布的 MySQL），不是"未来的接入目标"。
+- 因此真实业务数据在 **1Panel 管理的 MySQL** 中；Compose 不创建 MySQL 服务，也没有 `mysql-data` 卷。
+  `MIWO_DATA_DIR` 在 MySQL 模式下只保存媒体和运行时文件；只有显式配置 `MIWO_DB_DRIVER=sqlite` 时，
+  才会在该目录使用 `db2.sqlite`。
+- 升级前通过 **1Panel 的 MySQL 备份功能**备份对应数据库，或使用可连接实例的 `mysqldump`；不要依赖 Compose 卷快照。
+  若显式使用 SQLite，则另行备份 `${MIWO_DATA_DIR}/db2.sqlite`。默认 `deploy/.env.example` 配置为 MySQL。
+- `MIWO_DB_HOST=127.0.0.1` 表示 api/worker 通过 host 网络访问宿主机回环上的 MySQL 监听端口，
+  不是 Compose 发布的端口。若 1Panel MySQL 只监听其他宿主机地址或映射端口，请按实际可达地址修改 `MIWO_DB_HOST` / `MIWO_DB_PORT`。
 - ⚠ **启动路径带数据库目标护栏**（【裁定 A】）：若解析出的 sqlite 目标是**仓库内的真实 dev 库**
   （`apps/api/data/db2.sqlite`）且没有显式放行，应用启动会**响亮失败**而不是静默写坏它。
   容器里 `MIWO_DATA_DIR` 指向卷、且驱动是 mysql，所以**不受影响**；这条只挡"本机默认配置误连 dev 库"。
@@ -278,7 +300,7 @@ cd deploy && docker compose build && docker compose up -d
    `/oss` 的 Range 必须写成**真实指令** `proxy_set_header Range $http_range;`（裸子串 `"Range"` 会被
    同一块里的 `If-Range` 行误满足）—— Phase 0 ledger N2；
 6. 容器拓扑自洽（api 必须是 `network_mode: host` 或与 nginx 共享网络命名空间；不得同时写 `ports`）；
-   mysql 只发布到 `127.0.0.1`、healthcheck 不把口令放命令行；
+   Compose 不得创建 MySQL 服务，数据库由 1Panel 独立管理；
 7. `deploy/Dockerfile` 存在且被 compose 的 `build:` 引用、基础镜像 **22.12 <= v < 25**（**上下界都查**，
    只查下限会让 `node:25+` 溜过 —— Phase 0 ledger N4b）、`CMD`/`WORKDIR` 指向 `data/serve/app.js`、
    有一行**真实指令（非注释）**`COPY … .npmrc`（注释行不算 —— Phase 0 ledger N4a）；
@@ -287,7 +309,7 @@ cd deploy && docker compose build && docker compose up -d
    `KillSignal=SIGTERM`、`TimeoutStopSec` **> 25s**（`shutdownGraceMs`）、不得写"占位/placeholder"，
    且 `apps/api/src/worker.ts` 与 `build.ts` 的 entry/outfile 必须**同时在**（否则单元指向永远不产出的文件）；
    8c. compose 的 **`worker` 服务**：与 api 同镜像/同 build/同 env（不得新增 `MIWO_*`）、`command` 指向
-   `data/serve/worker.js`、`network_mode: host`、不得写 `ports`、必须挂 `miwo-data` 卷；
+   `data/serve/worker.js`、`network_mode: host`、不得写 `ports`、必须挂与 api 相同的宿主机数据目录；
    8d. `/assets` **有意不反代**（Phase 1c 未处置项 N4：会遮蔽 SPA 产物目录）—— 静默新增 `location /assets` 即红；
 9. 证书不进版本库（`.gitignore` 规则 + git 索引复查）；
 10. `docker-compose.yml` 可被 YAML 解析。

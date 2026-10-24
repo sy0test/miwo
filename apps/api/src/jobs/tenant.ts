@@ -25,6 +25,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { runWithTenant, type TenantCtx } from "@/db/tenant-context";
+import { withAiBillingContext } from "@/billing/context";
 
 /** 任务尝试的 ctx（导出只为测试断言形状；生产路径请用 `withJobTenant()`）。 */
 export function jobTenantCtx(userId: number): TenantCtx {
@@ -42,7 +43,13 @@ export function jobTenantCtx(userId: number): TenantCtx {
  * ⚠ 纪律（Ruling 234 的同族）：回调**必须 async 且在里面 await**，
  *   不要把 thenable 返回出来再在外面 await（那样守卫的执行期复核看不到 ctx）。
  */
-export function withJobTenant<T>(userId: number | null, fn: () => Promise<T>): Promise<T> {
+export function withJobTenant<T>(userId: number | null, fn: () => Promise<T>, jobId?: string | number): Promise<T> {
   if (userId === null || userId === undefined) return fn();
-  return runWithTenant(jobTenantCtx(userId), fn);
+  const tenant = jobTenantCtx(userId);
+  return runWithTenant(tenant, async () =>
+    await withAiBillingContext(
+      { userId, requestId: tenant.requestId, ...(jobId === undefined ? {} : { jobId: String(jobId) }) },
+      fn,
+    ),
+  );
 }

@@ -150,12 +150,12 @@ const MANIFEST = [
     file: "router.ts",
     path: "/api/*",
     marker: 'use("/api/',
-    count: 176,
+    count: 183,
     exposure: "guarded",
     reason:
       "生成的路由挂载表（全部 `/api/...`，由 `app.use(\"/api\", …)` 统一鉴权）；由 scripts/generate-router.ts 产出。" +
-      "⚠ Phase 1c Task 11：177 → **176**（旧登录路径 `/api/login/login` 整体退役：路由文件删除 + 白名单条目删除）。" +
-      "改这个数字不是放宽判据：判据是\"清单与代码逐项相等\"，删挂载点就必须同步删数字。",
+      "Phase 1c Task 11 移除旧登录路径后为 176；Phase 2 新增 7 个 billing mounts 后为 183。" +
+      "改这个数字不是放宽判据：判据是\"清单与代码逐项相等\"，增删挂载点就必须同步改数字。",
   },
 ];
 

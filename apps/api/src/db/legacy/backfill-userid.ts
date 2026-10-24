@@ -301,9 +301,9 @@ export const SELF_CHECK_TABLES: readonly string[] = Object.freeze(["o_project", 
 /**
  * **回填豁免表**（单一来源）：`policies.TENANT_TABLES` 里"既不在回填目标、也不在自检"的那一批。
  *
- * 判据：**迁移之后才新建的租户表** —— 它们是空表，没有历史行、也就没有"要补 userId 的行"。
- * 把它们塞进 `TARGETS` 会造出一批永远为 0 的目标行（看起来在检查，其实什么都没检查），
- * 还会让 `assertBackfillConsistent` 的算术多出 3 条空断言。
+ * 判据：迁移后新建且没有历史行的租户表，或由专用迁移用已知归属初始化、无需 004 推导的表。
+ * 把它们塞进 `TARGETS` 会造出永远为 0 的目标行（看起来在检查，其实什么都没检查），
+ * 并让 `assertBackfillConsistent` 多出空断言。
  *
  * ⚠ 为什么不写成"门禁里的一份豁免清单"：那会是**第三份手写清单**（1b 反复出事的形状）。
  *   现在三方一致的不变量是：
@@ -316,7 +316,13 @@ export const SELF_CHECK_TABLES: readonly string[] = Object.freeze(["o_project", 
  */
 export const BACKFILL_EXEMPT_TABLES: readonly string[] = Object.freeze([
   "o_account",    // 006_quota_grants：每用户一行余额，迁移后新建的空表
+  "o_ledger",     // 009_billing：账本在迁移后创建，没有历史租户数据
   "o_modelGrant", // 006_quota_grants：模型授权，迁移后新建的空表
+  "o_order",      // 009_billing：充值订单在迁移后创建，没有历史租户数据
+  "o_usage",      // 009_billing：provider 调用计量在迁移后创建，没有历史租户数据
+  "o_dailyQuotaAdmission", // 010_daily_quota_admission：每日准入计数迁移后创建，没有历史租户数据
+  "o_usageAdmission", // 011_usage_admission：providerCallId 准入表迁移后创建，没有历史租户数据
+  "o_userGroupMembership", // 014_access_groups：迁移回填时直接写入已知 userId，不参与 004 历史归属推导
 ]);
 
 /**

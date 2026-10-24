@@ -35,6 +35,7 @@ import { resolveJwtSecret } from "@/auth/secret";
 import { verifyToken } from "@/auth/tokens";
 import { loadUserCtx } from "@/auth/service";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
+import { withAiBillingContext } from "@/billing/context";
 
 /** 连接期验签 → 租户 ctx（失败一律 `null`，调用方据此 `socket.disconnect()`）。 */
 export async function decodeSocketToken(rawToken: unknown): Promise<TenantCtx | null> {
@@ -61,7 +62,11 @@ export async function decodeSocketToken(rawToken: unknown): Promise<TenantCtx | 
 export function bindSocketTenant(socket: Socket, ctx: TenantCtx): Socket {
   const originalOn = socket.on.bind(socket);
   (socket as any).on = (event: string, handler: (...args: any[]) => any) => {
-    originalOn(event, (...args: any[]) => runWithTenant(ctx, () => handler(...args)));
+    originalOn(event, (...args: any[]) =>
+      runWithTenant(ctx, () =>
+        withAiBillingContext({ userId: ctx.userId, requestId: ctx.requestId }, async () => await handler(...args)),
+      ),
+    );
     return socket;
   };
   return socket;

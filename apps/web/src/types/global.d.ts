@@ -23,6 +23,10 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+interface Window {
+  $electron?: boolean;
+}
+
 /**
  * 项目实体
  */

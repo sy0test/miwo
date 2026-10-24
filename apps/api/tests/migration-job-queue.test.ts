@@ -144,8 +144,8 @@ describe("o_job / o_gate 迁移（spec §9.2 / §9.3）", () => {
     const tables = (await db("sqlite_master").where("type", "table").select("name")).map((r: any) => r.name);
     expect(tables).not.toContain("o_job");
     expect(tables).not.toContain("o_gate");
-    // 回滚前确实有 35 张业务表（不然"撤掉了"这条断言可能只是因为压根没建出来）
-    expect(before.filter((t: string) => t.startsWith("o_") || t === "memories").length).toBeGreaterThanOrEqual(35);
+    // 回滚前确实有 39 张业务表（不然"撤掉了"这条断言可能只是因为压根没建出来）
+    expect(before.filter((t: string) => t.startsWith("o_") || t === "memories").length).toBeGreaterThanOrEqual(39);
     const status = await migrationStatus(db);
     expect(status.every((r) => r.state === "pending")).toBe(true);
     await db.destroy();

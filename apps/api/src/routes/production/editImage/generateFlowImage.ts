@@ -1,4 +1,5 @@
 import express from "express";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
@@ -29,7 +30,7 @@ export default router.post(
   async (req, res) => {
     const { model, references = [], quality, ratio, prompt, projectId } = req.body;
     try {
-      const imageClass = await u.Ai.Image(model).run(
+      const imageClass = await u.Ai.Image(model, currentAiBillingContext()).run(
         {
           prompt: prompt,
           referenceList: await (async () => {

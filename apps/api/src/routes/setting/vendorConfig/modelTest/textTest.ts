@@ -1,6 +1,7 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
@@ -49,7 +50,7 @@ export default router.post(
         },
       });
 
-      const data = await u.Ai.Text(`${id}:${modelName}`).invoke({
+      const data = await u.Ai.Text(`${id}:${modelName}`, currentAiBillingContext()).invoke({
         messages,
         tools: { getWeatherTool },
       });

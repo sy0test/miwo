@@ -153,6 +153,8 @@ export interface o_scriptAssets {
   'scriptId'?: number;
 }
 export interface o_segment {
+  // 015_redraw_v2 手工补录（生成脚本从 MySQL 跑会丢掉 camelCase 表名，见该次迁移的说明）
+  'clipPath'?: string | null;
   'createTime'?: number | null;
   'duration'?: number | null;
   'id'?: number;
@@ -165,6 +167,7 @@ export interface o_segment {
   'scriptId'?: number | null;
   'segmentIndex'?: number | null;
   'selectVideoId'?: number | null;
+  'sourceRange'?: string | null;
   'state'?: string | null;
   'updateTime'?: number | null;
   'videoDesc'?: string | null;
@@ -193,6 +196,8 @@ export interface o_shot {
   'sfx'?: string | null;
   'shotIndex'?: number | null;
   'shotSize'?: string | null;
+  // 015_redraw_v2 手工补录：该镜的源片区间（展示/核对；切原片按片段做）
+  'sourceRange'?: string | null;
   'updateTime'?: number | null;
 }
 export interface o_shotAssets {

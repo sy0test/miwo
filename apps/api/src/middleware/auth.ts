@@ -40,6 +40,7 @@ import { AuthError, verifyToken } from "@/auth/tokens";
 import { resolveJwtSecret } from "@/auth/secret";
 import { AuthHttpError } from "@/auth/errors";
 import { loadUserCtx } from "@/auth/service";
+import { withAiBillingContext } from "@/billing/context";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
 
 /** 匿名可访问的路径（**精确匹配**，不用前缀）。 */
@@ -133,7 +134,9 @@ export async function authenticate(
   //   同一个对象挂两个名字是**故意**的：`req.tenant` 是 Phase 1b 起的既有消费面（socket/测试都在读），
   //   改名会让"日志能串起一次请求"这件事依赖一次全仓改名；两个名字指向**同一个 ctx**，不会漂移。
   (req as any).ctx = ctx;
-  return runWithTenant(ctx, () => next());
+  return runWithTenant(ctx, () =>
+    withAiBillingContext({ userId: ctx.userId, requestId: ctx.requestId }, () => next()),
+  );
 }
 
 /**

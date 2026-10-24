@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { error } from "@/lib/responseFormat";
 import { checkRedrawOutput, extractBlock, parseAssetSheet, parseStoryboardTable, renderDialogueMap, writeRedraw } from "@/utils/redraw";
@@ -168,7 +169,12 @@ export async function resolveScriptId(projectId: number, given?: number): Promis
 
 export type RedrawAnalyzeResult = {
   scriptId: number;
+  /** **解析出来的**资产数（不是写库行数 —— 解析层 skipAssets，写库恒为 0） */
   assets: number;
+  /** 实际写进 `o_assets` 的行数（解析层恒为 0，关联层落地后才会 >0） */
+  writtenAssets: number;
+  /** v2：写进去的**片段**数（= 生成单位 = 界面上的"分镜"） */
+  segments: number;
   storyboards: number;
   missingAssetNames: string[];
   issues: ReturnType<typeof checkRedrawOutput>;
@@ -278,6 +284,8 @@ export async function analyzeRedrawAssets(opts: RedrawAnalyzeOpts): Promise<Redr
     return {
       scriptId: given ?? (await resolveScriptId(projectId)),
       assets: 0,
+      writtenAssets: 0,
+      segments: 0,
       storyboards: 0,
       missingAssetNames: [],
       issues: [],
@@ -295,7 +303,7 @@ export async function analyzeRedrawAssets(opts: RedrawAnalyzeOpts): Promise<Redr
   // 不传 maxOutputTokens：全站部署行的这一列都是 0，即所有 Agent 都吃供应商默认值。
   // 这里硬写一个数会让本路由成为唯一例外 —— 若该模型要的是 max_completion_tokens，
   // 就是一次必然的 400。截断风险由 checkRedrawOutput 兜底，会响得很清楚。
-  const out = await u.Ai.Text(AGENT_KEY).invoke({
+  const out = await u.Ai.Text(AGENT_KEY, currentAiBillingContext()).invoke({
     system,
     messages: [
       {
@@ -372,7 +380,13 @@ export async function analyzeRedrawAssets(opts: RedrawAnalyzeOpts): Promise<Redr
 
   return {
     scriptId: sid,
-    assets: Object.keys(written.assetIds).length,
+    // ⚠ 这里是**解析出来的资产数**（sheet.assets），不是"写进 o_assets 的行数"。
+    //    解析层固定 skipAssets（资产要等关联层跟用户认账），所以写库行数恒为 0 ——
+    //    以前这里返回 `Object.keys(written.assetIds).length`，导致所有报错文案都写成
+    //    「解析出了 0 个资产」，把"模型明明解析出 8 个"误报成"一个都没解析出来"。
+    assets: sheet.assets.length,
+    writtenAssets: Object.keys(written.assetIds).length,
+    segments: written.segmentIds.length,
     storyboards: written.storyboardIds.length,
     missingAssetNames: written.missingAssetNames,
     issues,

@@ -12,6 +12,7 @@
  * （生成成功/生成失败）就直接跳过，**不再调厂商**（省的是真金白银）。
  */
 import crypto from "node:crypto";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { mediaKindOf } from "@/utils/oss";
 import type { ReferenceList } from "@/utils/ai";
@@ -120,7 +121,7 @@ async function runItems(ctx: JobContext, p: VideoBatchPayload): Promise<unknown>
       // 不包整条任务（一条视频任务可能跑 15 分钟，包整条会让 globalMaxRunning 退化成 1）。
       // 超时（gateWaitMs，默认 120s）⇒ 抛错 ⇒ 下面 catch 把它写成"生成失败"（可诊断、可重跑）。
       const aiVideo = await withVendorSlot("vendor:video", ctx.workerId, async () => {
-        const cls = u.Ai.Video(p.model as `${string}:${string}`);
+        const cls = u.Ai.Video(p.model as `${string}:${string}`, currentAiBillingContext());
         await cls.run(
           {
             prompt: item.prompt,

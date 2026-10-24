@@ -45,7 +45,7 @@
             :message="$t('settings.vendor.msg.vendorNeedsUpdate')"
             style="margin-bottom: 12px" />
           <t-form-item>
-            <MdPreview v-model="currentVendor.description" :theme="themeSetting.mode" />
+            <MdPreview v-model="currentVendor.description" :theme="themeSetting.mode === 'dark' ? 'dark' : 'light'" />
           </t-form-item>
           <t-form-item v-for="input in requiredInputs" :key="input.key" :name="input.key">
             <template #label>
@@ -120,6 +120,7 @@
                 </t-tag>
               </template>
             </div>
+            <ModelAccessPricing v-if="isAdmin" :vendor-id="currentVendor.id" :model="item" />
           </t-card>
         </t-form>
         <div class="updateAction">
@@ -275,7 +276,10 @@ import settingStore from "@/stores/setting";
 import TextModelTest from "./vendorTest/TextModelTest.vue";
 import ImageModelTest from "./vendorTest/ImageModelTest.vue";
 import VideoModelTest from "./vendorTest/VideoModelTest.vue";
+import ModelAccessPricing from "./vendorConfig/ModelAccessPricing.vue";
+import userStore from "@/stores/user";
 const { themeSetting } = storeToRefs(settingStore());
+const isAdmin = userStore().role === "admin";
 
 // ── 类型 ──
 interface TextModel {

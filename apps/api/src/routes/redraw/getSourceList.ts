@@ -34,9 +34,22 @@ export default router.post(
         return x - y || (a.createTime ?? 0) - (b.createTime ?? 0);
       });
 
-      // 已解析出分镜的集：卡片上要能看出「这一集已经分析过了」
-      const counts = await u.db("o_storyboard").where("projectId", projectId).groupBy("scriptId").select("scriptId").count("id as n");
-      const byScript = new Map<number, number>(counts.map((c: any) => [c.scriptId, Number(c.n)]));
+      // 已解析出分镜的集：卡片上要能看出「这一集已经分析过了」。
+      // v2 起「分镜」的单位是**片段**（o_segment）：转绘解析层写的就是它；
+      // 迁移前的旧集没有 o_segment，只能数 legacy 的 o_storyboard —— 两张都数，逐集相加。
+      const [segCounts, legacyCounts, shotCounts] = await Promise.all([
+        u.db("o_segment").where("projectId", projectId).groupBy("scriptId").select("scriptId").count("id as n"),
+        u.db("o_storyboard").where("projectId", projectId).groupBy("scriptId").select("scriptId").count("id as n"),
+        u.db("o_shot").where("projectId", projectId).groupBy("scriptId").select("scriptId").count("id as n"),
+      ]);
+      const addCounts = (target: Map<number, number>, rows: any[]) => {
+        for (const c of rows) target.set(Number(c.scriptId), (target.get(Number(c.scriptId)) ?? 0) + Number(c.n));
+      };
+      const segByScript = new Map<number, number>();
+      addCounts(segByScript, segCounts as any[]);
+      addCounts(segByScript, legacyCounts as any[]);
+      const shotByScript = new Map<number, number>();
+      addCounts(shotByScript, shotCounts as any[]);
 
       const data = await Promise.all(
         rows.map(async (r: any) => ({
@@ -52,8 +65,11 @@ export default router.post(
           extractState: r.extractState ?? null,
           errorReason: r.errorReason ?? null,
           createTime: r.createTime ?? null,
-          storyboards: byScript.get(r.id) ?? 0,
-          analyzed: (byScript.get(r.id) ?? 0) > 0,
+          // v2 起「分镜」的单位是片段：界面上的数字用 segments（保留 storyboards 这个键名，
+          // 前端与文案沿用；值 = 片段数）。shots 是段内镜数，给排查/展示用。
+          storyboards: segByScript.get(Number(r.id)) ?? 0,
+          shots: shotByScript.get(Number(r.id)) ?? 0,
+          analyzed: (segByScript.get(Number(r.id)) ?? 0) > 0,
         })),
       );
 

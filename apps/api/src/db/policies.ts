@@ -36,6 +36,8 @@
  *     "改登记、不改判据"：门禁仍要求策略表与迁移建表清单**逐项相等**。
  *     为什么这两张必须是 platform（而不是 tenant）：worker 的领取/回收要**跨租户扫描**，
  *     而 worker 的系统身份是 `userId = 0`，注入租户条件后一条都查不到。详见下方 `o_job` 的登记注释。
+ *     ⚠ **【Phase 3】** 账务、quota admission 与访问分组表已登记；当前策略登记共 46 张业务表
+ *     （18 platform + 28 tenant）；另有 `knex_migrations` / `knex_migrations_lock` 两张迁移基础表。
  */
 export type TablePolicy = "tenant" | "platform" | "global";
 
@@ -76,12 +78,17 @@ export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.free
   o_loginAttempt: "platform",  // 登录失败计数/锁定（登录期写入，无 ctx）
   o_auditLog: "platform",      // 平台级审计流水（跨租户可见：按 userId 记录"谁做了什么"）
   o_userSetting: "platform",   // 用户级 setting（§6.2 从 o_setting 迁出的 7 个键；登录期/启动期读）
+  o_modelGroup: "platform",     // 模型授权组与服务商/模型成员
+  o_modelGroupItem: "platform", // 模型组的可用模型及每日限额
+  o_userGroup: "platform",      // 用户组配置
+  o_userGroupModelGroup: "platform", // 用户组与模型组的授权绑定
   o_artStyle: "platform",      // 画风库（附录 A 判 platform；若要"连管理员都只读"→ 改 global）
   o_agentDeploy: "platform",   // 角色→模型绑定（全局）
   o_setting: "platform",       // 平台级 key（jwtSecret/tokenKey/shotsEngine/…；用户级 key 迁 o_userSetting 归 Phase 1c）
   o_prompt: "platform",        // 提示词模板（运营资产）
   o_modelPrompt: "platform",   // 模型↔提示词附件
   o_vendorConfig: "platform",  // 供应商配置（key 加密/不回传归 Phase 1c；策略在本阶段就收成"仅 admin 可写"）
+  o_price: "platform",         // 定价历史（按 effectiveFrom 追加；跨租户平台资产）
   // ---------- platform：Phase 1d 的任务队列基础设施（spec §9.2 / §9.3）----------
   // ⚠ 为什么是 **platform** 而不是 tenant（这是本组必须论证的一处裁定）：
   //   ① worker 的 `claim` / `reclaimExpired` **必须跨租户扫描**（"领取任意租户的待办任务"）。
@@ -97,7 +104,7 @@ export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.free
   // ---------- knex 基础设施（不是业务表，必须显式声明） ----------
   knex_migrations: "platform",
   knex_migrations_lock: "platform",
-  // ---------- tenant：20 张（每张都有 userId 列，由 001_schema 建出；回填见 Task 6） ----------
+  // ---------- tenant：25 张（每张都有 userId 列；历史表回填见 Task 6） ----------
   o_project: "tenant",         // 唯一带"真 userId"的表（改造前被硬编码写成 1）
   o_tasks: "tenant",           // 经 projectId 归属；spec 附录 A 的最直接越权读（routes/task/getTaskApi.ts）
   o_novel: "tenant",           // projectId
@@ -118,12 +125,19 @@ export const TABLE_POLICIES: Readonly<Record<string, TablePolicy>> = Object.free
   o_segment: "tenant",         // projectId（v2 片段）
   o_shot: "tenant",            // projectId（v2 镜）
   memories: "tenant",          // isolationKey 前缀是 projectId；本阶段改格式为 ${userId}:${projectId}:…
-  // ---------- tenant：额度与模型授权（Task 1 的 006_quota_grants 新建；§8.2 / §8.5）----------
-  // ⚠ 这两张表是**迁移后新建的空表**：没有历史行、也就没有"要回填的 userId"，因此登记在
-  //   `backfill-userid.ts` 的 `BACKFILL_EXEMPT_TABLES` 里（单一来源），三方一致门禁的
-  //   不变量是 `TENANT == BACKFILL_TARGETS ∪ {o_project} ∪ EXEMPT`。
+  // ---------- tenant：计费、访问分组与模型授权表 ----------
+  //   新建空表列在 `backfill-userid.ts` 的 `BACKFILL_EXEMPT_TABLES`；唯一例外是
+  //   `o_userGroupMembership`，014 迁移用已知 userId 从历史授权初始化关系，不走 004 推导。
+  //   三方一致门禁不变量：`TENANT == BACKFILL_TARGETS ∪ {o_project} ∪ EXEMPT`。
   o_account: "tenant",         // 每用户一行余额/冻结额（整数微元）；乐观锁 version
-  o_modelGrant: "tenant",      // 用户可见/可用的模型范围（agentKey/vendorId/model 三选一）
+  o_modelGrant: "tenant",      // 用户级 Agent 授权；模型授权经模型组与用户组解析
+  o_userGroupMembership: "tenant", // 用户与用户组成员关系
+  // ---------- tenant：Phase 2 Task 1 的调用计量、账本与充值订单 ----------
+  o_usage: "tenant",           // 调用用量与成本（每行归属一个用户）
+  o_ledger: "tenant",          // 追加式余额流水（按用户隔离）
+  o_order: "tenant",           // 充值订单（按用户隔离）
+  o_dailyQuotaAdmission: "tenant", // 跨进程每日调用准入计数（按用户隔离）
+  o_usageAdmission: "tenant", // providerCallId 的持久准入身份（按用户隔离）
 });
 
 /** spec §5.4 退役表：001_schema 已删；任何访问都抛错。 */
@@ -132,7 +146,7 @@ export const DROPPED_TABLES: ReadonlySet<string> = new Set(["o_skillList", "o_sk
 /** knex 迁移器自己建的基础设施表（001_schema 不建、但必须登记）。 */
 export const INFRA_TABLES: ReadonlySet<string> = new Set(["knex_migrations", "knex_migrations_lock"]);
 
-/** 22 张租户表（顺序稳定，便于测试与报告；**不是**"策略表全集"）。 */
+/** 27 张租户表（顺序稳定，便于测试与报告；**不是**"策略表全集"）。 */
 export const TENANT_TABLES: readonly string[] = Object.freeze(
   Object.keys(TABLE_POLICIES).filter((t) => TABLE_POLICIES[t] === "tenant"),
 );

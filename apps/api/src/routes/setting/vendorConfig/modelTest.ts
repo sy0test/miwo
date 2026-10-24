@@ -1,6 +1,7 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
@@ -75,7 +76,7 @@ export default router.post(
       });
 
       if (type == "text") {
-        const { textStream } = await u.Ai.Text(`${id}:${modelName}`).stream({
+        const { textStream } = await u.Ai.Text(`${id}:${modelName}`, currentAiBillingContext()).stream({
           prompt: "请调用工具获取火星的天气，并回答我多少气温",
           tools: { getWeatherTool },
         });
@@ -90,7 +91,7 @@ export default router.post(
           image: "Image",
           video: "Video",
         } as const;
-        const reqFn = await u.Ai[aiTypeFn[type as "image" | "video"]](`${id}:${modelName}`).run({
+        const reqFn = await u.Ai[aiTypeFn[type as "image" | "video"]](`${id}:${modelName}`, currentAiBillingContext()).run({
           ...reqConfig.modelData,
         });
         await reqFn.save(type == "video" ? "test.mp4" : "testImage.jpg");

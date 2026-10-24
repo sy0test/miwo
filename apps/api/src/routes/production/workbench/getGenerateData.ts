@@ -96,7 +96,9 @@ export default router.post(
             shotCount: shotCountBySeg.get(Number(seg.id)) ?? 0,
             duration: Number(seg.videoDuration ?? seg.duration ?? 0),
             filePath: "",
-            clipPath: null,
+            // 转绘：一段一个原片参考视频（cutSource 按片段切，写 o_segment.clipPath）。
+            // 下面的 clipSrcById / sources:"clip" 逻辑对两种引擎是同一套，只差这一列的来源。
+            clipPath: seg.clipPath ? String(seg.clipPath) : null,
             videoDesc: seg.videoDesc ?? "",
             prompt: seg.videoDesc ?? null,
           }));
@@ -128,7 +130,8 @@ export default router.post(
           index: i.index,
         });
       }
-      // 参考视频单列一条：sources 用 "clip"（generateVideo 按 o_storyboard.id 取 clipPath），
+      // 参考视频单列一条：sources 用 "clip"（generateVideo 按 id 取 clipPath：
+      // v2 取 o_segment.clipPath、legacy 取 o_storyboard.clipPath），
       // fileType 必须是 video —— 混成 image 的话会被当图片参考静默送出去。
       // 塞在 medias 里就等于「每个分镜默认带上原片作参考」，前端无需改动。
       const clipSrc = i.id != null ? clipSrcById.get(i.id) : undefined;
@@ -137,7 +140,8 @@ export default router.post(
           src: clipSrc,
           fileType: "video",
           sources: "clip",
-          prompt: `第 ${i.index} 镜原片`,
+          // 颗粒度跟界面走：v2 的"分镜"是片段（段），legacy 是镜
+          prompt: `第 ${i.index} ${isSegments ? "段" : "镜"}原片`,
           id: i.id,
           index: i.index,
         });

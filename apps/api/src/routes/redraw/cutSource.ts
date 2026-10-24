@@ -1,6 +1,5 @@
 import express from "express";
 import fs from "fs";
-import path from "path";
 import u from "@/utils";
 import pLimit from "p-limit";
 import { z } from "zod";
@@ -12,16 +11,18 @@ import { parseRanges } from "@/utils/redraw";
 const router = express.Router();
 
 /**
- * 出海转绘 · 第 5 步：按 `o_storyboard.sourceRange` 把源片切成每镜一个片段。
+ * 出海转绘 · 第 5 步：按**片段**把源片切成本段一个参考视频。
  *
- * 产物落在 `/{projectId}/redraw-clip/{scriptId}/shot-{index}.mp4`，路径写回
- * `o_storyboard.clipPath`。第 7 步的工作台把它作为**参考视频**挂到该镜所在轨道上
- * （`generateVideo` 认 `sources="clip"`，走 vendor 的 `videoReference`）。
+ * 2026-10-21 迁 v2 后的口径（用户决策：切原片**按段**，不按镜）：
+ *   - 片段 = `o_segment`（生成单位）；它的源片区间由段内各镜 `o_shot.sourceRange` 按顺序拼起来；
+ *   - 产物：`/{projectId}/redraw-clip/{scriptId}/seg-{segmentIndex}.mp4`，路径写回 `o_segment.clipPath`；
+ *   - 工作台把它作为 `sources:"clip"` 的**参考视频**挂到该段上（供应商侧走 `videoReference`）。
+ *
+ * 为什么不是每镜一个：转绘的生成单位是"一段"（≤15s、最多 3 镜），一段对应一次生成；
+ * 每镜切一份再拼反而多一步、且播放器/供应商侧只吃一个参考视频。
  *
  * 纯本地 ffmpeg，不调模型 —— 这一整步零成本，可以反复跑。
- *
- * ⚠ 生成端吃视频的是**供应商**（Seedance 的 reference_video），不是文本模型：
- * 中继（真 OpenAI）不吃视频，所以「带原视频作参考」永远不走模型输入这条路。
+ * ⚠ 生成端吃视频的是**供应商**（Seedance 的 reference_video），不是文本模型。
  */
 
 /** 允许的越界余量：源片末端的区间常常正好写在总时长上，ffprobe 报的数会差几毫秒 */
@@ -29,7 +30,7 @@ const EDGE_TOL = 0.05;
 /** 成片时长与「区间跨度之和」的允许偏差。ffmpeg 边界落在帧上，差一帧是正常的 */
 const CUT_TOL = 0.1;
 
-type Issue = { level: "error" | "warn"; shotIndex?: number; message: string };
+type Issue = { level: "error" | "warn"; segmentIndex?: number; message: string };
 
 export default router.post(
   "/",
@@ -40,7 +41,7 @@ export default router.post(
     videoPath: z.string().optional(),
     /** 已有片段就跳过，只补缺的 */
     onlyMissing: z.boolean().optional(),
-    /** 清掉本集目录下不属于当前分镜集合的旧片段文件 */
+    /** 清掉本集目录下不属于当前片段集合的旧文件（含迁移前的 shot-*.mp4） */
     cleanStale: z.boolean().optional(),
   }),
   async (req, res) => {
@@ -63,8 +64,21 @@ export default router.post(
       // 记下来，下次不用再传（新上传页落地后由它写，这里顺手兜住）
       if (srcRel !== script.sourceVideo) await u.db("o_script").where("id", scriptId).update({ sourceVideo: srcRel });
 
-      const shots = await u.db("o_storyboard").where({ scriptId, projectId }).orderBy("index", "asc");
-      if (!shots.length) return res.status(400).send(error(`该剧本下没有分镜，先跑第 4 步解析：scriptId=${scriptId}`));
+      // v2：生成单位是片段。先按段取，再取段内镜（镜上带自己的源片区间）。
+      const segments = await u.db("o_segment").where({ scriptId, projectId }).orderBy("segmentIndex", "asc");
+      if (!segments.length) {
+        return res
+          .status(400)
+          .send(error(`该剧本下没有结构化分镜（o_segment），先跑第 4 步解析：scriptId=${scriptId}`));
+      }
+      const shots = await u.db("o_shot").where({ scriptId, projectId }).orderBy(["segmentIndex", "shotIndex"]);
+      const shotsBySegment = new Map<number, any[]>();
+      for (const s of shots) {
+        const key = Number(s.segmentId);
+        const list = shotsBySegment.get(key) ?? [];
+        list.push(s);
+        shotsBySegment.set(key, list);
+      }
 
       const meta = await probeVideo(srcAbs);
       const issues: Issue[] = [];
@@ -74,77 +88,103 @@ export default router.post(
       fs.mkdirSync(outDirAbs, { recursive: true });
 
       const limit = pLimit(3);
-      const clips: { index: number; clipPath: string; sec: number }[] = [];
+      const clips: { segmentIndex: number; clipPath: string; sec: number }[] = [];
       let skipped = 0;
 
       await Promise.all(
-        shots.map((s: any) =>
+        segments.map((seg: any) =>
           limit(async () => {
-            const ranges = parseRanges((s.sourceRange ?? "").trim());
-            if (!ranges) {
-              issues.push({ level: "error", shotIndex: s.index, message: `第 ${s.index} 镜的源片区间解析不出来：「${s.sourceRange ?? ""}」` });
+            const segmentIndex = Number(seg.segmentIndex);
+            const segShots = shotsBySegment.get(Number(seg.id)) ?? [];
+            if (!segShots.length) {
+              issues.push({ level: "error", segmentIndex, message: `片段 ${segmentIndex} 下没有镜，无法确定源片区间` });
               return;
             }
+
+            // 按镜序把区间摊平：一段 = 这几个镜覆盖的源片区间之和
+            const ranges: [number, number][] = [];
+            for (const sh of segShots) {
+              const parsed = parseRanges(String(sh.sourceRange ?? "").trim());
+              if (!parsed) {
+                issues.push({
+                  level: "error",
+                  segmentIndex,
+                  message: `片段 ${segmentIndex} 的镜 ${sh.shotIndex} 区间解析不出来：「${sh.sourceRange ?? ""}」`,
+                });
+                return;
+              }
+              ranges.push(...parsed);
+            }
+
             // 越界：整段落在源片之外才判错，压线（源片末尾）按钳制处理
             const clamped: [number, number][] = [];
             for (const [a, b] of ranges) {
               if (a < 0 || b <= a) {
-                issues.push({ level: "error", shotIndex: s.index, message: `第 ${s.index} 镜区间不合法：${a}-${b}` });
+                issues.push({ level: "error", segmentIndex, message: `片段 ${segmentIndex} 区间不合法：${a}-${b}` });
                 return;
               }
               if (meta.duration && a >= meta.duration - EDGE_TOL) {
-                issues.push({ level: "error", shotIndex: s.index, message: `第 ${s.index} 镜区间落在源片之外：${a}-${b}（源片 ${meta.duration.toFixed(3)}s）` });
+                issues.push({
+                  level: "error",
+                  segmentIndex,
+                  message: `片段 ${segmentIndex} 区间落在源片之外：${a}-${b}（源片 ${meta.duration.toFixed(3)}s）`,
+                });
                 return;
               }
               if (meta.duration && b > meta.duration) {
-                // 压线不算问题：最后一个镜的区间本来就写在整个源片的末尾上，
-                // 而 ffprobe 报的总时长与切点表能差几毫秒。只有真的越过去才报。
                 if (b - meta.duration > EDGE_TOL)
-                  issues.push({ level: "warn", shotIndex: s.index, message: `第 ${s.index} 镜区间越过源片末尾，已收到 ${meta.duration.toFixed(3)}s：「${s.sourceRange}」` });
+                  issues.push({
+                    level: "warn",
+                    segmentIndex,
+                    message: `片段 ${segmentIndex} 区间越过源片末尾，已收到 ${meta.duration.toFixed(3)}s`,
+                  });
                 clamped.push([a, meta.duration]);
               } else {
                 clamped.push([a, b]);
               }
             }
 
-            const clipRel = `${outDirRel}/shot-${s.index}.mp4`;
+            const clipRel = `${outDirRel}/seg-${segmentIndex}.mp4`;
             const clipAbs = await u.oss.getAbsPath(clipRel);
 
-            if (onlyMissing && s.clipPath === clipRel && fs.existsSync(clipAbs)) {
+            if (onlyMissing && seg.clipPath === clipRel && fs.existsSync(clipAbs)) {
               skipped++;
               return;
             }
 
-            // 单镜失败不掀桌：一条坏区间不该让另外十五个片段也白切。
-            // 错误按镜报出来，成功的照常落库。
+            // 单段失败不掀桌：一段坏区间不该让其它片段也白切。
             try {
               await cutClip(srcAbs, clamped, clipAbs, meta.hasAudio);
+              await u.oss.writeFile(clipRel, await fs.promises.readFile(clipAbs));
 
               // 自校验：切出来的时长必须等于「区间跨度之和」。
-              // 不去比 o_storyboard.duration —— 那是技能给生成器用的**取整后**秒数
-              // （向上取整、下限 4s），天然大于区间跨度，拿它比对会报一堆假警。
               const want = clamped.reduce((sum, [a, b]) => sum + (b - a), 0);
               const got = (await probeVideo(clipAbs)).duration;
-              if (got === undefined) issues.push({ level: "warn", shotIndex: s.index, message: `第 ${s.index} 镜切完读不到时长` });
+              if (got === undefined)
+                issues.push({ level: "warn", segmentIndex, message: `片段 ${segmentIndex} 切完读不到时长` });
               else if (Math.abs(got - want) > CUT_TOL)
-                issues.push({ level: "warn", shotIndex: s.index, message: `第 ${s.index} 镜成片 ${got.toFixed(3)}s，区间跨度 ${want.toFixed(3)}s，差 ${(got - want).toFixed(3)}s` });
+                issues.push({
+                  level: "warn",
+                  segmentIndex,
+                  message: `片段 ${segmentIndex} 成片 ${got.toFixed(3)}s，区间跨度 ${want.toFixed(3)}s，差 ${(got - want).toFixed(3)}s`,
+                });
 
-              await u.db("o_storyboard").where("id", s.id).update({ clipPath: clipRel });
-              clips.push({ index: s.index, clipPath: clipRel, sec: got ?? want });
+              await u.db("o_segment").where("id", seg.id).update({ clipPath: clipRel });
+              clips.push({ segmentIndex, clipPath: clipRel, sec: got ?? want });
             } catch (e: any) {
-              issues.push({ level: "error", shotIndex: s.index, message: `第 ${s.index} 镜切片失败：${u.error(e).message}` });
+              issues.push({ level: "error", segmentIndex, message: `片段 ${segmentIndex} 切片失败：${u.error(e).message}` });
             }
           }),
         ),
       );
 
-      // 分镜集合变小（重跑解析）后，目录里会留下没人认领的旧片段
+      // 片段集合变小（重跑解析）后，目录里会留下没人认领的旧文件
       let removed = 0;
       if (cleanStale) {
-        const wanted = new Set(shots.map((s: any) => `shot-${s.index}.mp4`));
+        const wanted = new Set(segments.map((s: any) => `seg-${Number(s.segmentIndex)}.mp4`));
         for (const f of fs.readdirSync(outDirAbs)) {
           if (!wanted.has(f)) {
-            fs.unlinkSync(path.join(outDirAbs, f));
+            await u.oss.deleteFile(`${outDirRel}/${f}`);
             removed++;
           }
         }
@@ -156,11 +196,11 @@ export default router.post(
           sourceVideo: srcRel,
           videoSec: meta.duration ?? null,
           hasAudio: meta.hasAudio,
-          total: shots.length,
+          total: segments.length,
           cut: clips.length,
           skipped,
           removed,
-          clips: clips.sort((a, b) => a.index - b.index),
+          clips: clips.sort((a, b) => a.segmentIndex - b.segmentIndex),
           issues,
         }),
       );

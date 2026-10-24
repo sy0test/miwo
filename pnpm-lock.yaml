@@ -286,6 +286,12 @@ importers:
         specifier: ^4.4.5
         version: 4.6.4(vue@3.5.43(typescript@5.6.3))
     devDependencies:
+      '@dagrejs/graphlib':
+        specifier: ^4.0.5
+        version: 4.0.5
+      '@socket.io/component-emitter':
+        specifier: ^3.1.2
+        version: 3.1.2
       '@tdesign-vue-next/auto-import-resolver':
         specifier: ^0.1.6
         version: 0.1.8(@babel/parser@7.29.9)(vue@3.5.43(typescript@5.6.3))
@@ -295,6 +301,9 @@ importers:
       '@types/license-checker':
         specifier: ^25.0.6
         version: 25.0.6
+      '@types/lodash':
+        specifier: ^4.17.26
+        version: 4.17.26
       '@types/node':
         specifier: ^22.9.0
         version: 22.20.5

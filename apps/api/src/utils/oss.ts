@@ -1,13 +1,14 @@
 import isPathInside from "is-path-inside";
 import getPath, { isEletron } from "@/utils/getPath";
 import { config } from "@/config";
-import { signMediaQuery } from "@/utils/mediaSign";
+import { signMediaQuery as signMediaQueryForRoot } from "@/utils/mediaSign";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import sharp from "sharp";
+import { createS3MediaStorage } from "@/storage/s3";
 
 // 规范化路径：去除前导斜杠，并将路径分隔符统一转换为系统分隔符
 function normalizeUserPath(userPath: string): string {
@@ -70,7 +71,7 @@ class OSS {
    * ⚠ Phase 1c Task 7 起 `?exp=&sig=` 是**必须**的：`/oss` 与 `/assets` 已经移到 `authenticate` 之后，
    *   浏览器自己发的 `<img>/<video>` 请求不带 `Authorization`，只能靠 query 里的签名放行。
    *   签名的被签内容 = 该挂载点下的**相对路径**（`?` 之前的那一段），与 `app.ts` 里
-   *   `mediaAuthGuard` 用 `req.path` 取到的形态一致（两侧都做归一，见 `mediaSign.ts`）。
+   *   `mediaAuthGuard` 用 `req.path` 取到的形态一致；挂载 namespace（`oss` / `assets`）也参与签名。
    * ⚠ 这个返回值**只允许出现在响应体里**：不要把它写进 DB（签名 TTL 到期后那些行就是死链）。
    *   `apps/api/tests/media-sign.test.ts` 有一条静态断言把这条钉住。
    */
@@ -90,6 +91,8 @@ class OSS {
     // Electron（打包版）页面是 file:///自定义协议，必须绝对地址；属 Phase 1c，端口不再读环境变量 `PORT`。
     if (isEletron()) url = `http://localhost:${config.port}/${prefix}/`;
     const rel = safePath.split(path.sep).join("/");
+    const mediaRoot = prefix === "assets" ? "assets" : "oss";
+    const signMediaQuery = (mediaRelPath: string) => signMediaQueryForRoot(mediaRelPath, undefined, mediaRoot);
     // 短时签名（spec §6.5）：/assets 下的片尾素材与 /oss 下的媒体都要走同一个守卫。
     return `${url}${rel}?${signMediaQuery(rel)}`;
   }
@@ -287,4 +290,6 @@ class OSS {
   }
 }
 
-export default new OSS();
+export default config.storageDriver === "s3"
+  ? createS3MediaStorage(config.s3Storage!)
+  : new OSS();

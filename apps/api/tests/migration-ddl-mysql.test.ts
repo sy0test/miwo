@@ -34,6 +34,10 @@ import accounts from "@/db/migrations/005_accounts";
 import quotaGrants from "@/db/migrations/006_quota_grants";
 import jobQueue from "@/db/migrations/007_job_queue";
 import vendorGate from "@/db/migrations/008_vendor_gate";
+import billing from "@/db/migrations/009_billing";
+import quotaAdmission from "@/db/migrations/010_daily_quota_admission";
+import usageAdmission from "@/db/migrations/011_usage_admission";
+import accessGroups from "@/db/migrations/014_access_groups";
 
 /**
  * `scripts/schema-limits.cjs` 是 **CJS**，这里用 `createRequire` 同步 require。
@@ -137,6 +141,10 @@ function makeFakeKnex(stmts: Collected[]): any {
       for (const s of mysql.schema.createTable(name, cb).toSQL()) push("create", s.sql);
       return Promise.resolve();
     },
+    alterTable: (name: string, cb: any) => {
+      for (const s of mysql.schema.alterTable(name, cb).toSQL()) push("alter", s.sql);
+      return Promise.resolve();
+    },
     dropTableIfExists: (name: string) => {
       push("drop", `drop table if exists \`${name}\``);
       return Promise.resolve();
@@ -165,6 +173,8 @@ function makeFakeKnex(stmts: Collected[]): any {
     const b: any = {};
     b.select = () => b;
     b.where = () => b;
+    b.whereNull = () => b;
+    b.whereNotNull = () => b;
     b.whereIn = () => b;
     b.orderBy = () => b;
     b.insert = () => b;
@@ -210,6 +220,10 @@ async function allDdlCollected(): Promise<Collected[]> {
   await (quotaGrants as any).up(fake);
   await (jobQueue as any).up(fake);
   await (vendorGate as any).up(fake);
+  await (billing as any).up(fake);
+  await (quotaAdmission as any).up(fake);
+  await (usageAdmission as any).up(fake);
+  await (accessGroups as any).up(fake);
   return stmts;
 }
 
@@ -438,9 +452,9 @@ describe("dialect 的 mysql 分支（Task 1 遗留的未锁定代码）", () => 
     expect(ddl).toContain("`disabled` tinyint default '0'");
   });
 
-  it("floatCol() 生成 float", () => {
-    const ddl = ddlOf((t) => { types(mysql).floatCol(t, "duration"); });
-    expect(ddl).toContain("`duration` float");
+  it("decimal() 生成 fixed-scale decimal", () => {
+    const ddl = ddlOf((t) => { types(mysql).decimal(t, "duration", 18, 6); });
+    expect(ddl).toContain("`duration` decimal(18, 6)");
   });
 });
 
@@ -526,21 +540,15 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     const compositeTables = [...tableLevelCols.values()].filter((n) => n > 1);
     // ⚠ 18 → **21**（Phase 1c Task 1）：`005_accounts` 的 `o_invite` / `o_auditLog` 与
     //   `006_quota_grants` 的 `o_modelGrant` 用 `t.pk(T)`（`o_user` 重建后也是）。
-    // ⚠ 21 → **23**（Phase 1d Task 1）：`007_job_queue` 的 `o_job` 与 `008_vendor_gate` 的 `o_gate`
-    //   也都用 `t.pk(T)`。数字变了必须回来核对 —— 这是本组"登记变化"的一处，不是放宽判据。
-    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(23);
-    // ⚠ 9 → **12**：`o_account`（表级单列主键）、`o_userSetting` / `o_loginAttempt`（复合主键），
-    //   以及 `o_user` —— 它在 005 里是"新表 + rename"，rename 之后表级主键仍是**表级**形状
-    //   （`o_user_new` 的 `primary key` 是列属性，但 `o_user` 这个**名字**在 DDL 流里同时被
-    //    001 的老形状（`primary key (\`id\`)`）命中 —— 计数按"DDL 流里出现过的表名"算，不是按最终结构）。
+    // ⚠ 27 → **29**：014_access_groups adds `o_modelGroup` and `o_userGroup` via t.pk(T).
+    expect(colAttrTables.size, "列属性主键（`t.pk(T)` 形态）的表数").toBe(29);
+    // The access-group join tables compile their composite constraints separately; these counts
+    // intentionally cover the create-table shapes parsed above, not all platform constraints.
     expect(tableLevelCols.size, "表级 `primary key (…)`（含复合）的表数").toBe(12);
-    // ⚠ 4 → **6**：新增 `o_userSetting(userId,key)` 与 `o_loginAttempt(username,ip)`
     expect(compositeTables.length, "表级主键里是复合主键的表数").toBe(6);
-    // ⚠ 判别力（实测）：**并集恰好 35 张表名**（= 最终落地的表数，`o_user` 被两种形状各命中一次，
-    //   所以 `23 + 12 = 35` 这个"和"与"表数"数值相同但**口径不同** —— 别拿它当表数引用；
-    //   35 张最终落地表另有独立断言："迁移建出的表恰好 35 张"）。
-    expect(new Set([...colAttrTables, ...tableLevelCols.keys()]).size, "两种形状涉及的表名并集").toBe(35);
-    expect(colAttrTables.size + tableLevelCols.size, "两种形状的命中次数之和").toBe(35);
+    // `o_user` appears with both historical and rebuilt shapes; two new t.pk tables add two names.
+    expect(new Set([...colAttrTables, ...tableLevelCols.keys()]).size, "两种形状涉及的表名并集").toBe(41);
+    expect(colAttrTables.size + tableLevelCols.size, "两种形状的命中次数之和").toBe(41);
 
     // 判别力自证（在**合成 DDL** 上跑同一个谓词）。五条分别钉住 `keyRefsOf` 的每一种形状，
     // 以及"同一形状的负例"——负例是必需的：只加正例时，"抽取面变宽后误报/漏报"两种退化都不会被发现。
@@ -892,7 +900,42 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     expect(joined.indexOf("drop table if exists `o_skillAttribution`")).toBeLessThan(joined.indexOf("drop table if exists `o_skillList`"));
   });
 
-  it("迁移建出的表恰好 35 张（不多不少；暂存表 `o_user_new` 不计入最终结构）", async () => {
+  it("009_billing 编译为合法 MySQL DDL，金额类型和唯一键受约束", async () => {
+    const usage = await ddlFor("o_usage");
+    const ledger = await ddlFor("o_ledger");
+    const order = await ddlFor("o_order");
+    const price = await ddlFor("o_price");
+    const admission = await ddlFor("o_dailyQuotaAdmission");
+    const callAdmission = await ddlFor("o_usageAdmission");
+
+    expect(colType(usage, "costMicro")).toBe("bigint unsigned");
+    expect(colType(usage, "videoSeconds")).toBe("decimal(18, 6)");
+    expect(colType(usage, "quantity")).toBe("decimal(30, 9)");
+    expect(usage).toContain("`providerCallId` varchar(128)");
+    expect(usage).toMatch(/add unique `o_usage_userid_providercallid_unique`\(`userId`, `providerCallId`\)/);
+    expect(usage).not.toMatch(/unique .*`requestId`/);
+    expect(colType(ledger, "amountMicro")).toBe("bigint");
+    expect(colType(ledger, "balanceAfter")).toBe("bigint");
+    expect(ledger).toMatch(/add unique `o_ledger_userid_idempotencykey_unique`\(`userId`, `idempotencyKey`\)/);
+    expect(colType(order, "amountMicro")).toBe("bigint unsigned");
+    expect(order).toMatch(/add unique `o_order_outtradeno_unique`\(`outTradeNo`\)/);
+    expect(order).toMatch(/add unique `o_order_externaltradeid_unique`\(`externalTradeId`\)/);
+    expect(colType(price, "unitPriceMicro")).toBe("bigint unsigned");
+    expect(price).toContain("`model` varchar(96)");
+    expect(colType(admission, "userId")).toBe("bigint unsigned");
+    expect(admission).toMatch(/add unique `o_dailyquota_user_vendor_model_day_unique`\(`userId`, `vendorId`, `model`, `dayStart`\)/);
+    expect(colType(callAdmission, "userId")).toBe("bigint unsigned");
+    expect(colType(callAdmission, "dayStart")).toBe("bigint unsigned");
+    expect(colType(callAdmission, "admittedAt")).toBe("bigint unsigned");
+    expect(colType(callAdmission, "jobId")).toBe("bigint unsigned");
+    expect(callAdmission).toContain("`providerCallId` varchar(128)");
+    expect(callAdmission).toMatch(/add unique `o_usageadmission_userid_providercallid_unique`\(`userId`, `providerCallId`\)/);
+    const usageAlter = (await allDdlCollected()).filter((entry) => entry.kind === "alter" && /alter table `o_usage`/.test(entry.sql));
+    expect(usageAlter.some((entry) => /`quantity`/.test(entry.sql) && /decimal\(30, 9\)/.test(entry.sql) && /null/i.test(entry.sql)), usageAlter.map((entry) => entry.sql).join("\\n")).toBe(true);
+    expect([usage, ledger, order, price, admission, callAdmission].join("\n")).not.toMatch(/foreign key/i);
+  });
+
+  it("迁移建出的表恰好 46 张（含授权分组表；暂存表 `o_user_new` 不计入最终结构）", async () => {
     const created: string[] = [];
     for (const s of await allDdl()) {
       const m = /^create table `([^`]+)`/.exec(s);
@@ -902,9 +945,9 @@ describe("MySQL DDL 静态断言（spec §5.3）", () => {
     //   "最终落地的表"必须排除它 —— 与 `tools/migration-tables.cjs` 的 `deployedTables` 同口径。
     expect(created).toContain("o_user_new");
     const deployed = created.filter((t) => t !== "o_user_new" && t !== "o_user_old");
-    // 33 → **35**（Phase 1d Task 1 的 007_job_queue / 008_vendor_gate）
-    expect(deployed.length).toBe(35);
-    expect(new Set(deployed).size).toBe(35);
+    // 35 → 41（billing plus admission tables）→ 46 (access groups)
+    expect(deployed.length).toBe(46);
+    expect(new Set(deployed).size).toBe(46);
   });
 });
 

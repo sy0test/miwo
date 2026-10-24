@@ -406,7 +406,7 @@ async function main() {
   fs.writeFileSync(mediaAbs, MEDIA_BYTES);
   const mediaKey = crypto.createHmac("sha256", "miwo:media:").update(JWT_SECRET).digest();
   const signMedia = (rel, exp) =>
-    crypto.createHmac("sha256", mediaKey).update(`miwo:media:${rel}|${exp}`).digest("base64url").slice(0, 43);
+    crypto.createHmac("sha256", mediaKey).update(`miwo:media:oss/${rel}|${exp}`).digest("base64url").slice(0, 43);
   const signQuery = (rel, ttlSec = 24 * 3600) => {
     const exp = String(Date.now() + ttlSec * 1000);
     return `exp=${exp}&sig=${signMedia(rel, exp)}`;

@@ -48,7 +48,14 @@ const props = withDefaults(
 const placement = computed<any>(() => props.placement);
 
 const bigSrc = computed(() => {
-  return `${props.src.split("?") ?   props.src.split("?")[0] : props.src}`;
+  const [urlWithoutHash, hash = ""] = props.src.split("#", 2);
+  const [baseUrl, query = ""] = urlWithoutHash.split("?", 2);
+  if (!query) return props.src;
+
+  const params = new URLSearchParams(query);
+  params.delete("size");
+  const fullSizeQuery = params.toString();
+  return `${baseUrl}${fullSizeQuery ? `?${fullSizeQuery}` : ""}${hash ? `#${hash}` : ""}`;
 });
 
 const positionStyle = computed<any>(() => {

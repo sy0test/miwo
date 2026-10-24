@@ -26,6 +26,7 @@ import { Server } from "socket.io";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { config } from "@/config";
 import { currentTenant, runWithTenant, type TenantCtx } from "@/db/tenant-context";
+import { currentAiBillingContext } from "@/billing/context";
 import { systemDb } from "@/utils/db";
 import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import u from "@/utils";
@@ -201,12 +202,15 @@ describe("A. socket 租户上下文单元（spec §6.4 / Ruling 220）", () => {
     const { socket, fire } = fakeSocket();
     bindSocketTenant(socket as any, ctx7);
     let seen: any = "NOT_CALLED";
+    let billing: any = "NOT_CALLED";
     socket.on("chat", async () => {
       await new Promise((r) => setTimeout(r, 5));   // ALS 跟随 async 资源的**创建点**：run() 内创建的 await 仍带 ctx
       seen = currentTenant() ?? null;
+      billing = currentAiBillingContext();
     });
     await fire("chat");
     expect(seen).toMatchObject({ userId: 7, source: "socket" });
+    expect(billing).toEqual({ userId: 7, requestId: "r" });
   });
 
   it("★ 反例对照：**不**包装的 handler 既看不到 ctx，读租户表也响亮拒绝（TENANT_NO_CONTEXT）", async () => {

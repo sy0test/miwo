@@ -13,40 +13,11 @@
 #     B) 若将来要把 nginx 也放进容器：必须让 nginx 共享 api 的网络命名空间
 #        （nginx 服务写 `network_mode: "service:api"`，此时 80/443 要发布在 **api** 服务的 ports 上）。
 #   Phase 0 的 nginx 一律跑在**宿主机**（deploy/nginx.conf 就是给它的，proxy_pass 指 127.0.0.1）。
+#   MySQL 由 1Panel 独立管理；api/worker 通过 .env 的 MIWO_DB_HOST/MIWO_DB_PORT 连接宿主机可达的实例。
+#   MIWO_DATA_DIR 以同路径 bind mount，保证宿主机 nginx 能读取容器播种的 web 静态文件。
 name: miwo
 
 services:
-  mysql:
-    image: mysql:8.4
-    restart: unless-stopped
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MIWO_MYSQL_ROOT_PASSWORD}
-      # 修复轮 1（F13）：口令通过环境变量递给客户端工具，healthcheck 的命令行里不再出现 -p<口令>
-      #（否则 `docker inspect` 与容器内 `ps` 的 argv 都能读到）。mysqladmin 会自动读 MYSQL_PWD。
-      MYSQL_PWD: ${MIWO_MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MIWO_DB_NAME}
-      MYSQL_USER: ${MIWO_DB_USER}
-      MYSQL_PASSWORD: ${MIWO_DB_PASSWORD}
-    ports:
-      # 只发布到**宿主机回环**：host 网络模式的 api 通过 127.0.0.1:${MIWO_DB_PORT} 连它，公网/局域网都连不上。
-      # 宿主端口用 MIWO_DB_PORT，保证"应用要连的端口"与"实际发布的端口"同源。
-      # ⚠【已更正·Ruling 8+16】旧注释写"Phase 1a 之前应用根本不消费这一组变量（MIWO_DB_DRIVER 只在
-      # config.ts 里被读取；真实数据在 ${MIWO_DATA_DIR}/db2.sqlite）" —— **那是假的**。
-      # Phase 1a / Task 4 起启动路径是 utils/db.ts 的 dbReady → src/db/connect.ts 的 connect()，
-      # createKnex() 按 config.db.driver 选 client（sqlite→better-sqlite3 / mysql→mysql2），
-      # 这组变量正是它的输入 ⇒ 设了 MIWO_DB_DRIVER=mysql 就是在用 MySQL（真实数据在下面的 mysql 卷里）。
-      # 详见 deploy/README.md 第 6 节。
-      - "127.0.0.1:${MIWO_DB_PORT}:3306"
-    volumes:
-      - mysql-data:/var/lib/mysql
-    healthcheck:
-      # 修复轮 1（F13）：不带任何口令参数，靠上面的 MYSQL_PWD。
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   api:
     image: miwo-api:${MIWO_IMAGE_TAG}
     build:
@@ -61,13 +32,27 @@ services:
       MIWO_HOST: ${MIWO_HOST}
       MIWO_DATA_DIR: ${MIWO_DATA_DIR}
       MIWO_JWT_SECRET: ${MIWO_JWT_SECRET}
+      MIWO_STORAGE_DRIVER: ${MIWO_STORAGE_DRIVER:-local}
+      MIWO_S3_BUCKET: ${MIWO_S3_BUCKET:-}
+      MIWO_S3_REGION: ${MIWO_S3_REGION:-}
+      MIWO_S3_ENDPOINT: ${MIWO_S3_ENDPOINT:-}
+      MIWO_S3_ACCESS_KEY_ID: ${MIWO_S3_ACCESS_KEY_ID:-}
+      MIWO_S3_SECRET_ACCESS_KEY: ${MIWO_S3_SECRET_ACCESS_KEY:-}
+      MIWO_S3_SESSION_TOKEN: ${MIWO_S3_SESSION_TOKEN:-}
+      MIWO_S3_FORCE_PATH_STYLE: ${MIWO_S3_FORCE_PATH_STYLE:-false}
     # 见文件头 A)：让 api 直接绑宿主机回环，宿主机 nginx 才连得上。不能与 ports 并存。
     network_mode: host
     volumes:
-      - miwo-data:${MIWO_DATA_DIR}
-    depends_on:
-      mysql:
-        condition: service_healthy
+      - "${MIWO_DATA_DIR}:${MIWO_DATA_DIR}"
+    # 首次启动播种运行时素材并发布静态文件到宿主机 nginx 可读的同一目录。
+    command:
+      - sh
+      - -c
+      - >-
+        node scripts/seed-data-dir.cjs --src /app/apps/api/data --out "$$MIWO_DATA_DIR" &&
+        mkdir -p "$$MIWO_DATA_DIR/web" &&
+        cp -a /app/apps/api/data/web/. "$$MIWO_DATA_DIR/web/" &&
+        exec node data/serve/app.js
 
   # Phase 1d：队列 worker。与 api 同镜像/同 env；只换启动命令。
   # ⚠ 生产用哪个形态：Phase 0 的裁定是 **systemd 为主推**（容器路径整体未在真机验证过）。
@@ -85,15 +70,16 @@ services:
       MIWO_HOST: ${MIWO_HOST}
       MIWO_DATA_DIR: ${MIWO_DATA_DIR}
       MIWO_JWT_SECRET: ${MIWO_JWT_SECRET}
+      MIWO_STORAGE_DRIVER: ${MIWO_STORAGE_DRIVER:-local}
+      MIWO_S3_BUCKET: ${MIWO_S3_BUCKET:-}
+      MIWO_S3_REGION: ${MIWO_S3_REGION:-}
+      MIWO_S3_ENDPOINT: ${MIWO_S3_ENDPOINT:-}
+      MIWO_S3_ACCESS_KEY_ID: ${MIWO_S3_ACCESS_KEY_ID:-}
+      MIWO_S3_SECRET_ACCESS_KEY: ${MIWO_S3_SECRET_ACCESS_KEY:-}
+      MIWO_S3_SESSION_TOKEN: ${MIWO_S3_SESSION_TOKEN:-}
+      MIWO_S3_FORCE_PATH_STYLE: ${MIWO_S3_FORCE_PATH_STYLE:-false}
     # 与 api 一致：prod 下后端只绑回环，host 网络是唯一自洽写法（见文件头 A）。
     network_mode: host
     volumes:
-      - miwo-data:${MIWO_DATA_DIR}
+      - "${MIWO_DATA_DIR}:${MIWO_DATA_DIR}"
     command: ["node", "data/serve/worker.js"]
-    depends_on:
-      mysql:
-        condition: service_healthy
-
-volumes:
-  mysql-data:
-  miwo-data:

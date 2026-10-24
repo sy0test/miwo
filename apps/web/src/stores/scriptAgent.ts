@@ -92,7 +92,7 @@ function createScriptAgentStore(projectId: string) {
   return storeMap.get(projectId)!;
 }
 
-export default function useScriptAgentStore() {
+export default function useScriptAgentStore(): ReturnType<ReturnType<typeof makeScriptAgentStore>> {
   const id = projectStore().project?.id;
   if (!id) throw new Error("No project selected");
   return createScriptAgentStore(id)();

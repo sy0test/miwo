@@ -10,6 +10,7 @@
  * ⚠ `abort` 是协作式的（B 组 review-B F6）：每轮开头 `if (ctx.signal.aborted) throw`。
  */
 import crypto from "node:crypto";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import type { JobContext, JobDefinition } from "@/jobs/types";
 import { withVendorSlot } from "@/jobs/gate";
@@ -62,6 +63,7 @@ export const imageAssetsBatch: JobDefinition<AssetsImagePayload> = {
     if (!Array.isArray(o.items) || o.items.length === 0) throw new Error("[job] image.assets.batch 的 items 不能为空");
     for (const it of o.items) {
       if (typeof it.imageId !== "number" || typeof it.assetsId !== "number") throw new Error("[job] image.assets.batch 的 items 元素缺少 assetsId/imageId");
+      if (typeof it.type !== "string" || !cfgOf[it.type]) throw new Error(`[job] image.assets.batch 不支持的素材类型: ${String(it.type)}`);
     }
     return { projectId: o.projectId, model: o.model, resolution: o.resolution, items: o.items };
   },
@@ -93,7 +95,7 @@ export const imageAssetsBatch: JobDefinition<AssetsImagePayload> = {
       try {
         // Phase 1d Task 9：厂商调用前过 `vendor:image` 闸门（spec §9.3）。只包这一次调用。
         const aiImage = await withVendorSlot("vendor:image", ctx.workerId, async () => {
-          const cls = u.Ai.Image(p.model as `${string}:${string}`);
+          const cls = u.Ai.Image(p.model as `${string}:${string}`, currentAiBillingContext());
           await cls.run(
             { prompt: userPrompt, referenceList: [], size: p.resolution as "1K" | "2K" | "4K", aspectRatio: "16:9" },
             {

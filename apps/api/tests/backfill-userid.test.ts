@@ -235,19 +235,19 @@ describe("dry-run 与 apply", () => {
 });
 
 describe("★表清单三方相等（审查输入 ⑥：手工清单必漂，必须有机械判据）", () => {
-  it("policies.TENANT_TABLES ↔ 回填目标(19)+o_project+豁免(2) ↔ 运行期 selfCheck(20) 逐项相等", async () => {
+  it("policies.TENANT_TABLES ↔ 回填目标(19)+o_project+豁免(5) ↔ 运行期 selfCheck(20) 逐项相等", async () => {
     // dry-run 即可：它不写库，但会算出**全量** selfCheck（20 行）
     const report = await backfillUserIds(knex, { apply: false });
     const selfTables = report.selfCheck.map((s) => s.table);
     // ⚠【Phase 1c Task 1】不变量改成：
     //   TENANT_TABLES == BACKFILL_TARGET_TABLES ∪ {o_project} ∪ BACKFILL_EXEMPT_TABLES
-    //   自制豁免的是 `o_account` / `o_modelGrant`（迁移后新建的租户空表，没有历史行可回填）。
+    //   豁免表都是迁移后新建的租户空表，没有历史行可回填。
     const exempt = [...BACKFILL_EXEMPT_TABLES].sort();
     const policy = [...TENANT_TABLES].filter((t) => !exempt.includes(t)).sort();
 
     // ① 常量层：19 + 链源头 = 20；并集恰好覆盖全部租户表
     expect([...BACKFILL_TARGET_TABLES]).toHaveLength(19);
-    expect(exempt).toEqual(["o_account", "o_modelGrant"]);
+    expect(exempt).toEqual(["o_account", "o_dailyQuotaAdmission", "o_ledger", "o_modelGrant", "o_order", "o_usage", "o_usageAdmission", "o_userGroupMembership"]);
     expect([...SELF_CHECK_TABLES]).toEqual(["o_project", ...BACKFILL_TARGET_TABLES]);
     expect([...SELF_CHECK_TABLES].sort()).toEqual(policy);
     expect([...new Set(["o_project", ...BACKFILL_TARGET_TABLES, ...exempt])].sort()).toEqual([...TENANT_TABLES].sort());

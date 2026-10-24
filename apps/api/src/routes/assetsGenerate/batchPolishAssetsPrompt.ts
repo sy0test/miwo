@@ -1,10 +1,12 @@
 import express from "express";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import pLimit from "p-limit";
 import * as zod from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import type { AssetKind } from "@/utils/feicai";
+import { apiHolderId, withVendorSlot } from "@/jobs/gate";
 const router = express.Router();
 interface OutlineItem {
   description: string;
@@ -88,60 +90,66 @@ export default router.post(
       },
     };
 
-    // 后台异步并发生成，不阻塞响应
     const limit = pLimit(concurrentCount ?? 1);
     const tasks = items.map((item: { assetsId: number; type: string; name: string; describe: string }) =>
       limit(async () => {
+        const fail = async (reason: string) => {
+          await u.db("o_assets").where("id", item.assetsId).update({ promptState: "生成失败", promptErrorReason: reason });
+        };
         const assetData = assetsDataMap.get(item.assetsId);
         if (!assetData) return;
         const config = typeConfig[item.type];
-        if (!config) return;
-        //服化道技能 + 项目配置
-        const systemPrompt = u.feicai.buildAssetPromptSystem({
-          project,
-          kind: item.type as AssetKind,
-          parentDescribe: assetData.assetsId ? parentPromptMap.get(assetData.assetsId) : null,
-        });
-        if (!systemPrompt) {
-          await u.db("o_assets").where("id", item.assetsId).update({ promptState: "生成失败", promptErrorReason: "服化道技能未就绪" });
+        if (!config) {
+          await fail(`不支持的素材类型: ${item.type}`);
           return;
         }
+
         try {
-          const { _output } = (await u.Ai.Text("universalAi").invoke({
-            system: systemPrompt + "\n" + otherTextPrompt,
-            messages: [
-              {
-                role: "user",
-                content: `
+          const systemPrompt = u.feicai.buildAssetPromptSystem({
+            project,
+            kind: item.type as AssetKind,
+            parentDescribe: assetData.assetsId ? parentPromptMap.get(assetData.assetsId) : null,
+          });
+          if (!systemPrompt) {
+            await fail("服化道技能未就绪");
+            return;
+          }
+
+          const { _output } = (await withVendorSlot("vendor:text", apiHolderId(), () =>
+            u.Ai.Text("universalAi", currentAiBillingContext()).invoke({
+              system: systemPrompt + "\n" + otherTextPrompt,
+              messages: [
+                {
+                  role: "user",
+                  content: `
                     **基础参数：**
       **${config.nameLabel}设定：**
       - ${config.nameLabel}名称:${item.name},
       - ${config.nameLabel}描述:${item.describe},`,
-              },
-            ],
-          })) as any;
+                },
+              ],
+            }),
+          )) as any;
 
           if (!_output) {
-            await u.db("o_assets").where("id", item.assetsId).update({ promptState: "生成失败" });
+            await fail("模型未返回提示词");
             return;
           }
 
           // 角色/道具白底资产：提示词落库前补上不透明纯白画布声明（scene 原样）
           const assetPrompt = u.feicai.withOpaqueWhiteCanvas(_output, item.type);
-          await u.db("o_assets").where("id", item.assetsId).update({ prompt: assetPrompt, promptState: "已完成" });
+          await u.db("o_assets").where("id", item.assetsId).update({ prompt: assetPrompt, promptState: "已完成", promptErrorReason: null });
         } catch (e: any) {
-          await u
-            .db("o_assets")
-            .where("id", item.assetsId)
-            .update({ promptState: "失败", promptErrorReason: u.error(e).message });
+          await fail(u.error(e).message);
         }
       }),
     );
 
-    // 后台执行，不等待结果
-    Promise.all(tasks).catch((err: any) => {
-      res.status(500).send(error(err));
-    });
+    try {
+      await Promise.all(tasks);
+    } catch (err: any) {
+      return res.status(500).send(error(err));
+    }
 
     return res.status(200).send(success({ total: items.length }));
   },

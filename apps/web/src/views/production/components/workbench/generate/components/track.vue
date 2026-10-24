@@ -85,7 +85,7 @@ const props = defineProps<{
   imageList: UploadItem[];
   clampDuration: (trackDuration: number) => number;
 }>();
-const activeTrackIndex = defineModel("activeTrackIndex", {
+const activeTrackIndex = defineModel<number>("activeTrackIndex", {
   default: 0,
 });
 const checkedTrackIds = ref<number[]>([]); // 已勾选的轨道 id

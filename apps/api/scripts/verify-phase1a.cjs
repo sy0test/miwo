@@ -175,8 +175,7 @@ function targetEnv(dataDir) {
  * **1a 的业务表清单**：27 张（`001_schema` 的 createTable 集合）。
  *
  * ⚠ 它现在有**两个**用途，别混：
- *   ① **全新一次性库**里跑完全部迁移后的业务表集合 —— 那是 33 张（Phase 1c Task 1 又建了 6 张），
- *      见 `EXPECT_TABLES_ALL_MIGRATIONS`；
+ *   ① **全新一次性库**里跑完全部迁移后的业务表集合，见 `EXPECT_TABLES_ALL_MIGRATIONS`；
  *   ② 与**老库导出物**比对时的口径 —— 见 `LEGACY_EXPORT_TABLES`（26 张，**不含 `o_user`**）。
  */
 const EXPECT_TABLES = [
@@ -187,8 +186,8 @@ const EXPECT_TABLES = [
   "o_videoTrack",
 ];
 /**
- * 全部迁移跑完之后，**全新库**里的业务表 = 1a 的 27 张 + Phase 1c Task 1 的 6 张（005 四张 + 006 两张）
- *   + Phase 1d Task 1 的 2 张（`o_job` / `o_gate`，迁移 007/008 —— 都是 **platform** 基础设施表）。
+ * 全部迁移跑完之后，**全新库**里的业务表 = 1a 的 27 张 + Phase 1c 的 6 张 + Phase 1d 的 2 张
+ *   + Phase 2 的 6 张（迁移 009-011：计费、额度准入与用量准入）。
  * ⚠ 判据本身**没有放宽**：下面仍是"逐名相等 + 总数相等"（多一张少一张都红），
  *   改的只是"本阶段的合法表集合"这份**登记**。
  */
@@ -196,6 +195,7 @@ const EXPECT_TABLES_ALL_MIGRATIONS = [
   ...EXPECT_TABLES,
   "o_account", "o_modelGrant", "o_invite", "o_loginAttempt", "o_auditLog", "o_userSetting",
   "o_job", "o_gate",
+  "o_usage", "o_ledger", "o_order", "o_price", "o_dailyQuotaAdmission", "o_usageAdmission",
 ];
 /**
  * **老库搬迁范围**（= `scripts/export-sqlite.cjs` 的 `TABLES` 与 `src/db/legacy/import.ts` 的

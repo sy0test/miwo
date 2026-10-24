@@ -8,6 +8,7 @@ import { connect, createKnex } from "@/db/connect";
 import { makeTenantAware, type TenantAwareDb } from "@/db/tenant-guard";
 import { currentTenant } from "@/db/tenant-context";
 import type { Knex } from "knex";
+import { normalizeLineEndings } from "./db-type-format";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
@@ -162,7 +163,7 @@ async function initKnexType(knexDb: any) {
       string: ["text", "varchar", "char"],
     },
   }).fetchDatabase(knexDb);
-  const declarations = await dbClient.toTypescript();
+  const declarations = normalizeLineEndings(await dbClient.toTypescript());
   const dbObject = await dbClient.toObject();
   const customHeader = `//该文件由脚本自动生成，请勿手动修改`;
   // 清除上次的注释头

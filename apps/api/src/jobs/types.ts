@@ -130,3 +130,9 @@ export interface EnqueueResult {
   /** true = 命中了既有活跃任务（同 `dedupeKey`），没有新建。 */
   deduped: boolean;
 }
+
+/** Transactional enqueue result used to gate a caller's related reservation write. */
+export interface EnqueueTransactionResult {
+  jobId: string;
+  created: boolean;
+}

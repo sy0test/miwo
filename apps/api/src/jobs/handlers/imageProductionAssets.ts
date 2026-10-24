@@ -10,6 +10,7 @@
  *
  * ⚠ `o_image` 占位行仍由**路由**建（`:47-55`），handler 只按 `assetsId` 反查 imageId —— 与旧代码同源。
  */
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import type { AssetKind } from "@/utils/feicai";
 import type { JobContext, JobDefinition } from "@/jobs/types";
@@ -72,7 +73,7 @@ export const imageProductionAssetsBatch: JobDefinition<ProductionAssetsPayload> 
         // Phase 1d Task 9：这一次条目里有**两次**厂商调用（先文本润色、再出图）⇒ 各自过一次闸门，
         // 池子按调用类型分开（`vendor:text` / `vendor:image`）。只包调用，不包整条任务。
         const { text } = await withVendorSlot("vendor:text", ctx.workerId, () =>
-          u.Ai.Text("universalAi").invoke({
+          u.Ai.Text("universalAi", currentAiBillingContext()).invoke({
             system: systemPrompt,
             messages: [{ role: "user", content: `\n            父级资产描述: ${item.parentDescribe || "无详细描述"}\n            当前资产描述: ${item.describe || "无详细描述"}` }],
           }),
@@ -87,7 +88,7 @@ export const imageProductionAssetsBatch: JobDefinition<ProductionAssetsPayload> 
           aspectRatio: "16:9" as `${number}:${number}`,
         };
         const imageCls = await withVendorSlot("vendor:image", ctx.workerId, () =>
-          u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
+          u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`, currentAiBillingContext()).run(
             { referenceList: imageBase64 ? [{ type: "image", base64: imageBase64 }] : [], ...repeloadObj },
             {
               taskClass: "生成图片",

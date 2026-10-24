@@ -1,6 +1,7 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
@@ -26,7 +27,7 @@ export default router.post(
       if (!vendorConfigData) return res.status(500).send(error("未找到该供应商配置"));
       if (!vendorConfigData.models) return res.status(500).send(error("未找到模型列表"));
 
-      const reqFn = await u.Ai.Image(`${id}:${modelName}`).run({
+      const reqFn = await u.Ai.Image(`${id}:${modelName}`, currentAiBillingContext()).run({
         prompt: prompt,
         referenceList: imageBase64 ? [{ type: "image", base64: imageBase64 }] : [], //输入的图片提示词
         size: "1K", // 图片尺寸

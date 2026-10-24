@@ -8,7 +8,7 @@
     </div>
     <div class="storyboardList">
       <t-empty v-if="!storyboardTable" style="margin-top: 16px"></t-empty>
-      <MdPreview v-else v-model="storyboardTable" :theme="themeSetting.mode" />
+      <MdPreview v-else v-model="storyboardTable" :theme="themeSetting.mode === 'dark' ? 'dark' : 'light'" />
     </div>
     <!-- 结构化同步反馈（阶段2）：手改分镜表保存后，后端会再解析 + 事务落库并把结果回传。
          没有这一块的话，用户只能从日志猜"结构有没有跟上、有没有违规"。 -->
@@ -42,7 +42,7 @@
     attach="body">
     <MdEditor
       v-model="editContent"
-      :theme="themeSetting.mode"
+      :theme="themeSetting.mode === 'dark' ? 'dark' : 'light'"
       :toolbars="toolbars"
       :footers="[]"
       style="height: 72vh"

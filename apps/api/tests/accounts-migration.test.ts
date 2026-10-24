@@ -105,8 +105,9 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
       expect(up1).toBe(2); // 002 是 batch 1，其余是 batch 2
       expect(n1).toEqual([
         "003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants",
-        // Phase 1d Task 1 的两张队列表同批（batch 2 = "002 之后的全部"）
-        "007_job_queue", "008_vendor_gate",
+        // Phase 1d queues and later billing migrations share batch 2 (everything after 002).
+        "007_job_queue", "008_vendor_gate", "009_billing", "010_daily_quota_admission",
+        "011_usage_admission", "012_billing_admin_uniques", "013_account_bootstrap", "014_access_groups", "015_redraw_v2",
       ]);
 
       // ---- 幂等 ①：再跑一次 0 行 ----
@@ -118,8 +119,8 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
       const [rb, rn] = await rollbackMigrations(db); // all=false ⇒ 只回滚最后一个 batch（2）
       expect(rb).toBe(2);
       expect(rn).toEqual([
-        "008_vendor_gate", "007_job_queue", "006_quota_grants", "005_accounts",
-        "004_backfill_userid", "003_vendor_asset_sync",
+        "015_redraw_v2", "014_access_groups", "013_account_bootstrap", "012_billing_admin_uniques", "011_usage_admission", "010_daily_quota_admission", "009_billing",
+        "008_vendor_gate", "007_job_queue", "006_quota_grants", "005_accounts", "004_backfill_userid", "003_vendor_asset_sync",
       ]);
 
       // 005 的 down：新表消失、o_user 回到 3 列、口令**不可恢复**（空串）
@@ -142,7 +143,8 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
       expect(up3).toBe(2);
       expect(n3).toEqual([
         "003_vendor_asset_sync", "004_backfill_userid", "005_accounts", "006_quota_grants",
-        "007_job_queue", "008_vendor_gate",
+        "007_job_queue", "008_vendor_gate", "009_billing", "010_daily_quota_admission",
+        "011_usage_admission", "012_billing_admin_uniques", "013_account_bootstrap", "014_access_groups", "015_redraw_v2",
       ]);
       expect(await columnsOf(db, "o_user")).toContain("passwordHash");
       const again = (await db("o_user").where("username", "admin").first()) as any;
@@ -375,3 +377,4 @@ describe("005_accounts / 006_quota_grants（spec §7.1 / §6.2 / §8.2）", () =
     }
   });
 });
+

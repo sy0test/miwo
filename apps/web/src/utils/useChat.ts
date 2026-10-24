@@ -1,6 +1,7 @@
 // useChat.ts
 import { ref, shallowRef, onMounted, onUnmounted, computed } from "vue";
 import { io, Socket } from "socket.io-client";
+import type { DefaultEventsMap } from "@socket.io/component-emitter";
 import userStore from "@/stores/user";
 import type { ChatMessagesData, AIMessage, UserMessage, AIMessageContent, ChatMessageStatus } from "@tdesign-vue-next/chat";
 
@@ -98,7 +99,7 @@ export function useChat(options: UseChatOptions) {
     manageLifecycle = true,
   } = options;
 
-  const socket = shallowRef<Socket | null>(null);
+  const socket = shallowRef<Socket<DefaultEventsMap, DefaultEventsMap> | null>(null);
   const connected = ref(false);
   const connecting = ref(false);
   const messages = ref<ChatMessagesData[]>([]);

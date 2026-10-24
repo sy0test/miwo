@@ -1,4 +1,5 @@
 import express from "express";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
@@ -59,7 +60,7 @@ export default router.post(
         }
         // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3；TTS/文本归 `vendor:text` 池）。响应形态不变。
         const { text } = await withVendorSlot("vendor:text", apiHolderId(), () =>
-          u.Ai.Text("universalAi").invoke({
+          u.Ai.Text("universalAi", currentAiBillingContext()).invoke({
           messages: [
             {
               role: "system",

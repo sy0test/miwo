@@ -1,6 +1,7 @@
 import { Socket } from "socket.io";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import { createSkillTools, parseFrontmatter, scanSkills } from "@/utils/agent/skillsTools";
@@ -154,7 +155,7 @@ export async function runDecisionAI(ctx: AgentContext) {
   // 表现为「把跑完的阶段重跑一遍」或跳错阶段。读不到就如实说未知。
   const stage = ctx.resTool.data.scriptId != null ? await readProductionStage(Number(ctx.resTool.data.projectId), Number(ctx.resTool.data.scriptId)) : null;  const stageInfo = `\n\n## 制作进度\n当前进度：${stage ?? "未知（库里没有进度记录，可能是新会话或还没跑过任何阶段）"}`;
 
-  const { fullStream } = await u.Ai.Text("productionAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
+  const { fullStream } = await u.Ai.Text("productionAgent:decisionAgent", currentAiBillingContext(), ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
     messages: [
       { role: "system", content: prompt },
       { role: "assistant", content: mem + "\n" + modelCtx + stageInfo },
@@ -220,7 +221,7 @@ async function createSubAgent(parentCtx: AgentContext) {
     parentCtx.msg.complete();
     const subMsg = resTool.newMessage("assistant", name);
 
-    const { fullStream } = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
+    const { fullStream } = await u.Ai.Text(key, currentAiBillingContext(), parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
       system,
       messages: messages ?? [{ role: "user", content: prompt }],
       abortSignal,
@@ -621,7 +622,7 @@ async function createSubAgent(parentCtx: AgentContext) {
                 // 用阶段4 自己的技能正文当 system，只让它重写被点名的那一个片段
                 const skillPath = path.join(u.getPath("skills"), "production_execution_storyboard_table.md");
                 const skillText = await fs.promises.readFile(skillPath, "utf-8");
-                const { text } = await u.Ai.Text("productionAgent:storyboardTableAgent").invoke({
+                const { text } = await u.Ai.Text("productionAgent:storyboardTableAgent", currentAiBillingContext()).invoke({
                   system: skillText,
                   messages: [{ role: "user", content: prompt }],
                 });

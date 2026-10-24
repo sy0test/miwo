@@ -1,4 +1,101 @@
 {
+  "billing": {
+    "title": "计费账户",
+    "description": "查看可用余额、账户流水和使用记录",
+    "refresh": "刷新",
+    "loadFailed": "计费数据加载失败，请重试",
+    "accountUnavailable": "计费账户暂不可用",
+    "accountBalances": "账户余额",
+    "availableBalance": "可用余额",
+    "frozenBalance": "冻结金额",
+    "insufficientBalance": "可用余额不足，新的计量用量可能无法继续",
+    "ledger": "账户流水",
+    "noLedger": "暂无账户流水",
+    "usage": "按服务商和模型统计用量",
+    "noUsage": "暂无用量记录",
+    "orders": "充值订单",
+    "noOrders": "暂无充值订单",
+    "cny": "元",
+    "sidebar": {
+      "label": "余额",
+      "loading": "加载中",
+      "unavailable": "暂不可用"
+    },
+    "columns": {
+      "createdAt": "时间",
+      "ledgerType": "账目类型",
+      "amount": "金额",
+      "balanceAfter": "变动后余额",
+      "frozenAfter": "变动后冻结金额",
+      "referenceType": "关联类型",
+      "referenceId": "关联编号",
+      "provider": "服务商",
+      "model": "模型",
+      "calls": "调用次数",
+      "cost": "费用",
+      "orderId": "订单编号",
+      "channel": "充值方式",
+      "status": "状态",
+      "paidAt": "入账时间"
+    },
+    "status": {
+      "paid": "已入账",
+      "pending": "待处理",
+      "failed": "失败",
+      "canceled": "已取消",
+      "other": "其他"
+    },
+    "channels": {
+      "admin": "管理员手动充值",
+      "other": "历史订单"
+    },
+    "ledgerTypes": {
+      "freeze": "冻结",
+      "recharge": "充值",
+      "consume": "消费",
+      "release": "释放冻结",
+      "adjustment": "账目调整",
+      "other": "其他"
+    },
+    "units": {
+      "token": "按令牌",
+      "image": "按张",
+      "video_second": "按秒",
+      "character": "按字符"
+    },
+    "admin": {
+      "title": "计费管理",
+      "recharge": "手动充值",
+      "grants": "模型授权",
+      "prices": "价格配置",
+      "targetUser": "目标用户编号",
+      "amount": "充值金额（元）",
+      "reason": "操作原因",
+      "confirmRecharge": "确认充值",
+      "providerId": "服务商编号",
+      "model": "模型",
+      "dailyQuota": "每日额度",
+      "unlimited": "不限制",
+      "enabled": "启用",
+      "saveGrant": "保存授权",
+      "unit": "计价单位",
+      "unitPrice": "单价（最多 6 位小数）",
+      "effectiveFrom": "生效时间",
+      "addPrice": "新增价格",
+      "confirmTitle": "确认管理员充值",
+      "confirmText": "请核对目标用户、充值金额和操作原因。确认后将立即入账。",
+      "operationFailed": "计费操作失败",
+      "invalidEffectiveDate": "请选择有效的生效时间",
+      "priceAdded": "价格配置已新增",
+      "grantAdded": "模型授权已保存",
+      "invalidUser": "请输入有效的目标用户编号",
+      "positiveAmount": "充值金额必须大于零",
+      "reasonRequired": "请填写操作原因",
+      "invalidRecharge": "请检查充值信息",
+      "invalidAmount": "请输入非负金额，最多保留 6 位小数",
+      "rechargeSuccess": "充值已完成，账户和流水已刷新"
+    }
+  },
   "components": {
     "editMdPreivew": {
       "title": "编辑",
@@ -645,6 +742,7 @@
       "cornerScape": "塑角造景",
       "production": "视频生产",
       "assetCenter": "资产中心",
+      "billing": "计费账户",
       "settings": "设置",
       "jumpGithub": "跳转Github",
       "feedbackQuestions": "反馈问题"
@@ -776,7 +874,7 @@
       "episode": "第 {n} 集",
       "waitAnalyze": "未分析",
       "analyzing": "分析中…",
-      "analyzed": "已分析 · {count} 个镜",
+      "analyzed": "已分析 · {count} 个分镜",
       "pendingReconcile": "待对账",
       "failed": "分析失败",
       "startAnalyze": "开始分析",

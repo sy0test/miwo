@@ -196,7 +196,7 @@ Phase 1a 删掉的"启动时把生成中无条件改判失败"由本阶段两条
 |---|---|---|---|---|
 | 1 | 重启后 `state='生成中'` 不再自动改判失败 → 由租约超时接管 | Phase 1a ledger **deferred #10** | **Phase 1d（已落地）** | `reclaimExpired` + `reconcile.ts` + 租约心跳 |
 | 2 | `db:repair-stuck` 是**过渡手段** | Phase 1a ledger 裁定 2 / deferred #10 | **Phase 1d（已落地）** | 改为弃用别名（启动即打印弃用说明）指向 `job:admin --reconcile`；**删除留 Phase 1c** |
-| 3 | 容器路径整体未验证 + **全仓无 `.dockerignore`**（"Phase 1d 准入前必修"） | Phase 0 ledger Task 10 minor **N1**；Phase 1a ledger deferred #16 | **Phase 1d（已落地）** | `deploy/.dockerignore`（保留 `data/{vendor,skills,modelPrompt}`） |
+| 3 | 容器路径整体未验证 + Docker 忽略文件必须匹配 build context | Phase 0 ledger Task 10 minor **N1**；Phase 1a ledger deferred #16 | **Phase 1d（已落地）** | 仓库根 `.dockerignore`（保留 `data/{vendor,skills,modelPrompt}`，排除部署 `.env`） |
 | 4 | `/oss` 的 Range 断言会被 `If-Range` 满足 | Phase 0 ledger Task 10 minor **N2** | Phase 1d（已落地） | `check-deploy-config.cjs` 锚 `proxy_set_header Range $http_range;` |
 | 5 | host 模式下 `MIWO_DB_HOST=127.0.0.1` 只有注释没有断言 | Phase 0 ledger Task 10 minor **N3** | Phase 1d（部分）/ 部署窗口 | **`.env` 是 gitignored，门禁无法断言它** ⇒ 登记在本手册 §8 第 9 条 + `deploy/README.md` |
 | 6 | `COPY .npmrc` 的检查可被注释行满足；`FROM` 只查下限不查 `<25` | Phase 0 ledger Task 10 minor **N4** | Phase 1d（已落地） | `check-deploy-config.cjs`：真实指令行 + 上界检查 |

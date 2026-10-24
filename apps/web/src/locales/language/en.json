@@ -550,6 +550,7 @@
       "cornerScape": "Characters & Scenes",
       "production": "Video Production",
       "assetCenter": "Asset Center",
+      "billing": "Billing",
       "settings": "Settings",
       "jumpGithub": "Jump to Github",
       "feedbackQuestions": "Feedback question"
@@ -681,7 +682,7 @@
       "episode": "EP {n}",
       "waitAnalyze": "Not analyzed",
       "analyzing": "Analyzing…",
-      "analyzed": "Analyzed · {count} shots",
+      "analyzed": "Analyzed · {count} segments",
       "pendingReconcile": "Pending review",
       "failed": "Analysis failed",
       "startAnalyze": "Start Analysis",

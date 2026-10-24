@@ -1,5 +1,6 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
@@ -29,7 +30,7 @@ export default router.post(
     // Phase 1c Task 9：写供应商凭据 ⇒ 落审计。`detail` 只记**键名**（不记 key 本身）。
     await audit(actorFromCtx(req.ip), AUDIT_ACTIONS.VENDOR_SET_KEY, "miwo", { keys: ["apiKey"] });
     try {
-      const resText = await u.Ai.Text(`miwo:claude-haiku-4-5-20251001`).invoke({
+      const resText = await u.Ai.Text(`miwo:claude-haiku-4-5-20251001`, currentAiBillingContext()).invoke({
         prompt: "1+1等于几？,请直接回答2，不要解释",
       });
       if (resText.text) {

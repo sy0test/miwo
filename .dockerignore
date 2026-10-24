@@ -1,0 +1,33 @@
+# Compose build context is the repository root (deploy/docker-compose.yml: context: ..).
+node_modules
+**/node_modules
+.git
+.gitignore
+**/dist
+**/build
+.tmp-build
+.tmp-esbuild
+.tmp-migrate
+.tmp-verify-1d
+**/*.tsbuildinfo
+.superpowers
+docs
+
+# Runtime user data and generated artifacts; the web bundle is built inside Docker.
+apps/api/data/oss
+apps/api/data/serve
+apps/api/data/web
+apps/api/data/models
+apps/api/data/db2.sqlite
+apps/api/data/version.txt
+apps/api/data/redraw-prep
+apps/api/data/assets
+apps/api/data/*.log
+
+# Frontend build output is generated from source in the Docker build stage.
+apps/web/dist
+
+# Keep these last so later rules cannot re-include credentials in the build context.
+**/.env
+**/.env.*
+!**/.env.example

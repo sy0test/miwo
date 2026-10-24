@@ -4,8 +4,10 @@ import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import type { AssetKind } from "@/utils/feicai";
-import { enqueueJob } from "@/jobs";
+import { enqueueJobInTransaction } from "@/jobs";
 import { currentUserId } from "@/jobs/context";
+import { submitBilledJob } from "@/billing/submit";
+import { resolveSubmissionEstimate } from "@/billing/estimate";
 const router = express.Router();
 
 export default router.post(
@@ -41,31 +43,39 @@ export default router.post(
     // 本流程只处理衍生资产，故一律走[衍生资产模式]
     const buildSystemPrompt = (kind: AssetKind, parentDescribe?: string | null) =>
       u.feicai.buildAssetPromptSystem({ project: projectSettingData, kind, parentDescribe });
-    // 先批量为所有 assets 创建 image 记录并标记为"生成中"
-    const imageIdMap: Record<number, number> = {};
-    for (const item of assetsDataArr) {
-      const [imageId] = await u.db("o_image").insert({
-        assetsId: item.id,
-        type: item.type,
-        state: "生成中",
-        resolution: projectSettingData?.imageQuality,
-        model: projectSettingData?.imageModel,
-      });
-      imageIdMap[item.id!] = imageId;
-      await u.db("o_assets").where("id", item.id).update({ imageId: imageId });
-    }
-
-    // Phase 1d：入队（生成段搬到 handler），不再进程内分批后台跑。
+    // Submission now creates generated-image placeholders within the billed transaction.
     // ⚠ 响应形状不变（`success("开始生成资产图片")`）；jobIds 走新顶层字段。
     const userId = currentUserId(req);
     if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
-    const { jobId } = await enqueueJob({
-      type: "image.productionAssets.batch",
+    const selectedAssetIds = assetsDataArr.map((item: any) => Number(item.id));
+    const modelRef = projectSettingData?.imageModel;
+    if (typeof modelRef !== "string" || modelRef.length === 0) return res.status(400).send(error("项目未配置图像模型"));
+    const estimateMicro = await resolveSubmissionEstimate(u.db as any, modelRef, "image", selectedAssetIds.length);
+    const submitted = await submitBilledJob({
+      db: u.db as any,
       userId,
-      // ⚠ 只存引用 id；base64 由 handler 按 assetsId 现取
-      payload: { projectId, scriptId, assetIds: assetsDataArr.map((i: any) => i.id) },
+      estimateMicro,
+      idempotencyKey: `job:${userId}:image.productionAssets.batch:${projectId}:${selectedAssetIds.slice().sort((a: number, b: number) => a - b).join(",")}`,
+      createBusinessRows: async (trx) => {
+        for (const item of assetsDataArr) {
+          const [imageId] = await trx("o_image").insert({
+            assetsId: item.id, type: item.type, state: "生成中",
+            resolution: projectSettingData?.imageQuality, model: modelRef,
+          });
+          await trx("o_assets").where("id", item.id).update({ imageId });
+        }
+        return { assetIds: selectedAssetIds };
+      },
+      resolveExistingBusiness: async (trx, existingJobId) => {
+        const existing = await trx("o_job").where({ id: existingJobId }).first();
+        return { assetIds: (JSON.parse(existing.payload) as { assetIds: number[] }).assetIds };
+      },
+      enqueue: async (trx, business) => enqueueJobInTransaction(trx, {
+        type: "image.productionAssets.batch", userId,
+        payload: { projectId, scriptId, assetIds: business.assetIds },
+      }),
     });
 
-    res.status(200).send({ ...success("开始生成资产图片"), jobIds: [jobId] });
+    res.status(200).send({ ...success("开始生成资产图片"), jobIds: [submitted.jobId] });
   },
 );

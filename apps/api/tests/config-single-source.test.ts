@@ -2,7 +2,7 @@
  * Phase 1c Task 10：配置外置收口的**判别力用例**。
  *
  * ── 这个文件测什么 ──
- *   1. 四个新 config 字段的**缺省值与改动前的现状逐字一致**（"没配就换个行为"是静默的行为变更）；
+ *   1. 四个新 config 字段的**缺省值**（`ossUrl`/`ffmpeg`/`proxyUrl` 必须与改动前逐字一致）；
  *   2. `loadConfig` 的校验对它们**真的生效**（`MIWO_FFMPEG_TIMEOUT_MS=abc` ⇒ `ConfigError`，
  *      而不是像改动前那样 `Number("abc")` = NaN ⇒ 超时变成"永不超时"）；
  *   3. 显式配置能覆盖缺省（`MIWO_FFMPEG_PATH=/usr/bin/ffmpeg`）；
@@ -11,9 +11,12 @@
  *      还原 ⇒ 绿。⚠ 这里**不真改仓库文件**（用例必须可重入、并发安全）：改为在临时目录里铺一份
  *      最小 `src/` 树 + 用 `--root` 让门禁扫那里。见下面 `runGate` 的说明。
  *
- * ⚠ 为什么"逐字一致"要写成断言：改动前 `analyzeSource.ts:33` 的缺省值是
- *   `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs`（一个开发机绝对路径）——
- *   如果收口时"顺手"把它改成空串或相对路径，prod 的行为会**静默变化**（那个功能从"能跑"变成"找不到脚本"）。
+ * ⚠ **`redrawPrepScript` 是一次有意的行为变更（2026-10-21）**：
+ *   改动前 `analyzeSource.ts:33` 的缺省值是 `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs`
+ *   （开发机绝对路径）。那个缺省只在本机成立，换机器/容器后 `existsSync` 为假 ⇒ 转绘「开始分析」
+ *   直接 500，且没有任何提示说明是"没配脚本"。现在缺省改为**空串（= 未配置）**，
+ *   由 `app.ts` 启动自检 + `analyzeSource` 的可操作报错兜住。
+ *   本机需要跑转绘时在 `apps/api/.env` 里显式设 `MIWO_REDRAW_PREP`。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -35,16 +38,23 @@ const base = {
   MIWO_JWT_SECRET: "x".repeat(48),
 } as NodeJS.ProcessEnv;
 
-const REDRAW_PREP_DEFAULT = "D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs";
+/**
+ * `redrawPrepScript` 的缺省值现在是**空串（= 未配置）**。
+ *
+ * 原来这里钉的是 `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs` —— 那是**开发机绝对路径**，
+ * 换个机器/容器后 `existsSync` 为假，转绘「开始分析」直接 500 且没人知道原因。
+ * 现在「未配置」是一等状态：启动自检打 warn，路由返回可操作报错。
+ */
+const REDRAW_PREP_DEFAULT = "";
 
-describe("cfgs 1-3. 新字段的缺省值 / 校验 / 覆盖（与改动前逐字一致）", () => {
-  it("★ 缺省值：ossUrl=''、ffmpeg={ffmpeg,ffprobe,600000}、redrawPrepScript=**改动前的那个字面量**、proxyUrl=''", () => {
+describe("cfgs 1-3. 新字段的缺省值 / 校验 / 覆盖", () => {
+  it("★ 缺省值：ossUrl=''、ffmpeg={ffmpeg,ffprobe,600000}、redrawPrepScript=**空串（未配置）**、proxyUrl=''", () => {
     const c = loadConfig({ ...base });
     expect(c.ossUrl, "缺省必须是空串（= 不覆盖前缀；改动前 `process.env.ossURL && !== ''` 也是这个语义）").toBe("");
     expect(c.ffmpeg.path, "缺省 ffmpeg（= 改动前 `FFMPEG_PATH || 'ffmpeg'`）").toBe("ffmpeg");
     expect(c.ffmpeg.probePath, "缺省 ffprobe").toBe("ffprobe");
     expect(c.ffmpeg.timeoutMs, "缺省 600000 = 10 分钟（= 改动前 `10 * 60 * 1000`）").toBe(600000);
-    expect(c.redrawPrepScript, "★ 必须与改动前 analyzeSource.ts:33 的字面量逐字一致（含盘符与斜杠方向）").toBe(
+    expect(c.redrawPrepScript, "★ 缺省必须是空串：不允许再写死开发机绝对路径（换机器即 500）").toBe(
       REDRAW_PREP_DEFAULT,
     );
     expect(c.proxyUrl, "缺省空串（= 不显式指定代理）").toBe("");
@@ -77,7 +87,7 @@ describe("cfgs 1-3. 新字段的缺省值 / 校验 / 覆盖（与改动前逐字
     // 空白 = 未设置（`optional()` 把 undefined 与纯空白统一处理）
     const blank = loadConfig({ ...base, MIWO_FFMPEG_PATH: "   ", MIWO_REDRAW_PREP: "", MIWO_PROXY: "  " });
     expect(blank.ffmpeg.path).toBe("ffmpeg");
-    expect(blank.redrawPrepScript).toBe(REDRAW_PREP_DEFAULT);
+    expect(blank.redrawPrepScript, "空白按未设置处理 ⇒ 回到空缺省（不是回落到某个开发机路径）").toBe(REDRAW_PREP_DEFAULT);
     expect(blank.proxyUrl).toBe("");
   });
 

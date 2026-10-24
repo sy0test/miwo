@@ -4,7 +4,7 @@
       <div class="model">
         <modelSelect v-model="modelParmas.model" type="video" size="small" />
       </div>
-      <t-select size="small" class="mode" :value="modelParmas.mode" :onChange="handleBeforeChange">
+      <t-select size="small" class="mode" :value="modelParmas.mode" :onChange="(value) => handleBeforeChange(String(value))">
         <t-option v-for="(item, index) in modeList" :key="index" :value="item.value" :label="item.label"></t-option>
       </t-select>
       <t-button
@@ -84,15 +84,7 @@ const props = defineProps<{
   modeList: { value: string; label: string }[];
   trackId: number | undefined;
 }>();
-const modelParmas = defineModel<ModelSetting>({
-  default: {
-    mode: "",
-    model: "",
-    resolution: "480p",
-    duration: 8,
-    audio: false,
-  },
-});
+const modelParmas = defineModel<ModelSetting>({ required: true });
 const emit = defineEmits(["modeChange"]);
 function handleBeforeChange(newVal: string) {
   emit("modeChange", newVal);

@@ -16,7 +16,7 @@ import u from "@/utils";
 import { jobRegistry, type JobRegistry } from "@/jobs/registry";
 import { createJobStore, type JobStore } from "@/jobs/store";
 import { bootstrapJobInfra } from "@/jobs/bootstrap";
-import type { EnqueueInput, EnqueueResult } from "@/jobs/types";
+import type { EnqueueInput, EnqueueResult, EnqueueTransactionResult } from "@/jobs/types";
 
 /** 默认注册表（= `JOB_DEFINITIONS`）对应的单例。 */
 let singleton: JobStore | null = null;
@@ -36,6 +36,14 @@ export function getJobStore(registry: JobRegistry = jobRegistry): JobStore {
 /** 入队的唯一出口（路由用这个；`getJobStore().enqueue` 等价）。 */
 export async function enqueueJob(input: EnqueueInput): Promise<EnqueueResult> {
   return getJobStore().enqueue(input);
+}
+
+/** Enqueue using the caller's transaction so related reservations commit or roll back together. */
+export async function enqueueJobInTransaction(
+  trx: Knex.Transaction,
+  input: EnqueueInput,
+): Promise<EnqueueTransactionResult> {
+  return getJobStore().enqueueInTransaction(trx, input);
 }
 
 /**

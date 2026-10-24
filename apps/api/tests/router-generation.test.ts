@@ -85,9 +85,11 @@ describe("generate-router", () => {
     //    （`vendorConfig/{addVendor,updateCode,getCodeByLink}`，spec Tier 0 #2/#10）。
     //    ⚠【Phase 1c Task 11】177 → **176**：旧登录路径 `/api/login/login` **整体退役**
     //    （`src/routes/login/login.ts` 删除 + 白名单条目删除）。
+    //    【Phase 2 Task 7】176 → **183**：新增 7 个 billing API 路由。
+    //    【014_access_groups】183 → **184**：新增分组管理路由。
     //    它们是"路由表没被静默清空"的外部真值，改数字不是放宽判据（两侧仍然逐项相等）。
-    expect(mounts.length).toBe(176);
-    expect(routeFiles.length).toBe(176);
+    expect(mounts.length).toBe(184);
+    expect(routeFiles.length).toBe(184);
   });
 
   it("router.ts 的 hash 头格式正确，且与路由清单重算结果一致", () => {
@@ -102,7 +104,7 @@ describe("generate-router", () => {
     const pairRe = /app\.use\("\/api(\/[^"]*)", (route\d+)\)/g;
     const pairs: Array<{ routePath: string; varName: string }> = [];
     for (const mm of text.matchAll(pairRe)) pairs.push({ routePath: mm[1], varName: mm[2] });
-    expect(pairs.length).toBe(176);
+    expect(pairs.length).toBe(184);
     const hash = crypto.createHash("md5").update(JSON.stringify(pairs)).digest("hex");
     expect(m![1]).toBe(hash);
   });

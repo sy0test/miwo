@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 断言 deploy/ 与 env 模板不漂移（Task 10 + 修复轮 1）。
+ * 断言 deploy/ 与 env 模板不漂移（Task 10 + 修复轮 1 + Phase 1e Task 03）。
  * 用法：node tools/check-deploy-config.cjs
  *
  * 断言清单（任一失败即 exit 1，逐条打印原因）：
@@ -23,7 +23,8 @@
  *         network_mode=host、不得有 ports、不得新增 MIWO_*；
  *     8d) `/assets` **有意不反代**（Phase 1c 未处置项 N4：会遮蔽 SPA 产物目录）—— 静默新增即红；
  *  9) 证书目录不进版本库（.gitignore 规则 + git 索引复查）—— F7；
- * 10) docker-compose.yml 可被 YAML 解析。
+ * 10) docker-compose.yml 可被 YAML 解析；
+ * 11) nginx server 的静态 root == deploy/.env.example 的 MIWO_DATA_DIR + /web，且 systemd 使用文档化环境文件。
  *
  * ⚠ 为什么"真实赋值"必须是行级的（F4 的教训）：只做全文子串/变量名统计时，
  *   把 `MIWO_DB_HOST=mysql` **整行注释掉**、或把 `MIWO_STORAGE_DRIVER=local` 注释掉，
@@ -93,7 +94,27 @@ function parseNginxLocations(text) {
   return blocks;
 }
 
+function parseNginxServerBlocks(text) {
+  const blocks = [];
+  const re = /\bserver\s*\{/g;
+  let m;
+  while ((m = re.exec(text))) {
+    let depth = 1;
+    let i = re.lastIndex;
+    while (i < text.length && depth > 0) {
+      const c = text[i];
+      if (c === "{") depth += 1;
+      else if (c === "}") depth -= 1;
+      i += 1;
+    }
+    blocks.push(text.slice(re.lastIndex, i - 1));
+    re.lastIndex = i;
+  }
+  return blocks;
+}
+
 const configTs = read("apps/api/src/config.ts");
+const storageConfigTs = read("apps/api/src/storage/config.ts");
 const nginx = read("deploy/nginx.conf");
 const composeText = read("deploy/docker-compose.yml");
 const dockerfile = read("deploy/Dockerfile");
@@ -104,7 +125,7 @@ const templates = [
   { rel: "apps/api/.env.example", real: apiEnv.real, declared: apiEnv.declared },
 ];
 
-const inCode = new Set(configTs.match(/MIWO_[A-Z0-9_]+/g) ?? []);
+const inCode = new Set(`${configTs}\n${storageConfigTs}`.match(/MIWO_[A-Z0-9_]+/g) ?? []);
 // ⚠ 只认 `${...}` 插值（注释里写 `MIWO_DB_*` 这类说明文字不是"引用"）
 const inCompose = new Set([...composeText.matchAll(/\$\{([A-Za-z0-9_]+)\}/g)].map((m) => m[1]));
 
@@ -120,7 +141,7 @@ for (const v of [...inCode].sort()) {
 }
 
 // 2) 模板里声明的变量名必须被代码读取（拼写漂移）；编排专用变量登记在白名单
-const COMPOSE_ONLY = new Set(["MIWO_MYSQL_ROOT_PASSWORD", "MIWO_IMAGE_TAG"]);
+const COMPOSE_ONLY = new Set(["MIWO_IMAGE_TAG"]);
 for (const t of templates) {
   for (const v of [...t.declared].sort()) {
     if (!inCode.has(v) && !COMPOSE_ONLY.has(v)) {
@@ -192,6 +213,33 @@ assertInBlock("/oss", ["proxy_pass", "X-Forwarded-For", "X-Forwarded-Proto", "If
 assertInBlock("/socket.io", ["proxy_pass", "Upgrade", "Connection"]);
 if (!/gzip\s+on\s*;/.test(nginxCode)) failures.push('deploy/nginx.conf 缺少 "gzip on;"');
 
+const dataDir = unquote(deployEnv.real.get("MIWO_DATA_DIR"));
+if (!dataDir) {
+  failures.push("deploy/.env.example 的 MIWO_DATA_DIR 没有真实赋值：nginx 的静态根无法与之绑定");
+} else {
+  const unitText = read("deploy/systemd/miwo-api.service");
+  const envFile = unitText.match(/^EnvironmentFile=(\S+)\s*$/m);
+  if (!envFile || envFile[1] !== "/etc/miwo/env") {
+    failures.push("deploy/systemd/miwo-api.service 必须从 /etc/miwo/env 读取部署环境");
+  }
+  const readme = read("deploy/README.md");
+  if (!readme.includes("install -m 600 deploy/.env.example /etc/miwo/env")) {
+    failures.push("deploy/README.md 必须说明 deploy/.env.example 是 /etc/miwo/env 的模板来源");
+  }
+  const expectedRoot = path.posix.join(dataDir.replace(/\\/g, "/"), "web");
+  const roots = parseNginxServerBlocks(nginxCode)
+    .flatMap((block) => [...block.matchAll(/^\s*root\s+([^;]+);\s*$/gm)].map((m) => m[1].trim()));
+  if (!roots.length) {
+    failures.push("deploy/nginx.conf 的 server 块里没有 root 指令（静态站点必须有 root）");
+  } else {
+    for (const root of roots) {
+      if (root !== expectedRoot) {
+        failures.push(`deploy/nginx.conf 的 root 是 "${root}"，期望 "${expectedRoot}"（= MIWO_DATA_DIR + /web）`);
+      }
+    }
+  }
+}
+
 // 6) 拓扑自洽（F1）：api 必须存在宿主机 nginx 连得上的可达路径
 let YAML;
 try { YAML = require("yaml"); } catch { failures.push("缺依赖 `yaml`（pnpm.cmd add -D -w yaml）"); }
@@ -216,24 +264,33 @@ if (!api) {
   if (netMode === "host" && api.ports) {
     failures.push("api 同时写了 network_mode: host 与 ports：docker compose 会直接报错（端口发布对绑回环的进程本来就无效）");
   }
+
+  // Docker 的静态站点由宿主机 nginx 读取；应用数据卷必须是同一路径的宿主机 bind mount。
+  const apiCmd = JSON.stringify(api.command ?? "");
+  if (!/scripts\/seed-data-dir\.cjs/.test(apiCmd)) {
+    failures.push("deploy/docker-compose.yml 的 api command 缺少 scripts/seed-data-dir.cjs 启动前播种");
+  }
+  if (!/cp -a \/app\/apps\/api\/data\/web\/.+MIWO_DATA_DIR/.test(apiCmd)) {
+    failures.push("api command 必须把镜像内的前端静态文件同步到 MIWO_DATA_DIR/web，供宿主机 nginx 读取");
+  }
+  if (!/exec\s+node data\/serve\/app\.js/.test(apiCmd)) {
+    failures.push("api 的 command 必须最终 `exec node data/serve/app.js`（否则 sh 会占在 PID 1，docker stop 的信号走不到 node）");
+  }
+  const volumeMount = (api.volumes || []).map(String).find((volume) => volume.includes("MIWO_DATA_DIR"));
+  const envDataDir = String(api.environment?.MIWO_DATA_DIR ?? "");
+  if (!volumeMount || !envDataDir || volumeMount !== "${MIWO_DATA_DIR}:${MIWO_DATA_DIR}") {
+    failures.push(
+      `api 的卷必须把宿主机 MIWO_DATA_DIR bind mount 到相同容器路径（实际挂载 "${volumeMount || "无"}"，MIWO_DATA_DIR="${envDataDir}"），这样 1Panel nginx 可读取 web 静态目录`,
+    );
+  }
 }
 const mysql = services.mysql;
-if (!mysql) {
-  failures.push("deploy/docker-compose.yml 缺少 mysql 服务");
-} else {
-  const ports = Array.isArray(mysql.ports) ? mysql.ports.map((p) => String(p)) : [];
-  if (!ports.length) failures.push(`mysql 未发布端口：host 网络模式下的 api 要靠 127.0.0.1:${port || "MIWO_DB_PORT"} 连它`);
-  for (const p of ports) {
-    if (!/^127\.0\.0\.1:(\$\{MIWO_DB_PORT\}|\d+):\d+$/.test(p)) {
-      failures.push(`mysql 端口 "${p}" 不是「仅宿主机回环」形式（应形如 127.0.0.1:\${MIWO_DB_PORT}:3306，宿主端口与 MIWO_DB_PORT 同源）`);
-    }
-  }
-  if (!/MYSQL_PWD/.test(JSON.stringify(mysql.environment ?? {}))) {
-    failures.push("mysql 服务缺少 MYSQL_PWD 环境变量：healthcheck 靠它取口令（F13 不把口令放命令行）");
-  }
-  const hc = JSON.stringify(mysql.healthcheck ?? {});
-  if (/--password|-p\$\{|MIWO_MYSQL_ROOT_PASSWORD/.test(hc)) {
-    failures.push("mysql healthcheck 仍把口令放在命令行里（F13：改用 MYSQL_PWD 环境变量，避免 docker inspect / ps 泄露）");
+if (mysql) {
+  failures.push("docker-compose.yml 不应再创建 mysql 服务：部署使用 1Panel 独立 MySQL");
+}
+for (const name of ["api", "worker"]) {
+  if (services[name]?.depends_on?.mysql) {
+    failures.push(`${name} 不应 depends_on Compose mysql；数据库由 1Panel 管理`);
   }
 }
 
@@ -282,6 +339,54 @@ if (dockerfile) {
     if (!hasNpmrcCopy) {
       failures.push("deploy/Dockerfile 必须有一行真实的 `COPY … .npmrc`（注释行不算）：缺它构建不跑 prebuild（router.ts 会陈旧）");
     }
+  }
+  if (!/^COPY --from=build \/app\/apps\/api\/scripts\/seed-data-dir\.cjs \.\/apps\/api\/scripts\/seed-data-dir\.cjs\s*$/m.test(dockerfile)) {
+    failures.push("deploy/Dockerfile 必须把 scripts/seed-data-dir.cjs 复制进最终镜像（api command 启动时调用它）");
+  }
+  if (!/^COPY --from=build \/app\/apps\/api\/data\/web \.\/apps\/api\/data\/web\s*$/m.test(dockerfile)) {
+    failures.push("deploy/Dockerfile 必须把前端静态目录复制进最终镜像，供 api 启动时同步给宿主机 nginx");
+  }
+  const webBuild = dockerfile.search(/^RUN pnpm --filter @miwo\/web run build-only \\\s*$/m);
+  // 前端构建与后端构建**分成两条 RUN**（前端在前）：这样只改 app/api 源码时前端层仍命中缓存。
+  // 早期是「COPY apps/api → COPY apps/web → 一条 RUN 跑前端+后端」，改一行后端也要重跑 10+ 分钟前端打包。
+  const webSync = dockerfile.search(/^ && node apps\/api\/scripts\/sync-web-build\.cjs --src apps\/web\/dist --out apps\/api\/data\/web\s*$/m);
+  const apiBuild = dockerfile.search(/^(?:RUN pnpm --filter @miwo\/api build| && pnpm --filter @miwo\/api build)\s*$/m);
+  if (!/^COPY apps\/web apps\/web\s*$/m.test(dockerfile) || webBuild < 0 || webSync < 0 || apiBuild < 0 || webBuild > webSync || webSync > apiBuild) {
+    failures.push("deploy/Dockerfile 的 build 阶段必须按序复制 apps/web 源码、构建 SPA、同步到 apps/api/data/web，再构建 API，避免依赖 Git 忽略的预生成文件");
+  }
+  const runtimeStage = dockerfile.split(/^FROM .* AS runtime\s*$/m)[1] || "";
+  if (!/apt-get install[^\n]*ffmpeg/.test(runtimeStage)) {
+    failures.push("deploy/Dockerfile 的 runtime 阶段必须安装 ffmpeg（同时提供 ffprobe）");
+  }
+  const packageManager = JSON.parse(read("package.json")).packageManager;
+  const corepackInstall = dockerfile.indexOf("npm install --global corepack@0.31.0");
+  const corepackEnable = dockerfile.indexOf("corepack enable", corepackInstall);
+  const corepackPrepare = dockerfile.indexOf(`corepack prepare ${packageManager} --activate`, corepackEnable);
+  if (corepackInstall < 0 || corepackEnable < corepackInstall || corepackPrepare < corepackEnable) {
+    failures.push("deploy/Dockerfile 必须先安装含当前 pnpm 签名 key 的固定版 Corepack，再启用并准备 package.json 锁定的 pnpm");
+  }
+  const apiBuildConfig = services.api?.build;
+  if (apiBuildConfig?.context !== ".." || apiBuildConfig?.dockerfile !== "deploy/Dockerfile") {
+    failures.push("deploy/docker-compose.yml 的 api build context/Dockerfile 与根目录 .dockerignore 的位置契约不一致");
+  }
+  const dockerignore = read(".dockerignore");
+  if (!/^apps\/api\/data\/web\/?\s*$/m.test(dockerignore)) {
+    failures.push("仓库根 .dockerignore 必须排除 apps/api/data/web；该目录由 Docker build 阶段从 apps/web 源码生成");
+  }
+  const dockerignoreRules = dockerignore
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  const envRules = ["**/.env", "**/.env.*", "!**/.env.example"];
+  if (dockerignoreRules.slice(-envRules.length).join("\n") !== envRules.join("\n")) {
+    failures.push("仓库根 .dockerignore 的最终三条规则必须按序排除真实 .env/变体并只放行 .env.example，防止后续规则覆盖");
+  }
+  if (fs.existsSync(path.join(ROOT, "deploy/.dockerignore"))) {
+    failures.push("deploy/.dockerignore 不会用于根 context；请移除失效副本并维护仓库根 .dockerignore");
+  }
+  const deployReadme = read("deploy/README.md");
+  if (/真实数据在 MySQL 卷里|宿主机回环上发布的 MySQL/.test(deployReadme)) {
+    failures.push("deploy/README.md 仍包含 Compose 管理 MySQL 的旧部署/备份说明；数据库由 1Panel 管理");
   }
 
   /**
@@ -463,8 +568,8 @@ if (!/src\/worker\.ts/.test(buildTs) || !/data\/serve\/worker\.js/.test(buildTs)
     if (!Array.isArray(worker.env_file) || !worker.env_file.includes(".env")) {
       failures.push("deploy/docker-compose.yml 的 worker 服务必须 env_file: [.env]（与 api 同一份环境文件）");
     }
-    if (!Array.isArray(worker.volumes) || !worker.volumes.some((v) => String(v).includes("miwo-data:"))) {
-      failures.push("deploy/docker-compose.yml 的 worker 服务必须挂同一个 miwo-data 卷（媒体/技能/提示词与 api 同源）");
+    if (!Array.isArray(worker.volumes) || !worker.volumes.some((v) => String(v) === "${MIWO_DATA_DIR}:${MIWO_DATA_DIR}")) {
+      failures.push("deploy/docker-compose.yml 的 worker 服务必须把同一个宿主机 MIWO_DATA_DIR bind mount 到相同容器路径");
     }
     if (!fs.existsSync(path.join(ROOT, "apps/api/src/worker.ts"))) {
       failures.push("缺少 apps/api/src/worker.ts：compose 的 worker 服务 command 指向的产物没有构建入口");
@@ -508,5 +613,6 @@ if (failures.length) {
 console.log(
   `check-deploy-config 通过（${inCode.size} 个 MIWO_* 变量一致；` +
     `nginx ${proxied.length} 处 proxy_pass 端口 == MIWO_PORT=${port}；` +
+    `静态根 == MIWO_DATA_DIR/web = ${dataDir || "?"}；` +
     `模板 ${templates.map((t) => t.rel).join(" + ")}）`,
 );

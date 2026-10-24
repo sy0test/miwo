@@ -9,8 +9,10 @@
 #   打包产物会留下字面 require(ESM)；Node 直到 22.12 才默认允许 require() 同步 ESM。
 FROM node:22.12-bookworm-slim AS base
 
-# pnpm 版本取自根 package.json 的 packageManager（pnpm@10.33.0），用 corepack 固定，避免镜像里 pnpm 漂移。
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+# Node 22.12 自带的 Corepack 缺少 pnpm 当前签名 key；固定升级 Corepack 后仍校验锁定的 pnpm 版本。
+RUN npm install --global corepack@0.31.0 \
+ && corepack enable \
+ && corepack prepare pnpm@10.33.0 --activate
 
 # 少数原生依赖（better-sqlite3 / sqlite3 / sharp）在没有匹配到 prebuild 时会现场编译，
 # 所以装依赖的阶段备好工具链（只在中间层，不会进入最终镜像）。
@@ -34,12 +36,31 @@ RUN pnpm install --frozen-lockfile --prod
 
 # ---- 构建：prebuild 生成 src/router.ts → esbuild 打包 ----
 FROM base AS build
+# SPA 是单文件内联打包（viteSingleFile + inlineDynamicImports + assetsInlineLimit=Infinity），
+# Rollup 峰值内存实测约 3.4GB（本机 32GB 内存下 Node 默认堆 4288MB 才够）。
+# 容器/小内存机器上 Node 会按可用内存把默认堆下调到约 2GB ⇒ vite build 直接 OOM
+# （线上实测：FATAL ERROR: Ineffective mark-compacts near heap limit，exit 134）。
+# 所以构建阶段显式把堆上限抬到 4GB；本机只需约 2GB 空闲内存的镜像不受影响。
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm install --frozen-lockfile
+# ⚠ 这里的**分层顺序是刻意的**：先前端、后后端，且两者分成两条 RUN。
+#   前端是单文件内联打包（实测 10+ 分钟），后端 esbuild 只要几十秒。
+#   如果像早期那样 `COPY apps/api` → `COPY apps/web` → 一条 RUN 跑「前端 + 后端」，
+#   那么**改一行后端源码**也会让前端那一层缓存失效，每次重打都要再等 10+ 分钟。
+#   现在：apps/api 的 COPY/构建放在前端构建**之后** ⇒ 只改后端时前端层直接命中缓存。
+#   sync-web-build.cjs 属于 apps/api，单独先拷进来（它只做文件同步，不需要其它源码）。
+COPY apps/web apps/web
+COPY apps/api/scripts/sync-web-build.cjs apps/api/scripts/sync-web-build.cjs
+RUN pnpm --filter @miwo/web run build-only \
+ && node apps/api/scripts/sync-web-build.cjs --src apps/web/dist --out apps/api/data/web
 COPY apps/api apps/api
 RUN pnpm --filter @miwo/api build
 
 # ---- 运行 ----
 FROM node:22.12-bookworm-slim AS runtime
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # pnpm 的 node_modules 里全是相对 symlink（指向 /app/node_modules/.pnpm/...），
 # 只要保持 /app 下的相对结构整棵拷贝，软链就仍然有效。
@@ -49,15 +70,17 @@ COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 # 唯一真实的后端构建产物：esbuild 的 outfile = data/serve/app.js
 # （apps/api/scripts/build.ts:44，apps/api/package.json 的 start 也是它；仓库里**不存在** dist/ 产物）。
 COPY --from=build /app/apps/api/data/serve ./apps/api/data/serve
-# 运行时素材（技能 / 提示词）随镜像带一份，供**首次部署播种**进 MIWO_DATA_DIR 卷：
+# 运行时素材（技能 / 提示词）随镜像带一份，供首次启动播种进 MIWO_DATA_DIR：
 #   容器启动时读的是 ${MIWO_DATA_DIR}/{skills,modelPrompt}（见 src/utils/getPath.ts），
-#   卷里没有它们时应用照常启动、但技能/提示词功能会静默失效。播种命令见 deploy/README.md。
+#   目录为空时应用照常启动、但技能/提示词功能会静默失效。播种命令见 deploy/README.md。
 # ⚠ Phase 1c Task 8：原来这里还有一行 `COPY …/data/vendor`。供应商适配器已改成**编译期内置**的
 #   `apps/api/src/vendors/*.ts`（esbuild 把它们打进 `data/serve/app.js`）⇒ 运行期不需要也不存在
 #   `data/vendor` 目录。那一行必须一起删：它会让 `docker build` 以 "COPY failed: no source files"
 #   失败（`tools/check-deploy-config.cjs` 现在也有断言守着"COPY 的源必须存在"）。
 COPY --from=build /app/apps/api/data/skills ./apps/api/data/skills
 COPY --from=build /app/apps/api/data/modelPrompt ./apps/api/data/modelPrompt
+COPY --from=build /app/apps/api/scripts/seed-data-dir.cjs ./apps/api/scripts/seed-data-dir.cjs
+COPY --from=build /app/apps/api/data/web ./apps/api/data/web
 # WORKDIR 与 apps/api 下 `node data/serve/app.js` 的相对路径必须一致（systemd 单元同理）。
 WORKDIR /app/apps/api
 CMD ["node","data/serve/app.js"]

@@ -13,8 +13,9 @@
  */
 import fs from "fs/promises";
 import path from "path";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
-import { storyboardItemsForShots, trackTableForId, updateTrackById } from "@/utils/shots/readShots";
+import { storyboardItemsForSegment, storyboardItemsForShots, trackTableForId, updateTrackById } from "@/utils/shots/readShots";
 import type { JobContext, JobDefinition } from "@/jobs/types";
 import { withVendorSlot } from "@/jobs/gate";
 
@@ -65,6 +66,73 @@ async function loadPromptTemplate(model: string, mode: string): Promise<string> 
   return videoPromptGeneration ?? "";
 }
 
+export interface PromptBatchContext {
+  modelData: string;
+  videoPromptGeneration: string;
+  styleGuide: string;
+}
+
+export async function loadPromptBatchContext(projectId: number, model: string, mode: string): Promise<PromptBatchContext> {
+  const [, modelData] = model.split(/:(.+)/);
+  const projectData = await u.db("o_project").select("*").where({ id: projectId }).first();
+  return {
+    modelData,
+    videoPromptGeneration: await loadPromptTemplate(model, mode),
+    styleGuide: u.feicai.buildStyleGuide(projectData),
+  };
+}
+
+export async function buildPromptBatchInput(context: PromptBatchContext, track: PromptTrackData): Promise<{ system: string; messages: Array<{ role: "assistant" | "user"; content: string }> }> {
+  const trackTable = await trackTableForId(u.db, track.trackId);
+  const isSegments = trackTable === "o_segment";
+  const segItems = isSegments ? await storyboardItemsForSegment(u.db, track.trackId) : [];
+  const images = await Promise.all(track.info.map(async (item) => {
+    if (item.sources === "storyboard") {
+      if (isSegments) return null;
+      const storyboard = await u.db("o_storyboard").where("o_storyboard.id", item.id).select("videoDesc", "prompt", "track", "duration", "shouldGenerateImage").first();
+      const assetRows = await u.db("o_assets2Storyboard").where("storyboardId", item.id).orderBy("assetId").select("assetId");
+      return { ...storyboard, associateAssetsIds: assetRows.map((row: any) => row.assetId), _type: "storyboard" };
+    }
+    if (item.sources === "assets") {
+      const assetsData = await u.db("o_assets").leftJoin("o_image", "o_image.id", "o_assets.imageId").where("o_assets.id", item.id).select("o_assets.id", "o_assets.type", "o_assets.name", "o_image.filePath").first();
+      return { ...assetsData, _type: "assets" };
+    }
+    return null;
+  }));
+
+  const assets: any[] = [];
+  const storyboard: any[] = [...segItems];
+  for (const item of images) {
+    if (!item) continue;
+    if (item._type === "assets") assets.push({ id: item.id, type: item.type, name: item.name, filePath: item.filePath });
+    if (item._type === "storyboard") storyboard.push({
+      videoDesc: item.videoDesc,
+      prompt: item.prompt,
+      track: item.track,
+      duration: item.duration,
+      associateAssetsIds: item.associateAssetsIds,
+      shouldGenerateImage: item.shouldGenerateImage,
+    });
+  }
+
+  const content = `
+          **模型名称**：${context.modelData},
+          **资产信息**（角色、场景、道具、音频):${assets.filter((i: any) => i.filePath).map((i: any) => `[${i.id},${i.type},${i.name}]`).join("，")},
+          **分镜信息**：${storyboard.map((i: any) => `<storyboardItem
+  videoDesc='${i.videoDesc}'
+  duration='${i.duration}'
+  associateAssetsIds="[${(i.associateAssetsIds ?? []).join(",")}]"
+></storyboardItem>`)},
+          `;
+  return {
+    system: context.videoPromptGeneration,
+    messages: [
+      { role: "assistant", content: `${context.styleGuide}` },
+      { role: "user", content },
+    ],
+  };
+}
+
 export const promptBatch: JobDefinition<PromptBatchPayload> = {
   type: "prompt.batch",
   timeoutMs: 600_000,
@@ -86,10 +154,7 @@ export const promptBatch: JobDefinition<PromptBatchPayload> = {
     return `${userId ?? "anon"}:prompt.batch:${p.projectId}:${ids}`;
   },
   async handle(ctx: JobContext, p: PromptBatchPayload) {
-    const [, modelData] = p.model.split(/:(.+)/);
-    const projectData = await u.db("o_project").select("*").where({ id: p.projectId }).first();
-    const videoPromptGeneration = await loadPromptTemplate(p.model, p.mode);
-    const styleGuide = u.feicai.buildStyleGuide(projectData);
+    const context = await loadPromptBatchContext(p.projectId, p.model, p.mode);
 
     const failed: string[] = [];
     let index = 0;
@@ -106,64 +171,11 @@ export const promptBatch: JobDefinition<PromptBatchPayload> = {
 
       await ctx.progress(Math.round(((index - 1) / p.trackData.length) * 100), `生成提示词 ${index}/${p.trackData.length}`);
 
-      // 阶段2：v2 下 info 里的 id 是**镜 id**，素材与绑定从新表取；生成单位是片段
-      const isSegments = (await trackTableForId(u.db, track.trackId)) === "o_segment";
-      const segItems = isSegments
-        ? await storyboardItemsForShots(u.db, track.info.filter((i) => i.sources === "storyboard").map((i) => i.id))
-        : [];
-
-      const images = await Promise.all(
-        track.info.map(async (item) => {
-          if (item.sources === "storyboard") {
-            if (isSegments) return null; // 片段项在上面统一生成
-            const storyboard = await u.db("o_storyboard").where("o_storyboard.id", item.id).select("videoDesc", "prompt", "track", "duration", "shouldGenerateImage").first();
-            const assetRows = await u.db("o_assets2Storyboard").where("storyboardId", item.id).orderBy("assetId").select("assetId");
-            return { ...storyboard, associateAssetsIds: assetRows.map((row: any) => row.assetId), _type: "storyboard" };
-          }
-          if (item.sources === "assets") {
-            const assetsData = await u.db("o_assets").leftJoin("o_image", "o_image.id", "o_assets.imageId").where("o_assets.id", item.id).select("o_assets.id", "o_assets.type", "o_assets.name", "o_image.filePath").first();
-            return { ...assetsData, _type: "assets" };
-          }
-        }),
-      );
-
-      const assets: any[] = [];
-      const storyboard: any[] = [];
-      storyboard.push(...segItems);
-      for (const item of images) {
-        if (!item) continue;
-        if (item._type === "assets") assets.push({ id: item.id, type: item.type, name: item.name, filePath: item.filePath });
-        if (item._type === "storyboard")
-          storyboard.push({
-            videoDesc: item.videoDesc,
-            prompt: item.prompt,
-            track: item.track,
-            duration: item.duration,
-            associateAssetsIds: item.associateAssetsIds,
-            shouldGenerateImage: item.shouldGenerateImage,
-          });
-      }
-
-      const content = `
-          **模型名称**：${modelData},
-          **资产信息**（角色、场景、道具、音频):${assets.filter((i: any) => i.filePath).map((i: any) => `[${i.id},${i.type},${i.name}]`).join("，")},
-          **分镜信息**：${storyboard.map((i: any) => `<storyboardItem
-  videoDesc='${i.videoDesc}'
-  duration='${i.duration}'
-  associateAssetsIds="[${(i.associateAssetsIds ?? []).join(",")}]"
-></storyboardItem>`)},
-          `;
-
+      const input = await buildPromptBatchInput(context, track);
       try {
         // Phase 1d Task 9：厂商调用前过 `vendor:text` 闸门（spec §9.3）。只包这一次调用。
         const { text } = await withVendorSlot("vendor:text", ctx.workerId, () =>
-          u.Ai.Text("universalAi").invoke({
-            system: videoPromptGeneration,
-            messages: [
-              { role: "assistant", content: `${styleGuide}` },
-              { role: "user", content },
-            ],
-          }),
+          u.Ai.Text("universalAi", currentAiBillingContext()).invoke(input),
         );
         if (ctx.signal.aborted) throw new Error("被中止（租约丢失或停机）");
         await updateTrackById(u.db, track.trackId, { prompt: text, state: "已完成" });

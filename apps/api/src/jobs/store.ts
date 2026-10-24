@@ -37,11 +37,62 @@
  *    MySQL 的 `ON DUPLICATE KEY UPDATE` 没有 `WHERE`，条件更新只能用 `UPDATE ... WHERE`。
  */
 import type { Knex } from "knex";
+import { releaseInTransaction, reservationIdForJobInTransaction, settleInTransaction } from "@/billing/ledger";
+import { waitForAiBillingTasks } from "@/billing/context";
+import { withJobTenant } from "@/jobs/tenant";
 import { sqldialect } from "@/db/dialect";
 import { runAsAuth } from "@/db/noContext";
 import { JOB_POLICY, backoffMs, type JobPolicy } from "@/jobs/policy";
 import type { JobRegistry } from "@/jobs/registry";
-import type { EnqueueInput, EnqueueResult, JobRow, JobState } from "@/jobs/types";
+import type { EnqueueInput, EnqueueResult, EnqueueTransactionResult, JobRow, JobState } from "@/jobs/types";
+
+type TerminalBillingOutcome = "success" | "failure" | "cancel";
+
+async function settleTerminalJobBilling(
+  trx: Knex.Transaction,
+  job: Pick<JobRow, "id" | "userId">,
+  outcome: TerminalBillingOutcome,
+): Promise<void> {
+  const userId = job.userId;
+  if (userId === null || userId === undefined) return;
+
+  await withJobTenant(userId, async () => {
+    const freezes = await trx("o_ledger")
+      .select("idempotencyKey")
+      .where({ userId, type: "freeze", refType: "job", refId: String(job.id) });
+    if (freezes.length === 0) return;
+
+    const reservationId = await reservationIdForJobInTransaction(trx, { userId, jobId: String(job.id) });
+    const usageRows = (await trx("o_usage")
+      .select("costMicro", "usageStatus", "providerCallId")
+      .where({ userId, jobId: String(job.id) })) as Array<{ costMicro: string | number | bigint; usageStatus: string; providerCallId: string }>;
+    const admissions = (await trx("o_usageAdmission")
+      .select("providerCallId")
+      .where({ userId, jobId: String(job.id) })) as Array<{ providerCallId: string }>;
+    const recordedCalls = new Set(usageRows.map((row) => row.providerCallId));
+    if (usageRows.some((row) => row.usageStatus === "uncertain")
+      || admissions.some((row) => !recordedCalls.has(row.providerCallId))) return;
+
+    if (outcome === "success" || usageRows.length > 0) {
+      const actualMicro = usageRows.reduce((sum, row) => sum + BigInt(String(row.costMicro)), 0n);
+      await settleInTransaction(trx, {
+        userId,
+        reservationId,
+        actualMicro,
+        idempotencyKey: `job-settlement:${job.id}`,
+      });
+      return;
+    }
+
+    const reason = outcome === "cancel" ? "job-cancel" : "job-failure";
+    await releaseInTransaction(trx, {
+      userId,
+      reservationId,
+      reason,
+      idempotencyKey: `${reason}:${job.id}`,
+    });
+  });
+}
 
 /** 唯一键冲突的错误码（sqlite / mysql2 两种形状；不靠 message 猜，但 message 也兜一层）。 */
 const DUP_CODES = new Set(["SQLITE_CONSTRAINT_UNIQUE", "SQLITE_CONSTRAINT_PRIMARYKEY", "ER_DUP_ENTRY"]);
@@ -73,6 +124,7 @@ export interface JobStoreDeps {
 
 export interface JobStore {
   enqueue(input: EnqueueInput): Promise<EnqueueResult>;
+  enqueueInTransaction(trx: Knex.Transaction, input: EnqueueInput): Promise<EnqueueTransactionResult>;
   claim(opts: { workerId: string; limit: number }): Promise<JobRow[]>;
   heartbeat(id: number, workerId: string): Promise<boolean>;
   progress(id: number, workerId: string, percent: number, stage?: string): Promise<boolean>;
@@ -168,7 +220,7 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
     return runAsAuth(fn);
   }
 
-  async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
+  async function enqueue(input: EnqueueInput, connection: Knex | Knex.Transaction = db): Promise<EnqueueResult> {
     const def = registry.get(input.type);
     if (!def) throw new Error(`[job] 未注册的任务类型 "${input.type}"`);
     const payload = def.parse(input.payload); // fail-fast：坏 payload 不许进库
@@ -196,13 +248,13 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
       nextAttemptAt: null,
     };
     try {
-      const inserted = (await db("o_job").insert(row)) as unknown;
+      const inserted = (await connection("o_job").insert(row)) as unknown;
       const id = Number(Array.isArray(inserted) ? inserted[0] : inserted);
       return { jobId: id, deduped: false };
     } catch (e) {
       if (!key || !isDuplicateKeyError(e)) throw e;
       // 命中活跃同键任务：回查既有 job（这是"插入撞唯一键"的原子去重路径）
-      const existing = (await db("o_job").where("dedupeActive", key).first()) as JobRow | undefined;
+      const existing = (await connection("o_job").where("dedupeActive", key).first()) as JobRow | undefined;
       if (existing) return { jobId: Number(existing.id), deduped: true };
       throw e; // 极罕见：唯一键冲突但读不到（并发事务未提交）→ 交给调用方重试
     }
@@ -246,46 +298,51 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
    */
   async function reclaimExpired(): Promise<{ requeued: number; dead: number }> {
     const ts = now();
-    const expired = (await db("o_job")
-      .select("id", "attempts", "maxAttempts")
-      .where("state", "running")
-      .andWhere("leaseUntil", "<", ts)) as Array<{ id: number; attempts: number; maxAttempts: number }>;
-    const exhaustedIds = expired.filter((r) => Number(r.attempts) >= Number(r.maxAttempts)).map((r) => Number(r.id));
-    const retryableIds = expired.filter((r) => Number(r.attempts) < Number(r.maxAttempts)).map((r) => Number(r.id));
+    return db.transaction(async (trx) => {
+      const expired = (await trx("o_job")
+        .select("id", "userId", "attempts", "maxAttempts")
+        .where("state", "running")
+        .andWhere("leaseUntil", "<", ts)) as Array<Pick<JobRow, "id" | "userId" | "attempts" | "maxAttempts">>;
+      const exhausted = expired.filter((r) => Number(r.attempts) >= Number(r.maxAttempts));
+      const retryableIds = expired.filter((r) => Number(r.attempts) < Number(r.maxAttempts)).map((r) => Number(r.id));
 
-    let dead = 0;
-    if (exhaustedIds.length) {
-      dead = (await db("o_job")
-        .whereIn("id", exhaustedIds)
-        .andWhere("state", "running")
-        .andWhere("leaseUntil", "<", ts)
-        .update({
-          state: "dead",
-          dedupeActive: null,
-          finishedAt: ts,
-          updatedAt: ts,
-          leaseUntil: null,
-          workerId: null,
-          lastError: "租约到期且已用尽重试次数",
-        })) as number;
-    }
-    let requeued = 0;
-    if (retryableIds.length) {
-      requeued = (await db("o_job")
-        .whereIn("id", retryableIds)
-        .andWhere("state", "running")
-        .andWhere("leaseUntil", "<", ts)
-        .update({
-          state: "queued",
-          workerId: null,
-          leaseUntil: null,
-          heartbeatAt: null,
-          nextAttemptAt: ts,
-          updatedAt: ts,
-          lastError: "租约到期，任务被回收",
-        })) as number;
-    }
-    return { requeued, dead };
+      let dead = 0;
+      for (const row of exhausted) {
+        const affected = (await trx("o_job")
+          .where({ id: row.id, state: "running" })
+          .andWhere("leaseUntil", "<", ts)
+          .update({
+            state: "dead",
+            dedupeActive: null,
+            finishedAt: ts,
+            updatedAt: ts,
+            leaseUntil: null,
+            workerId: null,
+            lastError: "租约到期且已用尽重试次数",
+          })) as number;
+        if (affected === 1) {
+          await settleTerminalJobBilling(trx, row, "failure");
+          dead += 1;
+        }
+      }
+      let requeued = 0;
+      if (retryableIds.length) {
+        requeued = (await trx("o_job")
+          .whereIn("id", retryableIds)
+          .andWhere("state", "running")
+          .andWhere("leaseUntil", "<", ts)
+          .update({
+            state: "queued",
+            workerId: null,
+            leaseUntil: null,
+            heartbeatAt: null,
+            nextAttemptAt: ts,
+            updatedAt: ts,
+            lastError: "租约到期，任务被回收",
+          })) as number;
+      }
+      return { requeued, dead };
+    });
   }
 
   async function claim(opts: { workerId: string; limit: number }): Promise<JobRow[]> {
@@ -325,8 +382,8 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
           startedAt: ts,
           updatedAt: ts,
           nextAttemptAt: null,
-        })
-        .increment("attempts", 1)) as number;
+          attempts: db.raw("?? + 1", ["attempts"]),
+        })) as number;
       if (affected !== 1) continue; // 被别人抢走 / 已取消 → 跳过（**不报错**：并发下的正常结果）
       const row = (await db("o_job").where("id", c.id).first()) as JobRow;
       claimed.push(row);
@@ -360,23 +417,33 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
     return affected === 1;
   }
 
-  /** 成功（终态）：`dedupeActive` 置 NULL ⇒ 同键可以再次入队。 */
+  /** 成功（终态）：队列转换和账单结算同事务提交；`dedupeActive` 置 NULL ⇒ 同键可以再次入队。 */
   async function succeed(id: number, workerId: string, result: unknown): Promise<boolean> {
-    const ts = now();
-    const affected = (await db("o_job")
-      .where({ id, workerId, state: "running" })
-      .update({
-        state: "succeeded",
-        dedupeActive: null,
-        progress: 100,
-        finishedAt: ts,
-        updatedAt: ts,
-        lastError: null,
-        leaseUntil: null,
-        workerId: null,
-        result: result === undefined ? null : JSON.stringify(result),
-      })) as number;
-    return affected === 1;
+    const candidate = (await db("o_job").where({ id, workerId, state: "running" }).first()) as JobRow | undefined;
+    if (candidate?.userId !== null && candidate?.userId !== undefined) {
+      await waitForAiBillingTasks({ userId: Number(candidate.userId), jobId: String(candidate.id), requestId: "job-settlement" });
+    }
+    return db.transaction(async (trx) => {
+      const row = (await trx("o_job").where({ id, workerId, state: "running" }).first()) as JobRow | undefined;
+      if (!row) return false;
+      const ts = now();
+      const affected = (await trx("o_job")
+        .where({ id, workerId, state: "running" })
+        .update({
+          state: "succeeded",
+          dedupeActive: null,
+          progress: 100,
+          finishedAt: ts,
+          updatedAt: ts,
+          lastError: null,
+          leaseUntil: null,
+          workerId: null,
+          result: result === undefined ? null : JSON.stringify(result),
+        })) as number;
+      if (affected !== 1) return false;
+      await settleTerminalJobBilling(trx, row, "success");
+      return true;
+    });
   }
 
   /**
@@ -388,56 +455,67 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
    *   别人的结果，并回读当前真实状态返回（读不到就当 `"failed"` 兜底）。
    */
   async function fail(id: number, workerId: string, message: string): Promise<JobState> {
-    const ts = now();
-    const errText = String(message ?? "").slice(0, 1000);
-    const row = (await db("o_job").where({ id, workerId }).first()) as JobRow | undefined;
-    if (!row || row.state !== "running") {
-      const cur = (await db("o_job").where("id", id).first()) as JobRow | undefined;
+    return db.transaction(async (trx) => {
+      const ts = now();
+      const errText = String(message ?? "").slice(0, 1000);
+      const row = (await trx("o_job").where({ id, workerId }).first()) as JobRow | undefined;
+      if (!row || row.state !== "running") {
+        const cur = (await trx("o_job").where("id", id).first()) as JobRow | undefined;
+        return cur ? cur.state : "failed";
+      }
+      const attempts = Number(row.attempts);
+      const maxAttempts = Number(row.maxAttempts);
+      if (attempts >= maxAttempts) {
+        const affected = (await trx("o_job")
+          .where({ id, workerId, state: "running" })
+          .update({ state: "dead", dedupeActive: null, finishedAt: ts, updatedAt: ts, lastError: errText, leaseUntil: null, workerId: null })) as number;
+        if (affected === 1) {
+          await settleTerminalJobBilling(trx, row, "failure");
+          return "dead";
+        }
+      } else {
+        const attempt = Math.max(1, attempts);
+        const affected = (await trx("o_job")
+          .where({ id, workerId, state: "running" })
+          .update({
+            state: "queued",
+            workerId: null,
+            leaseUntil: null,
+            heartbeatAt: null,
+            nextAttemptAt: ts + backoffMs(attempt),
+            updatedAt: ts,
+            lastError: errText,
+          })) as number;
+        if (affected === 1) return "queued";
+      }
+      // 竞态（租约在这一瞬间被回收/取消）：不覆盖，不结算，回读真实状态。
+      const cur = (await trx("o_job").where("id", id).first()) as JobRow | undefined;
       return cur ? cur.state : "failed";
-    }
-    const attempts = Number(row.attempts);
-    const maxAttempts = Number(row.maxAttempts);
-    if (attempts >= maxAttempts) {
-      const affected = (await db("o_job")
-        .where({ id, workerId, state: "running" })
-        .update({ state: "dead", dedupeActive: null, finishedAt: ts, updatedAt: ts, lastError: errText, leaseUntil: null, workerId: null })) as number;
-      if (affected === 1) return "dead";
-    } else {
-      const attempt = Math.max(1, attempts);
-      const affected = (await db("o_job")
-        .where({ id, workerId, state: "running" })
-        .update({
-          state: "queued",
-          workerId: null,
-          leaseUntil: null,
-          heartbeatAt: null,
-          nextAttemptAt: ts + backoffMs(attempt),
-          updatedAt: ts,
-          lastError: errText,
-        })) as number;
-      if (affected === 1) return "queued";
-    }
-    // 竞态（租约在这一瞬间被回收/取消）：不覆盖，回读真实状态。
-    const cur = (await db("o_job").where("id", id).first()) as JobRow | undefined;
-    return cur ? cur.state : "failed";
+    });
   }
 
-  /** 取消：只有 `queued` / `running` 可取消；**幂等**（第二次 `affected = 0` ⇒ false）。 */
+  /** 取消：状态转换和预留释放同事务提交；只有 `queued` / `running` 可取消，且幂等。 */
   async function cancel(id: number, reason?: string): Promise<boolean> {
-    const ts = now();
-    const affected = (await db("o_job")
-      .where("id", id)
-      .whereIn("state", ["queued", "running"])
-      .update({
-        state: "canceled",
-        dedupeActive: null,
-        finishedAt: ts,
-        updatedAt: ts,
-        leaseUntil: null,
-        workerId: null,
-        lastError: reason ? String(reason).slice(0, 1000) : null,
-      })) as number;
-    return affected === 1;
+    return db.transaction(async (trx) => {
+      const row = (await trx("o_job").where("id", id).whereIn("state", ["queued", "running"]).first()) as JobRow | undefined;
+      if (!row) return false;
+      const ts = now();
+      const affected = (await trx("o_job")
+        .where("id", id)
+        .whereIn("state", ["queued", "running"])
+        .update({
+          state: "canceled",
+          dedupeActive: null,
+          finishedAt: ts,
+          updatedAt: ts,
+          leaseUntil: null,
+          workerId: null,
+          lastError: reason ? String(reason).slice(0, 1000) : null,
+        })) as number;
+      if (affected !== 1) return false;
+      await settleTerminalJobBilling(trx, row, "cancel");
+      return true;
+    });
   }
 
   /**
@@ -529,6 +607,10 @@ export function createJobStore(deps: JobStoreDeps): JobStore {
    */
   return {
     enqueue: (input) => asSystem(() => enqueue(input)),
+    enqueueInTransaction: (trx, input) => asSystem(async () => {
+      const result = await enqueue(input, trx);
+      return { jobId: String(result.jobId), created: !result.deduped };
+    }),
     claim: (opts) => asSystem(() => claim(opts)),
     heartbeat: (id, workerId) => asSystem(() => heartbeat(id, workerId)),
     progress: (id, workerId, percent, stage) => asSystem(() => progress(id, workerId, percent, stage)),

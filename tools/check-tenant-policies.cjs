@@ -123,13 +123,11 @@ if (JSON.stringify(policyTenant) !== JSON.stringify(tenant)) {
     `TENANT_TABLES ↔ TABLE_POLICIES(tenant) 不一致：\n      只有 TENANT_TABLES ${tenant.filter((t) => !policyTenant.includes(t)).join(", ") || "（无）"}\n      只有策略 ${policyTenant.filter((t) => !tenant.includes(t)).join(", ") || "（无）"}`,
   );
 }
-// ⚠【Phase 1c Task 1】20 → 22：`006_quota_grants` 新建了 2 张租户表（`o_account` / `o_modelGrant`）；
-//   同批的 `o_userSetting` / `o_invite` / `o_loginAttempt` / `o_auditLog` 是 **platform**
-//   （登录发生在建租户 ctx 之前 ⇒ 必须无 ctx 可读）。
-//   数字变了必须回来核对 —— 这是**提高**判别力（表体仍与建表清单逐项相等），不是放宽。
-if (tenant.length !== 22) {
+// ⚠ 28 张租户表：既有 22 张（含 `o_account` / `o_modelGrant`）+ Phase 2 的 6 张账务、准入与成员表；
+//   定价 `o_price` 和组配置表是 platform，不计入租户数。数字变化需核对，不能放宽逐表清单校验。
+if (tenant.length !== 28) {
   failures.push(
-    `tenant 表应为 22 张（Phase 1a Ruling 32 的 20 张 + Phase 1c Task 1 的 o_account/o_modelGrant），` +
+    `tenant 表应为 28 张（既有 22 张 + Phase 2 的 6 张账务/准入/成员表），` +
       `实际 ${tenant.length}：${tenant.join(", ")}`,
   );
 }
@@ -140,7 +138,7 @@ if (facts.userColumn !== "userId") failures.push(`策略层的 USER_COLUMN 必�
 const exempt = facts.backfillExemptTables.slice().sort();
 const selfCheck = facts.selfCheckTables.slice().sort();
 const backfill = facts.backfillTargetTables.slice().sort();
-if (exempt.length === 0) failures.push(`BACKFILL_EXEMPT_TABLES 为空 —— 本任务已新增 2 张"迁移后新建的租户空表"，豁免集不该是空的（检查 backfill-userid.ts 的导出）`);
+if (exempt.length !== 8) failures.push(`BACKFILL_EXEMPT_TABLES 应包含 8 张迁移后新建的租户空表，实际 ${exempt.length}（检查 backfill-userid.ts 的导出）`);
 for (const t of exempt) {
   if (!tenant.includes(t)) failures.push(`BACKFILL_EXEMPT_TABLES 里的 ${t} 不是租户表（不在 TENANT_TABLES 里）—— 豁免只对租户表有意义`);
 }

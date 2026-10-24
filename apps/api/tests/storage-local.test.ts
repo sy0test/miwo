@@ -9,9 +9,12 @@
  *     并新增一条**双签名守卫**：`exp=`/`sig=` 在 URL 里各只许出现一次 ——
  *     因为 `oss.getFileUrl()` 自己已经签过，`signRef` 再拼一次就是 `?exp&sig&exp&sig`（本组实测的坑）。
  */
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ConfigError } from "@/config";
 import { createStorage } from "@/storage";
+import { LocalMediaStorage } from "@/storage/local";
 
 const SECRET = "storage-local-test-secret-at-least-32-bytes";
 const SIG_SHAPE = /[?&]sig=[A-Za-z0-9_-]{43}(&|$)/;
@@ -20,6 +23,21 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+describe("LocalMediaStorage rootDir", () => {
+  it("writes and reads files under its injected root", async () => {
+    const root = path.join(process.cwd(), ".test-tmp", `storage-local-${process.pid}-${Date.now()}`);
+    const storage = new LocalMediaStorage(root);
+    try {
+      await storage.writeFile("nested/file.bin", Buffer.from("injected-root"));
+
+      expect(await storage.getAbsPath("nested/file.bin")).toBe(path.join(root, "nested", "file.bin"));
+      expect(await storage.getFile("nested/file.bin")).toEqual(Buffer.from("injected-root"));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("storage 工厂", () => {
   it("local → LocalMediaStorage 且 rootDir 非空", () => {
     const s = createStorage({ storageDriver: "local", jwtSecret: SECRET });
@@ -27,7 +45,19 @@ describe("storage 工厂", () => {
     expect(s.rootDir.length).toBeGreaterThan(0);
   });
 
-  it("s3 → ConfigError（不是静默降级成本地盘）", () => {
+  it("s3 → S3 adapter when its required config is provided", () => {
+    const s = createStorage({
+      storageDriver: "s3",
+      jwtSecret: SECRET,
+      s3Storage: {
+        bucket: "miwo-media", region: "us-east-1", endpoint: "https://s3.example.test",
+        accessKeyId: "access", secretAccessKey: "secret", cacheDir: path.join(process.cwd(), ".test-tmp", "s3-factory"),
+      },
+    });
+    expect(s.rootDir).toContain("s3-factory");
+  });
+
+  it("s3 without config fails loudly", () => {
     expect(() => createStorage({ storageDriver: "s3", jwtSecret: SECRET })).toThrowError(ConfigError);
   });
 

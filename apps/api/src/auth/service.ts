@@ -27,6 +27,8 @@ import { signToken, verifyToken } from "@/auth/tokens";
 import { runAsAuth } from "@/db/noContext";
 import { AUDIT_ACTIONS, audit, auditPlatformWrite } from "@/utils/audit";
 import { registrationMode as readRegistrationMode, type RegistrationMode } from "@/utils/opsSwitch";
+import { ensureAccountInTransaction } from "@/billing/accounts";
+import { currentTenant, runWithTenant } from "@/db/tenant-context";
 
 export type AuthRole = "user" | "admin";
 export type AuthStatus = "active" | "disabled";
@@ -183,7 +185,13 @@ export async function registerWithInvite(input: RegisterInput): Promise<AuthUser
         createdAt: Date.now(),
         lastLoginAt: null,
       });
-      return Number(Array.isArray(inserted) ? inserted[0] : inserted);
+      const newUserId = Number(Array.isArray(inserted) ? inserted[0] : inserted);
+      const authCtx = currentTenant();
+      if (!authCtx) throw new Error("Registration requires an auth system context");
+      await runWithTenant({ ...authCtx, userId: newUserId, role: "user" }, async () => {
+        await ensureAccountInTransaction(trx, newUserId);
+      });
+      return newUserId;
     });
   });
 

@@ -86,9 +86,7 @@ const props = defineProps<{
   activeTrackIndex: number;
   generating?: boolean;
 }>();
-const currentTrack = defineModel<TrackItem>("currentTrack", {
-  default: () => {},
-});
+const currentTrack = defineModel<TrackItem>("currentTrack", { required: true });
 const emit = defineEmits<{
   generate: [];
   refresh: [];

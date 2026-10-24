@@ -1,4 +1,5 @@
 import express from "express";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
@@ -101,7 +102,7 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
 
   try {
     // Phase 1d Task 9：厂商调用前过 `vendor:image` 闸门（spec §9.3）。响应形态不变。
-    const aiImage = u.Ai.Image(model);
+    const aiImage = u.Ai.Image(model, currentAiBillingContext());
     await withVendorSlot("vendor:image", apiHolderId(), () =>
       aiImage.run(
         {

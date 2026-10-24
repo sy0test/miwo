@@ -291,6 +291,10 @@ describe("注册（spec §15 O1：closed / invite / open 三模式）", () => {
       await registerViaHttp(srv.port, username, ip, good);
       const invite = await systemDb("o_invite").where("code", good).first();
       expect(Number(invite.usedCount)).toBe(1);
+      const registeredUser = await systemDb("o_user").where({ username }).first("id");
+      expect(await systemDb("o_account").where({ userId: registeredUser.id }).first()).toMatchObject({
+        balanceMicro: 0, frozenMicro: 0, version: 0,
+      });
 
       // 用完 1 次（maxUses=1）⇒ 第二个用户必须被拒，且文案与前面四个分支**完全一致**
       const second = await request(srv.port, "POST", "/api/auth/register", { username: `${TAG}_ok2`, password: PW, inviteCode: good }, { ip });

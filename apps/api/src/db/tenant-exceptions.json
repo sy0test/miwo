@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-10-15T00:42:38.882Z",
+  "generatedAt": "2026-10-21T00:54:15.901Z",
   "note": "Phase 1b 的 apps/api/src/db/policies.ts 必须读取本文件作为特例依据。confirmed=true 且 note 非空才算标注完成；每条还必须有 phase1b（处置 + 证据）。",
   "scanScope": {
     "srcRoot": "apps/api/src",
-    "tsFilesScanned": 306,
+    "tsFilesScanned": 337,
     "joins": "对 o_* 表的 join（表名是紧跟左括号的字符串字面量）",
     "raws": "db.raw(...) / u.db.raw(...)（接收者限定：u.db/db/systemDb/trx/knex/conn/connection）",
     "systemDbUsers": "拿到裸 systemDb 的文件（命名/别名/命名空间/相对路径/动态 import/require 任一形态）",
@@ -20,36 +20,54 @@
     "excludedReason": "包装层自身（utils.ts / utils/db.ts）、非请求上下文（utils/taskRecord.ts、utils/agent/embedding.ts）用的是默认导出的 dbClient，不受请求上下文隔离约束；它们是内部层，不记为特例。⚠ Phase 1c Task 5 起 `lib/fixDB.ts` / `lib/initDB.ts` 已删除（原条目见本条的历史说明）。"
   },
   "joins": {
+    "apps/api/src/billing/grants.ts": {
+      "count": 2,
+      "lines": [
+        34,
+        35
+      ],
+      "tables": [
+        "o_userGroupModelGroup",
+        "o_modelGroupItem"
+      ],
+      "confirmed": true,
+      "note": "[34][35 join o_userGroupModelGroup / o_modelGroupItem] 授权查询经 membership（租户表）连平台组配置；与 modelSelect/getModelList.ts 同形。Phase 1b：租户条件由守卫注入（membership 走主表条件、平台组表进 ON 子句），平台组配置本身不是租户数据。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "billing-admin-groups.test.ts#protects group management and target membership replacement",
+        "note": "租户表（membership）条件由守卫注入；该查询按当前 userId 收窄，平台组/模型组仅作为授权映射（平台配置）。"
+      }
+    },
     "apps/api/src/jobs/handlers/imageProductionAssets.ts": {
       "count": 1,
       "lines": [
-        48
+        49
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[48 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/assets/batchGenerateAssetsImage.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）；行号 47→48 是 Task 9 在文件头补了一行 `withVendorSlot` 导入所致（处数与 SQL 文本未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[49 leftJoin o_image] 该 join 与原路由移入 worker 的查询同源；worker 在 withJobTenant(role=user) 内执行。",
       "phase1b": {
         "disposition": "guard-auto",
-        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：payload 里的 assetIds 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。⚠ 该代码块原属路由、Task 7 起由 worker 在 `withJobTenant()`（role=user）里执行，守卫照常生效。"
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句",
+        "note": "主表与 join 目标的租户条件由守卫注入；assetIds 仅收窄范围，越权 id 会被过滤。该代码块已移入 withJobTenant(role=user) 的 worker handler。"
       }
     },
     "apps/api/src/jobs/handlers/promptBatch.ts": {
       "count": 1,
       "lines": [
-        124
+        97
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[124 leftJoin o_image] 被 join 表 o_image 策略=tenant。本文件是 Phase 1d Task 7 从 `routes/production/workbench/batchGeneratePrompt.ts` **整段搬进队列 handler** 的同一处 join（同一批引用 id，语义未变）；行号 123→124 是 Task 9 在文件头补了一行 `withVendorSlot` 导入所致（处数与 SQL 文本未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "worker 查询资产与原请求期查询同源，在 withJobTenant(role=user) 内运行。",
       "phase1b": {
         "disposition": "guard-auto",
-        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 where/andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：payload 里的 trackData[].info[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集。⚠ 该代码块原属路由、Task 7 起由 worker 在 `withJobTenant()`（role=user）里执行，守卫照常生效。"
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句",
+        "note": "租户表条件由守卫注入；该查询按当前 userId 收窄，平台组配置仅作为授权映射。"
       }
     },
     "apps/api/src/routes/assets/getAssetsApi.ts": {
@@ -102,6 +120,22 @@
         "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
       }
     },
+    "apps/api/src/routes/billing/admin/users.ts": {
+      "count": 1,
+      "lines": [
+        36
+      ],
+      "tables": [
+        "o_userGroup"
+      ],
+      "confirmed": true,
+      "note": "管理端先切换到目标用户租户上下文；membership 按目标 userId 读取，userGroup 为平台配置。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "billing-admin-groups.test.ts#limits user search to safe account fields and requires admin access",
+        "note": "租户表条件由守卫注入；该查询按当前 userId 收窄，平台组配置仅作为授权映射。"
+      }
+    },
     "apps/api/src/routes/cornerScape/getAllAssets.ts": {
       "count": 2,
       "lines": [
@@ -118,6 +152,24 @@
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
         "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+      }
+    },
+    "apps/api/src/routes/modelSelect/getModelList.ts": {
+      "count": 2,
+      "lines": [
+        20,
+        21
+      ],
+      "tables": [
+        "o_userGroupModelGroup",
+        "o_modelGroupItem"
+      ],
+      "confirmed": true,
+      "note": "普通用户授权列表通过 membership 连接平台组映射和模型项；管理员读取不受用户组过滤。",
+      "phase1b": {
+        "disposition": "guard-auto",
+        "evidence": "billing-admin-groups.test.ts#protects group management and target membership replacement",
+        "note": "租户表条件由守卫注入；该查询按当前 userId 收窄，平台组配置仅作为授权映射。"
       }
     },
     "apps/api/src/routes/novel/event/getEvent.ts": {
@@ -141,17 +193,17 @@
     "apps/api/src/routes/production/assets/batchGenerateAssetsImage.ts": {
       "count": 1,
       "lines": [
-        28
+        30
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[28 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：whereIn(o_assets.id, parentIds)，parentIds 是**服务端从本次请求内的 assetsDataArr 推导**的，而 assetsDataArr 用 whereIn(\"id\", assetIds)、assetIds 由前端传入且未校验归属。Phase 1b：在 .db(\"o_assets\") 上补 userId 条件，阻断「传入他人 assetId」的越权面。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[30 leftJoin o_image] join 是租户隔离查询的一部分；前端 assetId 仅用于范围收窄。",
       "phase1b": {
         "disposition": "guard-auto",
-        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets / o_shot / o_storyboard / o_segment / o_scriptAssets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 projectId/ids 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句",
+        "note": "o_assets 主表与 join 目标的租户约束由守卫注入；越权 assetId 查不到记录。"
       }
     },
     "apps/api/src/routes/production/assets/pollingImage.ts": {
@@ -209,13 +261,13 @@
     "apps/api/src/routes/production/workbench/batchGenerateVideo.ts": {
       "count": 1,
       "lines": [
-        85
+        91
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[85 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 后 .first()，item.id 由前端传入、无归属校验；且 join 在 where 之后书写，可读性差但与语义无关。Phase 1b：加 o_assets.userId 条件（o_image 同补），越权 id 直接落到 undefined 而不是返回路径。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[91 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id) 后 .first()，item.id 由前端传入、无归属校验；且 join 在 where 之后书写，可读性差但与语义无关。Phase 1b：加 o_assets.userId 条件（o_image 同补），越权 id 直接落到 undefined 而不是返回路径。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
@@ -225,13 +277,13 @@
     "apps/api/src/routes/production/workbench/generateVideo.ts": {
       "count": 1,
       "lines": [
-        75
+        81
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[75 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 batchGenerateVideo 同形（where(\"o_assets.id\", item.id).first()，id 前端传入未校验）。Phase 1b：补 o_assets.userId/o_image.userId；建议顺手把 join 提到 where 之前，统一成「先 join 再筛」的写法。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[81 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：与 batchGenerateVideo 同形（where(\"o_assets.id\", item.id).first()，id 前端传入未校验）。Phase 1b：补 o_assets.userId/o_image.userId；建议顺手把 join 提到 where 之前，统一成「先 join 再筛」的写法。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
@@ -241,17 +293,17 @@
     "apps/api/src/routes/production/workbench/generateVideoPrompt.ts": {
       "count": 1,
       "lines": [
-        61
+        62
       ],
       "tables": [
         "o_image"
       ],
       "confirmed": true,
-      "note": "[61 leftJoin o_image] 被 join 表 o_image 策略=tenant。现状：where(\"o_assets.id\", item.id).first()，id 前端传入未校验归属；行号 60→61 是 Task 9 在文件头补了一行 `withVendorSlot` 导入所致（处数与 SQL 文本未变）。Phase 1b：补 o_assets.userId 与 o_image.userId 条件。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[62 leftJoin o_image] join 查询使用客户端 trackId/items[].id 收窄结果。",
       "phase1b": {
         "disposition": "guard-auto",
-        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
-        "note": "主表与 join 到的租户表（o_image / o_assets 等）的租户条件**全部由守卫注入**：主表走 andWhere、join 目标进 ON 子句（leftJoin 语义保住）。本文件**没有手工 userId 条件**，也**不需要**：前端传来的 trackId/items[].id 只是「范围收窄」，越权 id 会被守卫过滤成空集（tenant-guard 的「按越权 id 查返回空」用例钉住）。"
+        "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句",
+        "note": "o_assets 主表与 join 目标均由租户守卫注入 userId 条件；越权 id 会被过滤。"
       }
     },
     "apps/api/src/routes/production/workbench/getAudioBindAssetsList.ts": {
@@ -289,10 +341,10 @@
     "apps/api/src/routes/production/workbench/getGenerateData.ts": {
       "count": 4,
       "lines": [
-        163,
-        164,
-        172,
-        173
+        167,
+        168,
+        176,
+        177
       ],
       "tables": [
         "o_assets",
@@ -301,7 +353,7 @@
         "o_image"
       ],
       "confirmed": true,
-      "note": "[163 leftJoin o_assets][164 leftJoin o_image] 被 join 表策略均为 tenant。现状：主表按 isSegments 切 o_shotAssets / o_assets2Storyboard，条件里 storyIds 由服务端从「该集所有镜 id」推导（v2 颗粒度改动的产物），上游 projectId 过滤来自本文件前段。[172 leftJoin o_assets][173 leftJoin o_image] 同两张表；现状：whereIn(\"o_assetsRole2Audio.assetsRoleId\", queryAudioIds)，queryAudioIds 是本请求内从上面结果推导的。Phase 1b：两段都要在主表与两张被 join 表上显式加 userId 条件——本文件是「分镜/素材」主干读路径，越权面最大，必须逐条断言而不是靠推导链。 【Task 8】现状口径见本条 `phase1b`。",
+      "note": "[167 leftJoin o_assets][168 leftJoin o_image] 被 join 表策略均为 tenant。现状：主表按 isSegments 切 o_shotAssets / o_assets2Storyboard，条件里 storyIds 由服务端从「该集所有镜 id」推导（v2 颗粒度改动的产物），上游 projectId 过滤来自本文件前段。[176 leftJoin o_assets][177 leftJoin o_image] 同两张表；现状：whereIn(\"o_assetsRole2Audio.assetsRoleId\", queryAudioIds)，queryAudioIds 是本请求内从上面结果推导的。Phase 1b：两段都要在主表与两张被 join 表上显式加 userId 条件——本文件是「分镜/素材」主干读路径，越权面最大，必须逐条断言而不是靠推导链。 【Task 8】现状口径见本条 `phase1b`。",
       "phase1b": {
         "disposition": "guard-auto",
         "evidence": "tenant-guard.test.ts#join 到租户表时条件进 ON 子句（leftJoin 语义保住：右侧缺行仍保留左行）",
@@ -358,6 +410,35 @@
     }
   },
   "raws": {
+    "apps/api/src/billing/reconcile.ts": {
+      "count": 1,
+      "lines": [
+        73
+      ],
+      "confirmed": true,
+      "note": "dbInteger 使用带绑定标识符的 CAST(?? AS CHAR) AS ?? 生成标量列投影；查询表仍由调用方显式传入。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "billing-reconcile.test.ts#reports account, reservation, usage-key, provider, and order drift deterministically without writes",
+        "note": "raw 仅将已选列转换为文本以保留 BIGINT 精度，不查询或拼接表名；该只读审计脚本通过 system-level Knex 运行，不写入业务表。"
+      }
+    },
+    "apps/api/src/billing/usage.ts": {
+      "count": 4,
+      "lines": [
+        197,
+        226,
+        357,
+        394
+      ],
+      "confirmed": true,
+      "note": "CAST 仅用于 jobId 标识的字符串化，trx.raw 只做 admittedCount + 1 原子更新；其余查询仍由带 userId/providerCallId 的 query builder 限定。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "billing-usage.test.ts#admits repeated and concurrent use of one providerCallId only once without a usage placeholder",
+        "note": "raw 表达式不指定表、不改变筛选范围；租户数据访问继续通过守卫 query builder 与 userId 条件。"
+      }
+    },
     "apps/api/src/db/connect.ts": {
       "count": 1,
       "lines": [
@@ -371,18 +452,44 @@
         "note": "启动期**驱动探活** `await db.raw(\"select 1\")`：不碰任何 `o_*` 表、不返回行数据、没有请求上下文 ⇒ 守卫的 raw 复核对「纯表达式/非租户表」放行（正确）。"
       }
     },
+    "apps/api/src/db/migrations/013_account_bootstrap.ts": {
+      "count": 1,
+      "lines": [
+        10
+      ],
+      "confirmed": true,
+      "note": "迁移启动期使用 Knex raw 常量 1 作 whereNotExists 探针；账户仅为缺失账户的已知用户创建，不处于请求上下文。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "accounts-migration.test.ts#up → down → up 全程可逆",
+        "note": "raw 只选择常量，不查询或暴露租户行；外层 o_user 与 o_account 通过用户 ID 关联。"
+      }
+    },
     "apps/api/src/db/tenant-guard.ts": {
       "count": 2,
       "lines": [
         557,
-        569
+        573
       ],
       "confirmed": true,
-      "note": "守卫**自身**的 raw 通道实现：先 `assertRawSafe(sql)`（提及租户表就抛、纯表达式放行）再转发给底层 `trx.raw` / `knex.raw` ⇒ 这两处就是隔离机制本身，不是绕过口。（Phase 1c Task 4 在本文件新增 `isPlatformWriteCtx()` 及其注释 ⇒ 行号下移；处数与 SQL 文本未变。）",
+      "note": "守卫自身的 raw 通道实现：先 assertRawSafe(sql)，再分别委派到底层 trx.raw / knex.raw；这是隔离机制本身，不是绕过口。",
       "phase1b": {
         "disposition": "guard-auto",
-        "evidence": "tenant-guard.test.ts#raw 的处置：提及租户表 → 抛；纯表达式（GROUP_CONCAT）→ 放行",
-        "note": "守卫**自身**的 raw 通道实现：先 `assertRawSafe(sql)`（提及租户表就抛、纯表达式放行）再转发给底层 `trx.raw` / `knex.raw` ⇒ 这两处就是隔离机制本身，不是绕过口。（Phase 1c Task 4 在本文件新增 `isPlatformWriteCtx()` 及其注释 ⇒ 行号下移；处数与 SQL 文本未变。）"
+        "evidence": "tenant-guard.test.ts#raw 的处置：提及租户表则抛，纯表达式放行",
+        "note": "两处均先执行 assertRawSafe(sql) 再委派给事务或根连接 raw；纯表达式可用，引用租户表会被拒绝。"
+      }
+    },
+    "apps/api/src/jobs/store.ts": {
+      "count": 1,
+      "lines": [
+        385
+      ],
+      "confirmed": true,
+      "note": "db.raw 仅作为 o_job.attempts 的原子加一表达式，队列状态读写仍由带 id/state/lease 条件的 query builder 完成。",
+      "phase1b": {
+        "disposition": "guard-auto+code",
+        "evidence": "job-store.test.ts#facade 接受守卫的 u.db 并真实跑通 enqueue+claim",
+        "note": "worker 对 o_job 执行控制面租约与状态转换；o_job 明确为 platform 表，不承载租户业务数据。此 raw 只生成 attempts + 1，不改变查询范围。"
       }
     },
     "apps/api/src/lib/dbOps.ts": {
@@ -415,6 +522,15 @@
     }
   },
   "systemDbUsers": {
+    "apps/api/src/routes/billing/admin/groups.ts": {
+      "confirmed": true,
+      "note": "删除用户组前仅用裸 systemDb 检查是否仍有成员，命中时返回冲突；端点 requireAdmin，布尔检查不返回其他租户用户信息。",
+      "phase1b": {
+        "disposition": "systemDb+admin",
+        "evidence": "billing-admin-groups.test.ts#protects group management and target membership replacement",
+        "note": "交叉租户只读存在性检查由 requireAdmin 保护，唯一结果是拒绝删除或继续，不返回 userId；集成测试覆盖有成员时 409。"
+      }
+    },
     "apps/api/src/routes/setting/dbConfig/clearData.ts": {
       "confirmed": true,
       "note": "实例级运维接口：整库/动态表名操作**没有租户语义** ⇒ 走唯一绕过口 systemDb，并由 **requireAdmin** 收权。**Phase 1c Task 4 已把三件套补齐**：① 默认关闭（平台键 `allowDbAdminOps`，不新增 `MIWO_*` 环境变量，见 `src/utils/opsSwitch.ts`）；② 每次成功/被拒都落 `o_auditLog`（`db.clear`）；③ `requireAdmin` 保留（未登录/普通用户先吃 401/403，不给「探测端点是否存在」的免费信息）。判别力：关闸时 **admin 也 403 且直读快照一行未动**；开闸后 admin 200。⚠ **【Phase 1c Task 5+6 已修】** 原来的「`sqlite_master`/PRAGMA 是 sqlite 方言」已收口：表清单/关开外键改走 `src/lib/dbOps.ts`（mysql → `information_schema.tables` + `SET FOREIGN_KEY_CHECKS`），重建表结构改走 `runMigrations`（`initDB` 已随 Task 5 删除）。⚠ mysql 分支**未实测**，只有 `toSQL()` 形态证明。",

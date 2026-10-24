@@ -14,7 +14,7 @@
       ghostClass="slotGhost"
       dragClass="slotDrag"
       :forceFallback="true"
-      :scroll="uploadBoxRef"
+      :scroll="uploadBoxRef!"
       :scrollSensitivity="80"
       :scrollSpeed="10"
       :filter="dragIgnoreSelector"

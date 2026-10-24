@@ -206,7 +206,7 @@ export function startWorkerLoop(deps: RunnerDeps): Runner {
         },
         log: (m: string) => log(`[job ${job.id}] ${m}`),
       };
-      const run = withJobTenant(job.userId, () => def.handle(ctx, payload));
+      const run = withJobTenant(job.userId, () => def.handle(ctx, payload), job.id);
       // 【偏离②】abort 立刻解除等待：不合作的 handler 不得把 worker 的槽位/停机流程卡住。
       const outcome = await Promise.race([
         run.then(

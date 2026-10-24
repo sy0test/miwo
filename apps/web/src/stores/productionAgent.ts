@@ -638,7 +638,7 @@ function createProductionAgentStore(projectId: string) {
   return storeMap.get(projectId)!;
 }
 
-export default function useProductionAgentStore() {
+export default function useProductionAgentStore(): ReturnType<ReturnType<typeof makeProductionAgentStore>> {
   const id = projectStore().project?.id;
   if (!id) throw new Error("No project selected");
   return createProductionAgentStore(id)();

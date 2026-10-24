@@ -35,7 +35,7 @@ import projectStore from "@/stores/project";
 const { project } = storeToRefs(projectStore());
 
 const eventDatas = ref([]);
-const activeKey = defineModel({
+const activeKey = defineModel<string>({
   default: "To3",
 });
 const novelIndexData = ref<

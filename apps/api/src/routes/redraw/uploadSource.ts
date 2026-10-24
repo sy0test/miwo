@@ -39,7 +39,7 @@ export default router.post(
   ),
   async (req, res) => {
     /** 一旦盘上落了文件就记在这里：中途出错要把它删掉，不能留半截 */
-    let written: { abs: string } | null = null;
+    let written: { abs: string; rel: string } | null = null;
     try {
       const projectId = Number((req.query as any).projectId);
       const fileName = String((req.query as any).name).trim();
@@ -74,7 +74,7 @@ export default router.post(
       const absPath = await u.oss.getAbsPath(relPath);
 
       const bytes = await u.oss.writeStream(relPath, req);
-      written = { abs: absPath };
+      written = { abs: absPath, rel: relPath };
       if (!bytes) return res.status(400).send(error("收到的内容是空的（body 里没有字节）"));
 
       // 真的能读吗。客户改个扩展名就能把任意文件传上来，这里一探就知道；
@@ -127,6 +127,7 @@ export default router.post(
         // （writeFile 会顺手建，这里走的是外部进程，没有那层）。
         await fs.promises.mkdir(path.dirname(coverAbs), { recursive: true });
         await extractCover(absPath, coverAbs);
+        await u.oss.writeFile(coverRel, await fs.promises.readFile(coverAbs));
         await u.db("o_script").where("id", scriptId).update({ coverPath: coverRel });
         coverOk = true;
       } catch (e: any) {
@@ -152,7 +153,7 @@ export default router.post(
       );
     } catch (e: any) {
       // 半截文件必须清掉：留着白占空间，而且这个路径已经写进 o_script 了（如果写到了那一步）
-      if (written) await fs.promises.unlink(written.abs).catch(() => {});
+      if (written) await u.oss.deleteFile(written.rel).catch(() => fs.promises.unlink(written!.abs).catch(() => {}));
       res.status(500).send(error(u.error(e).message));
     }
   },

@@ -1,4 +1,5 @@
 import dagre from "@dagrejs/dagre";
+import type { Graph } from "@dagrejs/graphlib";
 import { Position, useVueFlow, type Node, type Edge } from "@vue-flow/core";
 
 /**
@@ -8,7 +9,7 @@ import { Position, useVueFlow, type Node, type Edge } from "@vue-flow/core";
 export function useLayout(flowId?: string) {
   const { findNode, fitView } = useVueFlow(flowId ? { id: flowId } : undefined);
 
-  const graph = ref(new dagre.graphlib.Graph());
+  const graph = ref<Graph>(new dagre.graphlib.Graph());
   const previousDirection = ref("LR"); // 上一次布局方向
 
   function layout(nodes: Node<any, any, string>[], edges: Edge[], direction: "LR" | "TB", nodesep: number = 250, ranksep?: number) {

@@ -79,7 +79,8 @@ export interface MysqlTypes {
    *    实测毫秒值原样读回 number）。
    */
   ms(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
-  floatCol(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
+  /** Exact fixed-scale values: MySQL DECIMAL, SQLite TEXT to avoid REAL coercion. */
+  decimal(t: Knex.CreateTableBuilder, name: string, precision: number, scale: number): Knex.ColumnBuilder;
   boolCol(t: Knex.CreateTableBuilder, name: string): Knex.ColumnBuilder;
   /** 全库统一毫秒时间戳（现状如此，spec §5.3「时区」一行明确保持不变）。 */
   nowMs(): number;
@@ -113,8 +114,8 @@ export function types(knexOrClient: unknown): MysqlTypes {
       // `tests/migration-schema.test.ts`（sqlite 真跑：毫秒值原样读回）。
       return isMysql ? t.bigInteger(name).unsigned() : t.bigInteger(name);
     },
-    floatCol(t, name) {
-      return t.float(name);
+    decimal(t, name, precision, scale) {
+      return isMysql ? t.decimal(name, precision, scale) : t.text(name);
     },
     boolCol(t, name) {
       return t.tinyint(name);

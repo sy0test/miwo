@@ -8,7 +8,9 @@
     "node": ">=22.12 <25"
   },
   "scripts": {
-    "dev": "nodemon --inspect src/app.ts",
+    "dev": "node --env-file-if-exists=.env scripts/dev.cjs",
+    "dev:api": "nodemon --exec \"node --env-file-if-exists=.env --import=tsx --inspect=9229\" src/app.ts",
+    "dev:worker": "nodemon --exec \"node --env-file-if-exists=.env --import=tsx --inspect=9230\" src/worker.ts",
     "predev": "node --import=tsx scripts/generate-router.ts",
     "start": "cross-env NODE_ENV=prod node data/serve/app.js",
     "worker": "node --env-file-if-exists=.env --import=tsx src/worker.ts",

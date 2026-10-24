@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 import { o_novel } from "@/types/database";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { stripThink } from "@/utils/stripThink";
 export interface EventType {
@@ -34,7 +35,7 @@ class CleanNovel {
       } else {
         eventExtraction = promptData?.data ?? undefined;
       }
-      const resData = await u.Ai.Text("universalAi").invoke({
+      const resData = await u.Ai.Text("universalAi", currentAiBillingContext()).invoke({
         // ⚠ 不能 JSON.stringify。这里传的是**系统提示词正文**，而 initDB 已经 seed 了
         // type="eventExtraction" 的 promptData，所以 eventExtraction 分支必然命中；
         // JSON.stringify 会把整段提示词变成一个带 `\n` 转义的字符串字面量，

@@ -1,11 +1,16 @@
 import express from "express";
+import { randomUUID } from "node:crypto";
 import u from "@/utils";
 import { z } from "zod";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { updateTrackById } from "@/utils/shots/readShots";
-import { enqueueJob } from "@/jobs";
+import { enqueueJobInTransaction } from "@/jobs";
 import { currentUserId } from "@/jobs/context";
+import { submitBilledJob } from "@/billing/submit";
+import { resolveTextSubmissionEstimate } from "@/billing/estimate";
+import { estimateTextInvocationTokens, resolveAiModelName } from "@/utils/ai";
+import { buildPromptBatchInput, loadPromptBatchContext } from "@/jobs/handlers/promptBatch";
 const router = express.Router();
 
 /**
@@ -38,7 +43,7 @@ export default router.post(
           }),
         ),
       }),
-    ),
+    ).min(1),
     mode: z.string(),
     model: z.string(),
     concurrentCount: z.number().int().min(1).max(8).optional(), //并发数（spec §9.3：上限 8，超限在 validateFields 阶段 400）
@@ -50,19 +55,35 @@ export default router.post(
       const projectData = await u.db("o_project").select("id").where({ id: projectId }).first();
       if (!projectData) return res.status(400).send(error("项目不存在或无权访问"));
 
-      // 阶段2：v2 下"轨道"= 片段（o_segment），两表字段名一致 → 用助手逐个更新
-      await Promise.all(trackData.map((t: { trackId: number }) => updateTrackById(u.db, t.trackId, { state: "生成中" })));
-
       const userId = currentUserId(req);
       if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
-      const { jobId } = await enqueueJob({
-        type: "prompt.batch",
+      const estimateAt = new Date();
+      const context = await loadPromptBatchContext(projectId, model, mode);
+      const actualModelRef = await resolveAiModelName("universalAi");
+      const tokenQuantities = await Promise.all(trackData.map(async (track: { trackId: number; info: Array<{ id: number; sources: string }> }) =>
+        estimateTextInvocationTokens(await buildPromptBatchInput(context, track)),
+      ));
+      const totalTokenEstimate = tokenQuantities.reduce((total, quantity) => total + quantity, 0);
+      const estimateMicro = await resolveTextSubmissionEstimate(u.db as any, actualModelRef, totalTokenEstimate, trackData.length, estimateAt);
+      const submitted = await submitBilledJob({
+        db: u.db as any,
         userId,
-        // ⚠ 只存引用 id/sources；不带 base64（handler 按 id 现取）
-        payload: { projectId, model, mode, trackData },
+        estimateMicro,
+        idempotencyKey: `job:${userId}:prompt.batch:${randomUUID()}`,
+        createBusinessRows: async (trx) => {
+          await Promise.all(trackData.map((t: { trackId: number }) => updateTrackById(trx as any, t.trackId, { state: "生成中" })));
+          return { trackData };
+        },
+        resolveExistingBusiness: async (trx, existingJobId) => {
+          const existing = await trx("o_job").where({ id: existingJobId }).first();
+          return { trackData: (JSON.parse(existing.payload) as { trackData: typeof trackData }).trackData };
+        },
+        enqueue: async (trx, business) => enqueueJobInTransaction(trx, {
+          type: "prompt.batch", userId, payload: { projectId, model, mode, trackData: business.trackData },
+        }),
       });
 
-      res.status(200).send({ ...success("开始生成提示词"), jobIds: [jobId] });
+      res.status(200).send({ ...success("开始生成提示词"), jobIds: [submitted.jobId] });
     } catch (e) {
       res.status(400).send(error(u.error(e).message));
     }

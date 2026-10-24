@@ -1,4 +1,5 @@
 import express from "express";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
@@ -23,7 +24,7 @@ export default router.post(
 
     // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。响应形态不变（仍同步返回那条正则字符串）。
     const resText = await withVendorSlot("vendor:text", apiHolderId(), () =>
-      u.Ai.Text("universalAi").invoke({
+      u.Ai.Text("universalAi", currentAiBillingContext()).invoke({
       system: systemPrompt,
       messages: [
         {

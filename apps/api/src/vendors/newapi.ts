@@ -198,19 +198,21 @@ const vendor: VendorConfig = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** 中转站根地址：去掉尾斜杠与结尾的 /v1（后面我们自己拼 /v1、/images/...） */
-function apiRoot(): string {
-  const raw = (vendor.inputValues.baseUrl || "").trim().replace(/\/+$/, "");
+type RuntimeVendor = typeof vendor;
+
+function apiRoot(requestVendor: RuntimeVendor = vendor): string {
+  const raw = (requestVendor.inputValues.baseUrl || "").trim().replace(/\/+$/, "");
   return raw.replace(/\/v1$/i, "").replace(/\/+$/, "");
 }
 
-function apiKey(): string {
-  const key = (vendor.inputValues.apiKey || "").replace(/^Bearer\s+/i, "").trim();
+function apiKey(requestVendor: RuntimeVendor = vendor): string {
+  const key = (requestVendor.inputValues.apiKey || "").replace(/^Bearer\s+/i, "").trim();
   if (!key) throw new Error("缺少API密钥");
   return key;
 }
 
-function authHeaders(extra: Record<string, string> = {}) {
-  return Object.assign({ Authorization: `Bearer ${apiKey()}` }, extra);
+function authHeaders(extra: Record<string, string> = {}, requestVendor: RuntimeVendor = vendor) {
+  return Object.assign({ Authorization: `Bearer ${apiKey(requestVendor)}` }, extra);
 }
 
 function extractFirstImageFromMd(content: string) {
@@ -280,10 +282,10 @@ function translatePrompt(prompt: string, anchorByIndex: Record<number, string>):
 // 适配器函数
 // ============================================================
 
-const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKeyValue = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  return createOpenAI({ baseURL: vendor.inputValues.baseUrl, apiKey: apiKeyValue }).chat(model.modelName);
+const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3, requestVendor: RuntimeVendor = vendor) => {
+  if (!requestVendor.inputValues.apiKey) throw new Error("缺少API Key");
+  const apiKeyValue = requestVendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+  return createOpenAI({ baseURL: requestVendor.inputValues.baseUrl, apiKey: apiKeyValue }).chat(model.modelName);
 };
 
 /** 判断 OpenAI 排队或超时消息（可重试的临时性错误） */
@@ -294,15 +296,15 @@ function isRetryableError(text: string): boolean {
 /** 走 /images 系列端点的图片模型（其余旧图片模型仍走 /chat/completions 多模态） */
 const IMAGES_ENDPOINT_MODELS = new Set(["gpt-image-2", "gpt-image-2.5-sunburst"]);
 
-const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<string> => {
+const imageRequest = async (config: ImageConfig, model: ImageModel, requestVendor: RuntimeVendor = vendor): Promise<string> => {
   // TODO(临时排查): 确认参考图是否送达 vendor，验证通过后删除
   logger(
     `[newapi] imageRequest model=${model.modelName} refs=${config.referenceList?.length ?? 0} imageBase64=${(config as any).imageBase64?.length ?? 0}`,
   );
-  if (!vendor.inputValues.apiKey) throw new Error("缺少APIKey");
-  if (!vendor.inputValues.baseUrl) throw new Error("缺少请求地址");
-  const apiKeyValue = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  const baseUrl = vendor.inputValues.baseUrl.replace(/\/+$/, "");
+  if (!requestVendor.inputValues.apiKey) throw new Error("缺少APIKey");
+  if (!requestVendor.inputValues.baseUrl) throw new Error("缺少请求地址");
+  const apiKeyValue = requestVendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+  const baseUrl = requestVendor.inputValues.baseUrl.replace(/\/+$/, "");
 
   // 图片模型（gpt-image-2 / gpt-image-2.5-sunburst）：文生图走 /images/generations；带参考图必须走 /images/edits（multipart 文件）
   if (IMAGES_ENDPOINT_MODELS.has(model.modelName)) {
@@ -508,13 +510,13 @@ const QUERY_TIMEOUT_MS = 30000; // 单次轮询
 const DOWNLOAD_TIMEOUT_MS = 600000; // 产物下载：给足 10 分钟，但必须有上限
 
 /** 下载产物并转成 data URL：自己控制超时与日志（内核拿到 http 链接也会下载，但没有超时、没有日志） */
-async function downloadArtifact(url: string): Promise<string> {
+async function downloadArtifact(url: string, requestVendor: RuntimeVendor = vendor): Promise<string> {
   const started = Date.now();
   const response = await axios.get(url, {
     responseType: "arraybuffer",
     timeout: DOWNLOAD_TIMEOUT_MS,
     maxContentLength: Infinity,
-    headers: authHeaders(),
+    headers: authHeaders({}, requestVendor),
   });
   const mime = (response.headers && response.headers["content-type"]) || "video/mp4";
   const bytes = Buffer.from(response.data);
@@ -522,12 +524,12 @@ async function downloadArtifact(url: string): Promise<string> {
   return `data:${mime};base64,${bytes.toString("base64")}`;
 }
 
-const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API密钥");
-  if (!vendor.inputValues.baseUrl) throw new Error("缺少请求地址");
+const videoRequest = async (config: VideoConfig, model: VideoModel, requestVendor: RuntimeVendor = vendor): Promise<string> => {
+  if (!requestVendor.inputValues.apiKey) throw new Error("缺少API密钥");
+  if (!requestVendor.inputValues.baseUrl) throw new Error("缺少请求地址");
 
-  const root = apiRoot();
-  const headers = authHeaders({ "Content-Type": "application/json" });
+  const root = apiRoot(requestVendor);
+  const headers = authHeaders({ "Content-Type": "application/json" }, requestVendor);
 
   // 1) 素材与锚点
   const { content, anchorByIndex } = buildVideoContent(config);
@@ -580,7 +582,7 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
   if (!taskId && immediateUrl) {
     logger(`[newapi 视频] 同步返回结果地址: ${immediateUrl}`);
     try {
-      return await downloadArtifact(immediateUrl);
+      return await downloadArtifact(immediateUrl, requestVendor);
     } catch (e: any) {
       logger(`[newapi 视频] 产物下载失败（${e?.message || e}），退回原始 URL`);
       return immediateUrl;
@@ -608,7 +610,7 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
         if (url) {
           // 自己下载：有超时、有大小/耗时日志；失败则退回原始 URL 交上层处理
           try {
-            const dataUrl = await downloadArtifact(url);
+            const dataUrl = await downloadArtifact(url, requestVendor);
             logger(`[newapi 视频] 成功: id=${taskId} 轮询用时=${elapsed}s`);
             return { completed: true, data: dataUrl };
           } catch (e: any) {
@@ -617,7 +619,7 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
           }
         }
         // 响应里没有地址：去内容端点取字节（该端点通常需要令牌）
-        const fetched = await fetchVideoBytes(`${root}/v1/videos/${encodeURIComponent(taskId)}/content`);
+        const fetched = await fetchVideoBytes(`${root}/v1/videos/${encodeURIComponent(taskId)}/content`, requestVendor);
         logger(`[newapi 视频] 成功: id=${taskId} 轮询用时=${elapsed}s${fetched ? "（经 content 端点取回）" : ""}`);
         if (fetched) return { completed: true, data: fetched };
         return { completed: true, error: "任务成功但未取到视频地址或内容" };
@@ -638,10 +640,10 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
 };
 
 /** 取产物字节并转成 data URL（内容端点一般要带令牌，不能把裸链接交给下游下载） */
-async function fetchVideoBytes(url: string): Promise<string> {
+async function fetchVideoBytes(url: string, requestVendor: RuntimeVendor = vendor): Promise<string> {
   const started = Date.now();
   try {
-    const resp = await axios.get(url, { headers: authHeaders(), responseType: "arraybuffer", timeout: DOWNLOAD_TIMEOUT_MS, maxContentLength: Infinity });
+    const resp = await axios.get(url, { headers: authHeaders({}, requestVendor), responseType: "arraybuffer", timeout: DOWNLOAD_TIMEOUT_MS, maxContentLength: Infinity });
     const mime = resp.headers?.["content-type"] || "video/mp4";
     const bytes = Buffer.from(resp.data);
     logger(`[newapi 视频] content 端点取回产物: ${(bytes.length / 1048576).toFixed(2)} MB, 用时 ${((Date.now() - started) / 1000).toFixed(1)}s (${mime})`);

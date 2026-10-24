@@ -528,6 +528,51 @@ export function composeVideoDesc(shot: RedrawShot, assetIds: number[]): string {
 }
 
 /**
+ * 把**一个片段（段）**的全部镜聚合成一条 12 槽位 `videoDesc` —— v2 下 `o_segment.videoDesc` 用。
+ *
+ * 为什么不是"每镜一条"：转绘的展示与生成单位都是**片段**（用户口径：「我需要一整个分镜的描述，
+ * 而不是分镜段中每一个镜头的描述」）。所以段内多镜要**聚合**成一条：画面描述/动作/台词/音效
+ * 用「；」连起来，景别/运镜/情绪/光影去重后用「、」，时长取镜时长之和，资产名与资产 ID 取并集。
+ *
+ * **槽位顺序与 `composeVideoDesc` 完全一致**（12 个、缺一不可）—— 下游视频提示词技能按顿号位置解析。
+ */
+export function composeSegmentVideoDesc(shots: RedrawShot[], assetIds: number[]): string {
+  const uniq = (vals: string[], sep = "；"): string =>
+    [...new Set(vals.map((v) => String(v ?? "").trim()).filter(Boolean))].join(sep);
+  const num = (n: number): string => String(Math.round(n * 1000) / 1000);
+  const total = shots.reduce((sum, s) => sum + (Number.isFinite(s.durationSec) ? s.durationSec : 0), 0);
+  const assetNames = [...new Set(shots.flatMap((s) => s.assetNames))];
+  const dialogues = uniq(shots.map((s) => s.dialogue || "无台词"));
+  const fields = [
+    // 1 画面描述：段内每一镜的描述按顺序连起来（整段叙事）
+    uniq(shots.map((s) => s.desc)),
+    // 2 场名
+    shots[0]?.sceneName ?? "",
+    // 3 引用资产名
+    assetNames.join("/"),
+    // 4 时长：段内镜时长之和
+    `${num(total)}s`,
+    // 5 景别
+    uniq(shots.map((s) => s.shotSize), "、"),
+    // 6 运镜
+    uniq(shots.map((s) => s.camera), "、"),
+    // 7 角色动作
+    uniq(shots.map((s) => s.action)),
+    // 8 情绪
+    uniq(shots.map((s) => s.emotion), "、"),
+    // 9 光影氛围
+    uniq(shots.map((s) => s.lighting)),
+    // 10 台词
+    dialogues,
+    // 11 音效
+    uniq(shots.map((s) => s.sfx)),
+    // 12 引用资产 ID
+    assetIds.join("/"),
+  ];
+  return `（${fields.map(flattenField).join("、")}）`;
+}
+
+/**
  * 台词对照表：`原台词（原文，不译）` ↔ `转绘台词（目标语言 + 回译）` 逐镜并排。
  *
  * 为什么单独一份、不塞进 `videoDesc`、也不塞进分镜表：
@@ -572,25 +617,32 @@ export function renderDialogueMap(
 export type RedrawWriteResult = {
   /** 名称 → o_assets.id，已建的与复用的都在里面 */
   assetIds: Record<string, number>;
+  /** v2：片段 id（= 生成单位 = 工作台的一段） */
+  segmentIds: number[];
+  /** v2：镜 id（片段内 1..N） */
+  shotIds: number[];
+  /** 兼容旧字段名：v2 下等价于 `shotIds`（历史上是"一行一镜"） */
   storyboardIds: number[];
   /** 分镜引用了、但资产清单里没有的名字。这些引用被跳过，`videoDesc` 里也就少一个 id */
   missingAssetNames: string[];
 };
 
 /**
- * 把技能产出写进基座的表。
+ * 把技能产出写进 v2 结构化分镜（`o_segment` / `o_shot` / `o_shotAssets`）。
  *
- * 表形状照 `src/routes/production/storyboard/batchAddStoryboardInfo.ts` 抄：
- *   - 资产 → `o_assets`（描述列叫 `describe`，图片靠 `imageId` 外键，此处留空等批量生成）
- *   - 分镜 → `o_storyboard`（台词/景别/运镜等**没有独立列**，全在 `videoDesc` 里）
- *   - 关联 → 中间表 `o_assets2Storyboard`（不是 JSON 数组）
- *   - 分组 → `o_videoTrack` + `o_storyboard.trackId`
+ * 2026-10-21 决策：转绘**彻底迁 v2**（不再写 legacy 的 `o_storyboard` / `o_videoTrack`）。
+ * 映射：
+ *   - 场        → `o_segment.sceneIndex/sceneTitle`（按首次出现顺序 1..N）
+ *   - 片段      → `o_segment`（`segmentIndex` 全片连续 1..N；`duration` = 段内镜时长之和；
+ *                  `videoDesc` = **整段** 12 槽位聚合，见 `composeSegmentVideoDesc`）
+ *   - 镜        → `o_shot`（`shotIndex` **片段内** 1..N，与生产链同一不变式）
+ *   - 源片区间  → `o_segment.sourceRange`（合并后，切原片用）+ `o_shot.sourceRange`（展示/核对）
+ *   - 资产绑定  → `o_shotAssets`（片段级资产**派发到每一镜**，与 `persistShots` 口径一致）
  *
  * **db 由调用方注入**（传 `u.db` 即可），这样这个模块不依赖应用初始化，能单独测。
  *
  * 重跑语义：`o_assets` 按「projectId + name + type」复用，不会翻倍；
- * 但 `o_storyboard` 是**先删后建**，必须显式传 `replace: true` ——
- * 否则一旦在界面上改过分镜，重跑分析会把改动无声抹掉。
+ * 分镜是**先删后建**，必须显式传 `replace: true` —— 否则一旦在界面上改过，重跑会无声抹掉。
  */
 export async function writeRedraw(
   db: any,
@@ -610,12 +662,16 @@ export async function writeRedraw(
 ): Promise<RedrawWriteResult> {
   const { projectId, scriptId, sheet, board, replace = false, skipAssets = false } = opts;
 
-  const existing = await db("o_storyboard").where("scriptId", scriptId).first();
-  if (existing && !replace) {
+  // 已有数据判定：v2 的自动片段（manual=0）或迁移前的 legacy 分镜，任一条都算"已有"
+  const existingSeg = await db("o_segment").where("scriptId", scriptId).andWhere("manual", 0).first();
+  const existingLegacy = await db("o_storyboard").where("scriptId", scriptId).first();
+  if ((existingSeg || existingLegacy) && !replace) {
     throw new Error(`scriptId=${scriptId} 下已有分镜。重跑会覆盖（含界面上改过的内容），需显式传 replace: true`);
   }
 
-  // ---- 1. 资产：同名同类型复用 ----
+  const now = Date.now();
+
+  // ---- 1. 资产：同名同类型复用（与 legacy 实现一致）----
   const assetIds: Record<string, number> = {};
   // skipAssets 时喂空表进去 —— 比在外面包一层 if 少改 30 行缩进，行为一样
   for (const a of skipAssets ? [] : sheet.assets) {
@@ -650,9 +706,18 @@ export async function writeRedraw(
     if (!linked) await db("o_scriptAssets").insert({ scriptId, assetId: id });
   }
 
-  // ---- 2. 分镜：先清旧的，再逐镜写 ----
-  if (existing) {
-    const oldIds = (await db("o_storyboard").where("scriptId", scriptId).select("id")).map((r: any) => r.id);
+  // ---- 2. 清旧数据：v2 自动片段优先；同时清掉迁移前可能残留的 legacy 行 ----
+  const oldSegIds: number[] = (await db("o_segment").where("scriptId", scriptId).andWhere("manual", 0).select("id")).map(
+    (r: any) => Number(r.id),
+  );
+  if (oldSegIds.length) {
+    const oldShotIds: number[] = (await db("o_shot").whereIn("segmentId", oldSegIds).select("id")).map((r: any) => Number(r.id));
+    if (oldShotIds.length) await db("o_shotAssets").whereIn("shotId", oldShotIds).del();
+    await db("o_shot").whereIn("segmentId", oldSegIds).del();
+    await db("o_segment").whereIn("id", oldSegIds).del();
+  }
+  if (existingLegacy) {
+    const oldIds = (await db("o_storyboard").where("scriptId", scriptId).select("id")).map((r: any) => Number(r.id));
     if (oldIds.length) {
       await db("o_assets2Storyboard").whereIn("storyboardId", oldIds).del();
       await db("o_storyboard").whereIn("id", oldIds).del();
@@ -660,61 +725,105 @@ export async function writeRedraw(
     await db("o_videoTrack").where("scriptId", scriptId).del();
   }
 
+  // ---- 3. 按片段分组（board.shots 已按全片顺序）----
+  // segmentId 由解析器按「每见一个 ### 片段标题 +1」给，与名字无关（重名片段不会合并）；
+  // 这里保持首次出现顺序 → segmentIndex 全片连续 1..N。
+  const segGroups: RedrawShot[][] = [];
+  const segIndexById = new Map<number, number>();
+  for (const shot of board.shots) {
+    let i = segIndexById.get(shot.segmentId);
+    if (i === undefined) {
+      i = segGroups.length;
+      segIndexById.set(shot.segmentId, i);
+      segGroups.push([]);
+    }
+    segGroups[i].push(shot);
+  }
+  // 场号：按场名首次出现顺序 1..N（同一场的多个片段共用一个场号）
+  const sceneIndexByName = new Map<string, number>();
+  for (const shots of segGroups) {
+    const name = shots[0]?.sceneName ?? "";
+    if (!sceneIndexByName.has(name)) sceneIndexByName.set(name, sceneIndexByName.size + 1);
+  }
+
   const missing = new Set<string>();
-  const storyboardIds: number[] = [];
-  for (const s of board.shots) {
-    const ids: number[] = [];
-    for (const n of s.assetNames) {
+  const segmentIds: number[] = [];
+  const shotIds: number[] = [];
+
+  for (let gi = 0; gi < segGroups.length; gi++) {
+    const segShots = segGroups[gi];
+    const head = segShots[0];
+    const segmentIndex = gi + 1;
+    const sceneIndex = sceneIndexByName.get(head.sceneName) ?? 1;
+
+    // 片段级资产：段内各镜 assetNames 的并集 → 查 id；派发到该段每一镜
+    const segAssetNames = [...new Set(segShots.flatMap((s) => s.assetNames))];
+    const segAssetIds: number[] = [];
+    for (const n of segAssetNames) {
       const id = assetIds[n];
       // skipAssets 下 assetIds 本来就是空的 —— 「缺资产」是这一步的本意，不是要报的错
       if (id === undefined) {
         if (!skipAssets) missing.add(n);
-      } else ids.push(id);
+      } else if (!segAssetIds.includes(id)) {
+        segAssetIds.push(id);
+      }
     }
-    const [id] = await db("o_storyboard").insert({
-      prompt: "", // 分镜图提示词由工作台那套生成，这里不预设
-      duration: String(s.durationSec), // 基座这列是 text
-      state: "未生成",
-      scriptId,
+
+    // 源片区间：段内全部镜的区间按顺序摊平，存成与解析产物同形的 `起-止 + 起-止`
+    const flatRanges = segShots.flatMap((s) => s.ranges);
+    const sourceRange = flatRanges.map(([a, b]) => `${a.toFixed(3)}-${b.toFixed(3)}`).join(" + ");
+    const duration = segShots.reduce((sum, s) => sum + (Number.isFinite(s.durationSec) ? s.durationSec : 0), 0);
+
+    const [segmentId] = await db("o_segment").insert({
       projectId,
-      // 一个片段 = 一条提示词 = 一次生成，所以按「场/片段」分组，而不是按场
-      track: `${s.sceneName}/${s.segmentLabel}`,
-      videoDesc: composeVideoDesc(s, ids),
-      // 第 7 步切原片参考片段要用它。单独一列是因为 videoDesc 那 12 个字段
-      // 是按顿号位置解析的，多塞一个会让下游整体错位（详见 fixDB 里同名的注释）。
-      sourceRange: s.rawRange,
-      // 原台词单独一列，只给「台词对照表」用 —— 不进 videoDesc，理由同上。
-      originDialogue: s.originDialogue || null,
-      shouldGenerateImage: 1,
-      createTime: Date.now(),
-      index: s.index,
+      scriptId,
+      segmentIndex,
+      sceneIndex,
+      sceneTitle: head.sceneName,
+      duration,
+      videoDesc: composeSegmentVideoDesc(segShots, segAssetIds),
+      state: "未生成",
+      // 0 = 由分镜表生成（重跑整体替换）；1 = 用户手工新增（工作台 addTrack，重跑保留）
+      manual: 0,
+      sourceRange,
+      createTime: now,
+      updateTime: now,
     });
-    if (ids.length) {
-      await db("o_assets2Storyboard").insert(ids.map((assetId) => ({ assetId, storyboardId: id })));
+    segmentIds.push(Number(segmentId));
+
+    for (let si = 0; si < segShots.length; si++) {
+      const s = segShots[si];
+      const [shotId] = await db("o_shot").insert({
+        projectId,
+        scriptId,
+        sceneIndex,
+        sceneTitle: head.sceneName,
+        segmentIndex,
+        segmentId,
+        // 与生产链同一不变式：镜序是**片段内** 1..N（不是表里的全片序号）
+        shotIndex: si + 1,
+        duration: Number.isFinite(s.durationSec) ? s.durationSec : 0,
+        shotSize: s.shotSize || "",
+        camera: s.camera || "",
+        light: s.lighting || "",
+        action: s.action || "",
+        dialogue: s.dialogue || "",
+        sfx: s.sfx || "",
+        sourceRange: s.rawRange || "",
+        revision: 1,
+        createTime: now,
+        updateTime: now,
+      });
+      shotIds.push(Number(shotId));
+
+      // 片段级资产派发到每一镜（与 persistShots 的"片段级派发"口径一致）
+      if (segAssetIds.length) {
+        await db("o_shotAssets").insert(segAssetIds.map((assetId) => ({ shotId, assetId })));
+      }
     }
-    storyboardIds.push(id);
   }
 
-  // ---- 3. 按 track 分配 trackId（照 batchAddStoryboardInfo.ts:52-91）----
-  // 基座用 Date.now() 当 o_videoTrack.id，一个循环里连建多个会同毫秒撞 id；
-  // 转绘一次就是十几个片段，必须自己错开。
-  let seq = 0;
-  for (const track of [...new Set(board.shots.map((s) => `${s.sceneName}/${s.segmentLabel}`))]) {
-    const rows = await db("o_storyboard").where({ scriptId, track });
-    const duration = rows.reduce((n: number, r: any) => n + Number(r.duration), 0);
-    const hit = await db("o_storyboard").where({ scriptId, track }).whereNotNull("trackId").first();
-    let trackId: number;
-    if (hit?.trackId) {
-      trackId = hit.trackId;
-      await db("o_videoTrack").where("id", trackId).update({ duration });
-    } else {
-      trackId = Date.now() + seq++;
-      await db("o_videoTrack").insert({ id: trackId, scriptId, projectId, duration });
-    }
-    await db("o_storyboard").where({ scriptId, track }).update({ trackId });
-  }
-
-  return { assetIds, storyboardIds, missingAssetNames: [...missing] };
+  return { assetIds, segmentIds, shotIds, storyboardIds: shotIds, missingAssetNames: [...missing] };
 }
 
 // ============================================================

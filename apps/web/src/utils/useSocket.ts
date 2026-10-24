@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import { io, Socket } from "socket.io-client";
+import type { DefaultEventsMap } from "@socket.io/component-emitter";
 import userStore from "@/stores/user";
 
 export interface SocketEventMap {
@@ -21,7 +22,7 @@ export interface SocketEventMap {
 // ⚠ 默认 url 不写死 localhost：本机当服务器、用户机用浏览器访问时 localhost 指用户自己的机器。
 // 不传就用同源（页面由后端吐出，同源即后端）。
 export function useSocket<T extends SocketEventMap = SocketEventMap>(url?: string, authOptions?: Record<string, any>) {
-  let socket: Socket | null = null;
+  let socket: Socket<DefaultEventsMap, DefaultEventsMap> | null = null;
   const connected = ref(false);
 
   const connect = () => {

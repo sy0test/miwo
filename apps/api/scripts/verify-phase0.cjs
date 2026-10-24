@@ -7,7 +7,7 @@
  *      （这是"旧仓库零改动"的**唯一可靠证明**；脏文件数会被 gitignore/临时文件干扰，不能用）
  *   B. 构件存在 —— 新仓库的关键路径/文件齐全
  *   C. 应用能起 —— 用 MIWO_* 环境变量在**空闲端口**独立启动（独立数据目录），轮询就绪
- *   D. 鉴权与只读接口 —— configHealth?summary=1 必须 200 且是 JSON；无 token 访问受保护接口必须 401
+ *   D. 鉴权与只读接口 —— configHealth?summary=1 必须 200 且是 JSON；无 token 访问受保护接口必须 401，访问 /oss 与 /assets 必须 403
  *   E. 干净收尾 —— 服务输出里不得有未处理的 Promise 拒绝；自己起的进程必须杀掉、端口必须释放
  *
  * 用法：node apps/api/scripts/verify-phase0.cjs
@@ -75,11 +75,12 @@ const TASK1_SETTING_KEYS = ["registrationMode", "allowDbAdminOps"];
  *   同时"没有 tokenKey"这条判据原样保留（tokenKey 由 005 从库里删掉、改由 MIWO_JWT_SECRET 提供）。
  */
 function expectedMigrationNames() {
-  const src = fs.readFileSync(path.join(API_ROOT, "src", "db", "migrations", "index.ts"), "utf8");
+  const migrationsDir = path.join(API_ROOT, "src", "db", "migrations");
+  const src = fs.readFileSync(path.join(migrationsDir, "index.ts"), "utf8");
   const imported = new Map();
   for (const line of src.split(/\r?\n/)) {
     const m = /^import\s+(\w+)\s+from\s+["']@\/db\/migrations\/(\d{3}_[A-Za-z0-9_]+)["']/.exec(line.trim());
-    if (m) imported.set(m[1], m[2]);
+    if (m) imported.set(m[1], path.join(migrationsDir, `${m[2]}.ts`));
   }
   const arr = /export\s+const\s+MIGRATIONS\s*:\s*Migration\[\]\s*=\s*\[([\s\S]*?)\n\];/.exec(src);
   if (!arr) return [];
@@ -88,7 +89,12 @@ function expectedMigrationNames() {
     .split(",")
     .map((x) => x.trim())
     .filter((x) => /^\w+$/.test(x))
-    .map((x) => imported.get(x))
+    .map((alias) => {
+      const migrationFile = imported.get(alias);
+      if (!migrationFile || !fs.existsSync(migrationFile)) return null;
+      const migrationSource = fs.readFileSync(migrationFile, "utf8");
+      return /\bname\s*:\s*["']([^"']+)["']/.exec(migrationSource)?.[1] ?? null;
+    })
     .filter(Boolean);
 }
 
@@ -134,7 +140,9 @@ function delay(ms) {
 
 // ---------- A. 旧仓库冻结 ----------
 // 基线由 Phase 0 开始前的 tools/record-old-baseline.cjs 记录。这里只读、不写。
-const BASELINE = path.join(MIWO_ROOT, "tools", ".phase0-old-baseline.json");
+const BASELINE = process.env.MIWO_PHASE0_BASELINE
+  ? path.resolve(process.env.MIWO_PHASE0_BASELINE)
+  : path.join(MIWO_ROOT, "tools", ".phase0-old-baseline.json");
 const OLD_KEYS = [
   path.join(OLD_UPSTREAM, "src", "app.ts"),
   path.join(OLD_UPSTREAM, "src", "utils", "db.ts"),
@@ -637,6 +645,12 @@ async function checkBootAndApi() {
       // 未带 token 的受保护接口必须 401（鉴权仍在）
       const guarded = await get(`http://127.0.0.1:${port}/api/project/getProject`);
       record(G_AUTH, "无 token 访问 /api/project/getProject 返回 401", guarded.status === 401, `实际 ${guarded.status}`);
+
+      // mediaAuthGuard 在查找对象前拒绝匿名访问，因此这里故意使用不存在的对象 key。
+      for (const prefix of ["/oss", "/assets"]) {
+        const media = await get(`http://127.0.0.1:${port}${prefix}/__verify-phase0-nonexistent__`);
+        record(G_AUTH, `匿名 GET ${prefix}/不存在对象返回 403`, media.status === 403, `实际 ${media.status}`);
+      }
     }
   } finally {
     // ---- E. 必须杀掉自己起的进程，不能留占端口的孤儿 ----

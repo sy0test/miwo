@@ -7,6 +7,7 @@
     "preview": "vite preview",
     "build": "vue-tsc --build --force && vite build",
     "build-only": "vite build",
+    "test": "node --experimental-strip-types --test tests/billing.test.mjs tests/settings-menu.test.mjs tests/user-management.test.mjs tests/image-tools-media-url.test.mjs",
     "type-check": "vue-tsc --build --force",
     "license": "node scripts/license.ts",
     "i18n:check": "node scripts/findUnusedI18n.ts"
@@ -47,9 +48,12 @@
     "vue-router": "^4.4.5"
   },
   "devDependencies": {
+    "@dagrejs/graphlib": "^4.0.5",
+    "@socket.io/component-emitter": "^3.1.2",
     "@tdesign-vue-next/auto-import-resolver": "^0.1.6",
     "@tsconfig/node22": "^22.0.0",
     "@types/license-checker": "^25.0.6",
+    "@types/lodash": "^4.17.26",
     "@types/node": "^22.9.0",
     "@types/splitpanes": "^2.2.6",
     "@types/uuid": "^11.0.0",

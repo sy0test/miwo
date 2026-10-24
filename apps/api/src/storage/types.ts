@@ -1,16 +1,12 @@
 /**
  * 媒体存储接口（spec §6.5 第 4 项；Phase 1e Task 01）。
  *
- * ── 本文件的口径为什么与计划正文不同（R1：审计优先，已满足的不得重做）──
- * 计划写于 Phase 1b/1c/1d **之前**，它设想的签名是"`MediaRef` 的 `root` 也参与规范串、
- * TTL 2 小时、sig 是 64 位 hex"。**Phase 1c 已经交付了另一套**（`src/utils/mediaSign.ts`）：
- *   · 规范串 = **只有归一化后的路径**（`${relPath}|${exp}`），`root` 不参与；
- *   · TTL = **24h**（`MEDIA_TTL_SEC`），sig = **base64url 截断 43 字符**；
- *   · `oss.getFileUrl()` 自己就把 `?exp=&sig=` 拼好了，`mediaAuthGuard` 按同一口径验签。
- * ⇒ 本接口**只做 Phase 2 `S3Storage` 的替换接缝**，不改 1c 的签名口径：
- *   把 `root` 纳入签名会**让所有已发出的链接立即失效**，并直接弄红 `verify:phase1c-media`（34/34）。
- *   这是"接口先行、口径沿用现状"，不是"少做了一步"。
- * ⚠ Phase 2 加 `S3Storage` 时**不得改本接口的形状**（spec §6.5 第 4 项）。
+ * ── Signed URL contract ──
+ * URLs retain the existing 24h TTL and 43-character base64url HMAC shape, while the `MediaRef.root`
+ * (`oss` or `assets`) is now part of the signed payload. This prevents a signature for one mounted
+ * storage namespace from authorizing a same-named file in the other namespace. Path-only URLs issued
+ * before this contract change are rejected; their maximum remaining lifetime is 24 hours.
+ * ⚠ Phase 2 `S3Storage` keeps this interface shape (spec §6.5 item 4).
  */
 import type { Readable } from "node:stream";
 
@@ -38,15 +34,15 @@ export type MediaRef = { root: MediaRoot; path: string; qs?: Record<string, stri
 export interface MediaStorage {
   readonly rootDir: string;
   getFileUrl(p: string, prefix?: string): Promise<string>;
-  getAbsPath(p: string): Promise<string>;
-  getFile(p: string): Promise<Buffer>;
-  writeFile(p: string, data: Buffer | string): Promise<void>;
-  writeStream(p: string, source: Readable): Promise<number>;
-  deleteFile(p: string): Promise<void>;
-  deleteDirectory(p: string): Promise<void>;
-  fileExists(p: string): Promise<boolean>;
-  getImageBase64(p: string): Promise<string>;
-  getSmallImageUrl(p: string): Promise<string>;
+  getAbsPath(p: string, root?: MediaRoot): Promise<string>;
+  getFile(p: string, root?: MediaRoot): Promise<Buffer>;
+  writeFile(p: string, data: Buffer | string, root?: MediaRoot): Promise<void>;
+  writeStream(p: string, source: Readable, root?: MediaRoot): Promise<number>;
+  deleteFile(p: string, root?: MediaRoot): Promise<void>;
+  deleteDirectory(p: string, root?: MediaRoot): Promise<void>;
+  fileExists(p: string, root?: MediaRoot): Promise<boolean>;
+  getImageBase64(p: string, root?: MediaRoot): Promise<string>;
+  getSmallImageUrl(p: string, root?: MediaRoot): Promise<string>;
   /** 产出一条**已签名**的媒体 URL（`?exp=&sig=`）。 */
   signRef(ref: MediaRef): Promise<string>;
   /** 校验一条媒体引用的签名参数（与 `mediaAuthGuard` 同一套判据）。 */

@@ -3,8 +3,10 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { enqueueJob } from "@/jobs";
+import { enqueueJobInTransaction } from "@/jobs";
 import { currentUserId } from "@/jobs/context";
+import { submitBilledJob } from "@/billing/submit";
+import { resolveSubmissionEstimate } from "@/billing/estimate";
 
 const router = express.Router();
 
@@ -80,40 +82,39 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
   const project = await u.db("o_project").where("id", projectId).select("artStyle", "type", "intro").first();
   if (!project) return res.status(500).send(error("项目为空"));
 
-  // 2. 逐条插入 o_image 占位记录，收集 imageId 列表
-  const totalNovelId: number[] = [];
-  for (const item of items) {
-    const [imageId] = await u.db("o_image").insert({
-      type: item.type,
-      state: "生成中",
-      assetsId: item.id,
-    });
-    await u.db("o_assets").where("id", item.id).update({ imageId });
-    totalNovelId.push(imageId);
-  }
-
-  // 3. Phase 1d：入队（不再进程内 pLimit 后台跑 —— `concurrentCount` 可被请求方传 1000，
-  //    并发改由队列的全局/按用户上限与 Task 9 的 vendor 池统一控制）。
-  //    ⚠ 响应形状不变（`{ total }`）；jobIds 走新顶层字段。
+  // 2. Create placeholder rows, enqueue, and freeze in one transaction.
   const userId = currentUserId(req);
   if (userId === null) return res.status(401).send(error("未登录或会话已失效"));
-  const { jobId } = await enqueueJob({
-    type: "image.assets.batch",
+  const estimateMicro = await resolveSubmissionEstimate(u.db as any, model, "image", items.length);
+  const submitted = await submitBilledJob({
+    db: u.db as any,
     userId,
-    payload: {
-      projectId,
-      model,
-      resolution,
-      // ⚠ 只存引用 id；base64 由 handler 现取（payload 上限 64 KB）
-      items: items.map((item: { id: number; type: string; name: string; prompt: string }, index: number) => ({
-        assetsId: item.id,
-        imageId: totalNovelId[index],
-        type: item.type,
-        name: item.name,
-        prompt: item.prompt,
-      })),
+    estimateMicro,
+    idempotencyKey: `job:${userId}:image.assets.batch:${projectId}:${items.map((item: { id: number }) => item.id).join(",")}`,
+    createBusinessRows: async (trx) => {
+      const imageIds: number[] = [];
+      for (const item of items) {
+        const [imageId] = await trx("o_image").insert({ type: item.type, state: "生成中", assetsId: item.id });
+        await trx("o_assets").where("id", item.id).update({ imageId });
+        imageIds.push(Number(imageId));
+      }
+      return { imageIds };
     },
+    resolveExistingBusiness: async (trx, existingJobId) => {
+      const existing = await trx("o_job").where({ id: existingJobId }).first();
+      const payload = JSON.parse(existing.payload) as { items: Array<{ imageId: number }> };
+      return { imageIds: payload.items.map((item) => item.imageId) };
+    },
+    enqueue: async (trx, business) => enqueueJobInTransaction(trx, {
+      type: "image.assets.batch", userId,
+      payload: {
+        projectId, model, resolution,
+        items: items.map((item: { id: number; type: string; name: string; prompt: string }, index: number) => ({
+          assetsId: item.id, imageId: business.imageIds[index], type: item.type, name: item.name, prompt: item.prompt,
+        })),
+      },
+    }),
   });
 
-  return res.status(200).send({ ...success({ total: items.length }), jobIds: [jobId] });
+  return res.status(200).send({ ...success({ total: items.length }), jobIds: [submitted.jobId] });
 });

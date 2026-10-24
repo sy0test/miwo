@@ -19,8 +19,8 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-/** 允许落在 data/web 里的扩展名（含清单文件本身）。 */
-const ALLOWED_EXT = new Set([".html", ".js", ".css", ".ico", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".woff", ".woff2", ".map", ".json", ".txt"]);
+/** Build outputs allowed in data/web; the root manifest is handled separately. */
+const ALLOWED_EXT = new Set([".js", ".css", ".html", ".ico", ".png", ".svg", ".woff2"]);
 /** 明确拒绝的"绝对不是构建产物"的文件名。 */
 const FORBIDDEN_NAME = /^(db2\.sqlite|.*\.sqlite|.*\.ts|.*\.env|.*\.pem|.*\.key)$/i;
 const MANIFEST = "MIWO-WEB.json";
@@ -39,6 +39,24 @@ function walk(dir, base = dir, out = []) {
   return out;
 }
 
+function resolveWithExistingSymlinks(target) {
+  const resolved = path.resolve(target);
+  let existing = resolved;
+  const missing = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return resolved;
+    missing.unshift(path.basename(existing));
+    existing = parent;
+  }
+  return path.join(fs.realpathSync.native(existing), ...missing);
+}
+
+function pathsOverlap(a, b) {
+  const relative = path.relative(a, b);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
 function validateSource(src) {
   if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) die(`源目录不存在：${src}`);
   const html = path.join(src, "index.html");
@@ -49,6 +67,7 @@ function validateSource(src) {
   if (htmlSize < 1024) die(`index.html 只有 ${htmlSize} 字节，看起来不是构建产物（viteSingleFile 下单文件应远大于此）`);
   const files = walk(src);
   for (const f of files) {
+    if (f.rel === MANIFEST) continue;
     const ext = path.extname(f.rel).toLowerCase();
     if (!ALLOWED_EXT.has(ext)) die(`源目录里有不在白名单内的文件：${f.rel}（扩展名 ${ext}）`);
   }
@@ -57,14 +76,22 @@ function validateSource(src) {
 
 function sync(src, out) {
   const { files } = validateSource(src);
-  fs.mkdirSync(out, { recursive: true });
-  // 先校验目标目录：它可能残留上一版产物之外的东西（那个目录匿名可读，必须先拒）
-  for (const f of walk(out)) {
-    if (f.rel === MANIFEST) continue;
-    const ext = path.extname(f.rel).toLowerCase();
-    if (!ALLOWED_EXT.has(ext)) die(`目标目录里有非构建产物：${f.rel}`);
-    if (FORBIDDEN_NAME.test(path.basename(f.rel))) die(`目标目录里有禁止文件：${f.rel}`);
+  const resolvedSrc = resolveWithExistingSymlinks(src);
+  const resolvedOut = resolveWithExistingSymlinks(out);
+  if (pathsOverlap(resolvedSrc, resolvedOut) || pathsOverlap(resolvedOut, resolvedSrc)) {
+    die(`源目录与目标目录不能重叠：${resolvedSrc} / ${resolvedOut}`);
   }
+  // Validate an existing destination before creating or writing anything.
+  if (fs.existsSync(out)) {
+    if (!fs.statSync(out).isDirectory()) die(`目标路径不是目录：${out}`);
+    for (const f of walk(out)) {
+      if (f.rel === MANIFEST) continue;
+      const ext = path.extname(f.rel).toLowerCase();
+      if (!ALLOWED_EXT.has(ext)) die(`目标目录里有非构建产物：${f.rel}`);
+      if (FORBIDDEN_NAME.test(path.basename(f.rel))) die(`目标目录里有禁止文件：${f.rel}`);
+    }
+  }
+  fs.mkdirSync(out, { recursive: true });
   let bytes = 0;
   for (const f of files) {
     const from = path.join(src, f.rel);
@@ -86,31 +113,49 @@ function sync(src, out) {
   return manifest;
 }
 
-// ---------- --self-test：在临时目录里自证判别力（不碰仓库） ----------
+// ---------- --self-test：在工作树内的临时目录里自证判别力 ----------
 function selfTest() {
-  const base = path.join(require("os").tmpdir(), `miwo-sync-web-selftest-${process.pid}`);
+  const testRoot = path.join(__dirname, "..", ".test-tmp");
+  fs.mkdirSync(testRoot, { recursive: true });
+  const base = fs.mkdtempSync(path.join(testRoot, "sync-web-selftest-"));
   const src = path.join(base, "dist");
   const out = path.join(base, "web");
   const good = path.join(base, "not-dist");
-  fs.rmSync(base, { recursive: true, force: true });
   fs.mkdirSync(src, { recursive: true });
   // 故意造一个"单文件 + 一个 worker chunk"的 dist（与实测产物同形）
   fs.writeFileSync(path.join(src, "index.html"), "<html>" + "x".repeat(4096) + "</html>", "utf8");
   fs.writeFileSync(path.join(src, "ts.worker-abc.js"), "console.log(1)", "utf8");
+  for (const name of ["app.css", "favicon.ico", "icon.png", "logo.svg", "font.woff2"]) {
+    fs.writeFileSync(path.join(src, name), "asset", "utf8");
+  }
+  fs.writeFileSync(path.join(src, MANIFEST), "{}\n", "utf8");
   // 反例 1：没有 index.html
   fs.mkdirSync(good, { recursive: true });
   fs.writeFileSync(path.join(good, "index.html.bak"), "x", "utf8");
 
   const failures = [];
-  const m = sync(src, out);
   const ok = (cond, msg) => {
     if (!cond) failures.push(msg);
   };
-
+  const snapshot = (dir) => JSON.stringify(walk(dir).map((f) => [f.rel, fs.readFileSync(path.join(dir, f.rel)).toString("base64")]));
+  const cli = (source, output) => spawnSync(process.execPath, [__filename, "--src", source, "--out", output], { encoding: "utf8" });
+  const checkOverlap = (label, source, output, absentOutput = false) => {
+    const sourceBefore = snapshot(source);
+    const outputBefore = absentOutput ? null : snapshot(output);
+    const result = cli(source, output);
+    ok(result.status === 1, `${label}: overlap must exit 1, got ${result.status}`);
+    ok(snapshot(source) === sourceBefore, `${label}: source must remain byte-identical`);
+    if (absentOutput) ok(!fs.existsSync(output), `${label}: absent destination must remain absent`);
+    else ok(snapshot(output) === outputBefore, `${label}: destination must remain byte-identical`);
+  };
+  const m = sync(src, out);
   ok(fs.existsSync(path.join(out, "index.html")), "应复制 index.html");
   ok(fs.existsSync(path.join(out, "ts.worker-abc.js")), "应复制 worker chunk");
   ok(fs.existsSync(path.join(out, MANIFEST)), "应写清单");
-  ok(m.fileCount === 2, `fileCount 应为 2，实际 ${m.fileCount}`);
+  ok(m.fileCount === 8, `fileCount 应为 8（允许的构建扩展 + 根清单），实际 ${m.fileCount}`);
+  for (const name of ["app.css", "favicon.ico", "icon.png", "logo.svg", "font.woff2", MANIFEST]) {
+    ok(fs.existsSync(path.join(out, name)), `应接受允许的根文件 ${name}`);
+  }
   const again = sync(src, out);
   ok(again.indexSha256 === m.indexSha256, "幂等：内容哈希应一致");
   // 反例 2：目标目录已混入禁止文件 → 必须失败（用子进程断言退出码，因为 sync 会 process.exit）
@@ -131,13 +176,48 @@ function selfTest() {
   const r4 = run();
   ok(r4.status === 0, `还原后必须 EXIT 0，实际 ${r4.status} / ${r4.stderr.slice(0, 120)}`);
 
+  fs.writeFileSync(path.join(src, "image.jpg"), "unapproved", "utf8");
+  const r5 = cli(src, out);
+  ok(r5.status === 1 && /白名单/.test(r5.stderr), `源目录含 .jpg 时必须 EXIT 1，实际 ${r5.status}`);
+  fs.rmSync(path.join(src, "image.jpg"));
+
+  fs.mkdirSync(path.join(src, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(src, "nested", MANIFEST), "{}", "utf8");
+  const r6 = cli(src, out);
+  ok(r6.status === 1, `源目录的嵌套清单必须 EXIT 1，实际 ${r6.status}`);
+  fs.rmSync(path.join(src, "nested"), { recursive: true, force: true });
+
+  fs.mkdirSync(path.join(out, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(out, "nested", MANIFEST), "{}", "utf8");
+  const r7 = cli(src, out);
+  ok(r7.status === 1, `目标目录的嵌套清单必须 EXIT 1，实际 ${r7.status}`);
+  fs.rmSync(path.join(out, "nested"), { recursive: true, force: true });
+
+  fs.writeFileSync(path.join(out, "unapproved.txt"), "not a build asset", "utf8");
+  const r8 = cli(src, out);
+  ok(r8.status === 1, `目标目录含 .txt 时必须 EXIT 1，实际 ${r8.status}`);
+  fs.rmSync(path.join(out, "unapproved.txt"));
+
+  checkOverlap("same path", src, src);
+  const nestedOut = path.join(src, "new-output");
+  checkOverlap("output nested under source", src, nestedOut, true);
+  const outer = path.join(base, "outer");
+  const nestedSrc = path.join(outer, "dist");
+  fs.mkdirSync(outer, { recursive: true });
+  fs.cpSync(src, nestedSrc, { recursive: true });
+  checkOverlap("source nested under output", nestedSrc, outer);
+
+  const alias = path.join(base, "source-junction");
+  fs.symlinkSync(src, alias, "junction");
+  checkOverlap("junction alias", src, alias);
+
   fs.rmSync(base, { recursive: true, force: true });
   if (failures.length) {
     console.error("sync-web-build --self-test 失败：");
     for (const f of failures) console.error("  - " + f);
     process.exit(1);
   }
-  console.log("sync-web-build --self-test 通过（复制 + 清单 + 幂等 + 4 个反例）");
+  console.log("sync-web-build --self-test 通过（复制 + 清单 + 幂等 + allowlist + overlap）");
 }
 
 function main() {

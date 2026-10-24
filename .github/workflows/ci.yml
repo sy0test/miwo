@@ -2,7 +2,7 @@
 #
 # 三个 job 的命令顺序都是**硬约束**，改动前先读这里：
 #
-#   api：仓库检查 → 路由生成（幂等）→ 迁移幂等（sqlite）→ 类型检查 → 单测 → 后端打包
+#   api：仓库检查 → 路由生成（幂等）→ 迁移幂等（sqlite）→ 类型检查 → 单测 → Phase 1e/2 验收 → Phase 1b/1c/1d 端到端 → 后端打包
 #     · 仓库检查放在最前面是**快速失败**（fail fast）：它们只读 git 索引与源码、秒级完成，
 #       任何一条红了就没必要再花几分钟跑 generate/typecheck/test/build。
 #     · ⚠ 这个顺序**与 `apps/web/dist` 无关**。`tools/check-copy.cjs` 把 `apps/web/dist` 放进
@@ -37,7 +37,7 @@
 #     · 与 mysql job 一一对应的本机脚本是 `apps/api/scripts/verify-mysql-migration.cjs`
 #       （8 条断言；含"空库/空源直接红"的空转护栏，见该文件头）。
 #
-#   web：build-only（vite build）→ check-no-shadow
+#   web：build-only（vite build）→ 前端产物同步自检 → check-no-shadow
 #     · **Phase 0 刻意不对 apps/web 做类型检查 —— 这个 job 不跑 `vue-tsc`。**
 #       为什么（实测，不是猜测）：修掉 `apps/web/tsconfig.app.json` 里 `ignoreDeprecations` 的无效值
 #       （`"6.0"` 在锁定的 TypeScript 5.6.3 下非法）之后，`vue-tsc --build --force` 在仓库内实测仍有
@@ -166,6 +166,14 @@ jobs:
         env:
           MIWO_TEST_SLOW: "1"
         run: pnpm --filter @miwo/api test
+      # Phase 1e：自检只操作临时目录；验收脚本显式 --no-http，不依赖 gitignored 的本机 SQLite 库。
+      - name: 运行时素材播种自检（Phase 1e；零仓库写入）
+        run: node apps/api/scripts/seed-data-dir.cjs --self-test
+      - name: Phase 1e 验收（媒体 / 受控静态 / 播种反例）
+        run: node apps/api/scripts/verify-phase1e.cjs --no-http
+      # Phase 2：计费、存储、只读对账 acceptance 自建临时 SQLite，不访问仓库开发库。
+      - name: Phase 2 acceptance（billing / storage / reconciliation）
+        run: pnpm run verify:phase2
       # Phase 1b / Task 9：**Phase 1b 的唯一验收命令**（真 HTTP + 一次性 dataDir，绝不碰仓库 data/）。
       # MySQL 口径在本 job 里**未实测**（它显式打印 SKIP 原因，不静默跳过）；真跑在 mysql job。
       - name: Phase 1b 端到端（租户隔离）
@@ -218,6 +226,8 @@ jobs:
       # Phase 0 只做构建门禁，不做类型检查：vue-tsc 的 47 条上游继承错误见文件头说明 + README「已知问题」。
       - name: 前端构建（vite build；Phase 0 不做类型检查）
         run: pnpm --filter @miwo/web run build-only
+      - name: 前端产物同步自检（Phase 1e；零仓库写入）
+        run: node apps/api/scripts/sync-web-build.cjs --self-test
       - name: 构建后守卫：源码树不得出现会遮蔽 vite.config.ts 的文件
         run: node tools/check-no-shadow.cjs
 

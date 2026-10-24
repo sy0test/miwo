@@ -59,14 +59,25 @@ export default router.post(
       const srcAbs = await u.oss.getAbsPath(script.sourceVideo);
       if (!fs.existsSync(srcAbs)) return res.status(400).send(error(`源片文件不在了：${script.sourceVideo}`));
 
+      // 未配置 ≠ 配错：两种情况给不同报错，前者是"部署时漏了"，后者是"路径写错/文件被移走"。
+      if (!PREP_SCRIPT.trim()) {
+        return res
+          .status(500)
+          .send(
+            error(
+              `转绘预处理未配置：请设置环境变量 MIWO_REDRAW_PREP，指向 redraw-prep.cjs 的绝对路径。` +
+                `预处理是**外部依赖**（切点检测 + 转写，见本文件顶部注释），没有它「开始分析」跑不了。`,
+            ),
+          );
+      }
       if (!fs.existsSync(PREP_SCRIPT)) {
         return res
           .status(500)
           .send(
             error(
               `找不到预处理脚本：${PREP_SCRIPT}。` +
-                `这是**开发期桥**（见路由注释），路径用环境变量 REDRAW_PREP 指定；` +
-                `交付前应改成原生实现。`,
+                `请检查 MIWO_REDRAW_PREP 是否指向本机真实存在的 redraw-prep.cjs（换机器/容器后原路径通常无效）。` +
+                `这是**开发期桥**，交付前应改成原生实现。`,
             ),
           );
       }
@@ -103,7 +114,7 @@ export default router.post(
           if (hard.length) {
             await u.db("o_script").where("id", scriptId).update({
               extractState: -1,
-              errorReason: `解析出了 ${r.assets} 个资产 / ${r.storyboards} 个镜，但体检没过：\n${hard.join("\n")}`,
+              errorReason: `解析出了 ${r.assets} 个资产 / ${r.segments} 个片段 / ${r.storyboards} 个镜，但体检没过：\n${hard.join("\n")}`,
             });
             log(`体检没过（${hard.length} 条 error），已标记失败；原文 ${r.outputPath}`);
             return;

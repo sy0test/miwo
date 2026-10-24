@@ -1,7 +1,16 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 // ⚠ 用 `@/config`（而不是 `../src/config`）：这样至少有一个已提交的测试**真的走过 `resolve.alias`**，
 //    否则别名被误删后测试仍会全绿（Task 7 审查发现的覆盖漏洞 M4）。
 import { ConfigError, loadConfig } from "@/config";
+
+const apiScripts = JSON.parse(readFileSync("package.json", "utf8")).scripts as Record<string, string>;
+
+describe("API development command", () => {
+  it("loads the API .env file before starting the app", () => {
+    expect(apiScripts.dev).toContain("--env-file-if-exists=.env");
+  });
+});
 
 const base = {
   MIWO_ENV: "dev",
@@ -139,5 +148,21 @@ describe("loadConfig", () => {
     expect(cfg.mediaDir.replace(/\\/g, "/")).toBe("D:/tmp/custom-media");
     // 纯空白同样按"未设置"处理（与 MIWO_TRUST_PROXY 的 M1 修复口径一致，锁住 Task 8 Step 0 第 3 项）
     expect(loadConfig({ ...base, MIWO_MEDIA_DIR: "   " }).mediaDir.replace(/\\/g, "/")).toBe("D:/tmp/miwo-data/oss");
+  });
+
+  it("S3 driver requires valid bucket, region, endpoint and credentials", () => {
+    const s3 = { ...base, MIWO_STORAGE_DRIVER: "s3" };
+    expect(() => loadConfig(s3)).toThrow(/MIWO_S3_ENDPOINT/);
+    const cfg = loadConfig({
+      ...s3,
+      MIWO_S3_BUCKET: "miwo-media",
+      MIWO_S3_REGION: "us-east-1",
+      MIWO_S3_ENDPOINT: "https://s3.example.test",
+      MIWO_S3_ACCESS_KEY_ID: "access",
+      MIWO_S3_SECRET_ACCESS_KEY: "secret",
+      MIWO_S3_SESSION_TOKEN: "token",
+      MIWO_S3_FORCE_PATH_STYLE: "true",
+    });
+    expect(cfg.s3Storage).toMatchObject({ bucket: "miwo-media", region: "us-east-1", accessKeyId: "access", sessionToken: "token", forcePathStyle: true });
   });
 });

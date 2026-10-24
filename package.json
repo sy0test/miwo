@@ -34,12 +34,15 @@
     "verify:mounts": "node tools/check-non-api-mounts.cjs",
     "verify:phase1c-media": "node apps/api/scripts/verify-phase1c-media.cjs",
     "verify:phase1d": "node apps/api/scripts/verify-phase1d.cjs",
+    "verify:phase1e": "node apps/api/scripts/verify-phase1e.cjs",
+    "verify:phase2": "node apps/api/scripts/verify-phase2.cjs",
     "verify:legacy-freeze": "node tools/record-legacy-freeze.cjs --check",
     "verify:exceptions": "node tools/check-tenant-exceptions.cjs",
     "verify:exceptions:record": "node tools/check-tenant-exceptions.cjs --record",
     "verify:manual-test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual-test.ps1",
     "verify:policies": "node tools/check-tenant-policies.cjs",
-    "verify:mysql-dialect": "node tools/check-mysql-dialect.cjs"
+    "verify:mysql-dialect": "node tools/check-mysql-dialect.cjs",
+    "reconcile:billing": "pnpm --filter @miwo/api exec node --env-file-if-exists=.env --import=tsx scripts/reconcile-billing.ts"
   },
   "devDependencies": {
     "yaml": "^2.9.1"

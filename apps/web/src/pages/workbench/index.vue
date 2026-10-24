@@ -19,23 +19,17 @@
         </t-tooltip>
       </div>
       <div class="footItem fc ac">
-        <t-tooltip :content="$t('workbench.menu.feedbackQuestions')" placement="right" destroyOnClose :showArrow="false">
-          <div class="item c" @click="openFeedback">
-            <i-bill class="icon" />
-          </div>
-        </t-tooltip>
         <t-tooltip :content="$t('workbench.menu.settings')" placement="right" destroyOnClose :showArrow="false">
           <div class="item c" @click="showSetting = true">
-            <t-badge :count="needUpdate ? 1 : 0" dot>
-              <i-setting-one class="icon" />
-            </t-badge>
+            <i-setting-one class="icon" />
           </div>
         </t-tooltip>
-        <t-tooltip :content="$t('workbench.menu.jumpGithub')" placement="right" destroyOnClose :showArrow="false">
-          <div class="item c" @click="jumpGithub">
-            <i-github-one class="icon" />
-          </div>
-        </t-tooltip>
+        <button class="balanceLink" :class="{ active: activeMenu === '/billing' }" :aria-label="$t('billing.sidebar.label')" :title="billingAccount.account && !billingAccount.error ? `${$t('billing.sidebar.label')}: ${formatMicroToCny(getAvailableBalanceMicro(billingAccount.account))} ${$t('billing.cny')}` : $t('billing.sidebar.unavailable')" @click="openBilling">
+          <span class="balanceLabel">{{ $t("billing.sidebar.label") }}</span>
+          <strong v-if="billingAccount.account && !billingAccount.error">{{ formatMicroToCny(getAvailableBalanceMicro(billingAccount.account)) }} {{ $t("billing.cny") }}</strong>
+          <span v-else-if="billingAccount.loading">{{ $t("billing.sidebar.loading") }}</span>
+          <span v-else>{{ $t("billing.sidebar.unavailable") }}</span>
+        </button>
       </div>
     </div>
     <div class="view">
@@ -74,18 +68,22 @@
 </template>
 
 <script setup lang="ts">
-import axios from "@/utils/axios";
 import setting from "@/components/setting/index.vue";
 import hello from "@/components/hello.vue";
 import projectStore from "@/stores/project";
 const { project } = storeToRefs(projectStore());
 import settingStore from "@/stores/setting";
-import { NotifyPlugin } from "tdesign-vue-next";
-const { showSetting, isElectron, needUpdate } = storeToRefs(settingStore());
-const menuList = ref([
+import billingStore from "@/stores/billing";
+import userStore from "@/stores/user";
+import { formatMicroToCny, getAvailableBalanceMicro } from "@/views/billing/billingData";
+const { showSetting, isElectron } = storeToRefs(settingStore());
+const billingAccount = billingStore();
+onMounted(() => billingAccount.refreshAccount());
+const menuList = computed(() => [
   { type: "btn", path: "/project", labelKey: "workbench.menu.myProject", icon: "i-folder-close" },
   { type: "btn", path: "/task", labelKey: "workbench.menu.taskCenter", icon: "i-view-list" },
-  // { type: "divider" },
+  { type: "btn", path: "/billing", labelKey: "workbench.menu.billing", icon: "i-finance" },
+  ...(userStore().role === "admin" ? [{ type: "btn", path: "/admin/users", labelKey: "管理用户与分组", icon: "i-peoples" }] : []),
 ]);
 
 const rightBtnList = ref([
@@ -126,80 +124,11 @@ function handleClick(menu: any) {
   activeMenu.value = menu.path;
 }
 
-async function jumpGithub() {
-  // Phase 1e Task 02：Electron 自定义协议分支已删除，浏览器 fallback 是唯一行为。
-  window.open("https://github.com/HBAI-Ltd/Toonflow-app");
+function openBilling() {
+  router.push("/billing");
+  activeMenu.value = "/billing";
 }
 
-async function openFeedback() {
-  // Phase 1e Task 02：同上（协议分支已删）。
-  window.open("https://docs.qq.com/smartsheet/form/EmvmQBrmlPmr%2Fss_vsqk2v%2FvhiGzE?tab=ss_vsqk2v");
-}
-
-async function checkVersion() {
-  const { data } = await axios.post("/setting/about/checkUpdate", {
-    source: "toonflow",
-  });
-  if (data.needUpdate) {
-    needUpdate.value = true;
-    const { activeMenu: settingActiveMenu } = storeToRefs(settingStore());
-    const notifyInstance = NotifyPlugin.success({
-      title: $t("version.newVersion") as string,
-      content: () =>
-        h(
-          "div",
-          { style: "text-align: right; padding-top: 4px;" },
-          h(
-            "span",
-            {
-              style: "color: #ed7b2f; font-size: 12px; cursor: pointer;",
-              onClick: () => {
-                settingActiveMenu.value = "about";
-                showSetting.value = true;
-                NotifyPlugin.close(notifyInstance);
-              },
-            },
-            $t("skillScan.openSettings"),
-          ),
-        ),
-      closeBtn: true,
-      placement: "bottom-right",
-    });
-  } else {
-    needUpdate.value = false;
-  }
-}
-
-let checkVersionTimer: ReturnType<typeof setInterval> | null = null;
-
-function startVersionCheck() {
-  checkVersion();
-  checkVersionTimer = setInterval(
-    () => {
-      checkVersion();
-    },
-    2 * 60 * 1000,
-  );
-}
-
-function stopVersionCheck() {
-  if (checkVersionTimer) {
-    clearInterval(checkVersionTimer);
-    checkVersionTimer = null;
-  }
-}
-
-watch(needUpdate, (val) => {
-  if (val) stopVersionCheck();
-});
-
-onMounted(() => {
-  startVersionCheck();
-});
-
-onUnmounted(() => {
-  stopVersionCheck();
-});
 </script>
 
 <style lang="scss" scoped>
@@ -209,7 +138,7 @@ onUnmounted(() => {
   display: flex;
 
   .menu {
-    width: 64px;
+    width: 88px;
     height: 100%;
     overflow-x: hidden;
     overflow-y: auto;
@@ -306,6 +235,27 @@ onUnmounted(() => {
       height: calc(100% - 6vh);
     }
   }
+}
+
+.balanceLink {
+  width: 78px;
+  min-height: 56px;
+  flex: 0 0 56px;
+  margin-top: 8px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--td-text-color-primary);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  overflow: hidden;
+  .balanceLabel { font-size: 11px; line-height: 14px; }
+  strong, > span:last-child { max-width: 100%; font-size: 10px; line-height: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  &:hover { background-color: var(--td-bg-color-container-hover); border-radius: 8px; }
 }
 
 .item {

@@ -12,6 +12,7 @@
  * ⚠ payload 键是 **`storyboardIds`（复数数组）**，与 Task 7 契约表（`task-7-brief.md:43`）一致；
  *   B 组 reconcile 已按同一键对齐（review-B F2）。
  */
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import type { JobContext, JobDefinition } from "@/jobs/types";
 import { withVendorSlot } from "@/jobs/gate";
@@ -102,7 +103,7 @@ export const imageStoryboardBatch: JobDefinition<StoryboardImagePayload> = {
       try {
         // Phase 1d Task 9：厂商调用前过 `vendor:image` 闸门（spec §9.3）。只包这一次调用。
         const imageCls = await withVendorSlot("vendor:image", ctx.workerId, async () =>
-          u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
+          u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`, currentAiBillingContext()).run(
             { referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []), ...repeloadObj },
             {
               taskClass: "生成分镜图片",

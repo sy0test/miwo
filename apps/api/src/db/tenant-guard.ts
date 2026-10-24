@@ -560,6 +560,10 @@ export function makeTenantAware(knex: Knex, options: TenantGuardOptions): Tenant
       const value = trx[key];
       if (typeof value === "function") guardedTrx[key] = value.bind(trx);
     }
+    guardedTrx.transaction = (arg1: any, arg2?: any) => {
+      if (typeof arg1 === "function") return trx.transaction((nested: any) => arg1(guardTrx(nested)), arg2);
+      return trx.transaction(arg1, (nested: any) => (typeof arg2 === "function" ? arg2(guardTrx(nested)) : undefined));
+    };
     return guardedTrx;
   }
 

@@ -23,6 +23,7 @@ import jwt from "jsonwebtoken";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { config } from "@/config";
 import { currentTenant, runWithTenant } from "@/db/tenant-context";
+import { currentAiBillingContext } from "@/billing/context";
 import { systemDb } from "@/utils/db";
 import { mintAccess, removeAuthUsers, seedAuthUsers, type AuthFixtureUser } from "./helpers/auth-fixture";
 import { tenantContextMiddleware, requireAdmin, tenantErrorHandler } from "@/middleware/tenant";
@@ -75,16 +76,19 @@ describe("HTTP 租户上下文中间件（spec §6.4）", () => {
     const req = fakeReq({ headers: { authorization: `Bearer ${token}` } });
     const res = fakeRes();
     let seen: any = null;
+    let aiSeen: any = null;
     // ⚠ next 刻意是 async 且**在 await 之后**才读 ctx：这是"ALS 能穿 await"的判别力
     //   （Ruling 190 #7 / tenant-context.ts:6-10 的第 1 条纪律）。
     await tenantContextMiddleware(req, res, async () => {
       await new Promise((r) => setTimeout(r, 5));
       seen = currentTenant();
+      aiSeen = currentAiBillingContext();
     });
     expect(seen?.userId).toBe(7);
     expect(seen?.role).toBe("user");
     expect(seen?.source).toBe("http");
     expect(typeof seen?.requestId).toBe("string");
+    expect(aiSeen).toEqual({ userId: seen.userId, requestId: seen.requestId });
     expect((req as any).user).toMatchObject({ id: 7 });   // spec §6.4：保留 req.user（**当前全仓 0 个消费者**；消费方归 Phase 1c）
   });
 

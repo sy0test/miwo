@@ -21,6 +21,13 @@ import accounts from "@/db/migrations/005_accounts";
 import quotaGrants from "@/db/migrations/006_quota_grants";
 import jobQueue from "@/db/migrations/007_job_queue";
 import vendorGate from "@/db/migrations/008_vendor_gate";
+import billing from "@/db/migrations/009_billing";
+import dailyQuotaAdmission from "@/db/migrations/010_daily_quota_admission";
+import usageAdmission from "@/db/migrations/011_usage_admission";
+import billingAdminUniques from "@/db/migrations/012_billing_admin_uniques";
+import accountBootstrap from "@/db/migrations/013_account_bootstrap";
+import accessGroups from "@/db/migrations/014_access_groups";
+import redrawV2 from "@/db/migrations/015_redraw_v2";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -52,8 +59,7 @@ export const MIGRATIONS: Migration[] = [
   // ⚠ 编号顺延（brief 的 002_accounts 已被 002_platform_seed 占用）：**追加到末尾**才与文件名升序一致
   //   （`tests/migrations.test.ts` 的 Ruling 24 顺序守卫断言 `NAMES == [...NAMES].sort()`）。
   accounts,
-  // Task 1（Phase 1c）产出 006_quota_grants（`o_account` 余额/冻结 + `o_modelGrant` 模型授权骨架；
-  // **本阶段不计费**，Phase 2 才建 o_usage / o_ledger / o_order / o_price）。
+  // Task 1（Phase 1c）产出 006_quota_grants（`o_account` 余额/冻结 + `o_modelGrant` 模型授权骨架）。
   quotaGrants,
   // Phase 1d Task 1 产出 007_job_queue（`o_job`：生成任务队列；可空唯一列 `dedupeActive` 做幂等锁，
   // 毫秒时间列一律 `bigint unsigned`；四个索引分别服务领取/回收/按用户计数/按类型运维）。
@@ -61,6 +67,16 @@ export const MIGRATIONS: Migration[] = [
   // Phase 1d Task 1 产出 008_vendor_gate（`o_gate`：厂商/类型分池的并发槽位；同名租约语义，
   // 与 `o_job` 同一套"过期即可回收"的思想；无 payload/state 语义，故独立成表）。
   vendorGate,
+  // Phase 2 Task 1 产出 009_billing（计量、账本、订单与平台定价；不触碰 006 的账号/授权表）。
+  billing,
+  dailyQuotaAdmission,
+  usageAdmission,
+  billingAdminUniques,
+  accountBootstrap,
+  accessGroups,
+  // 2026-10-21 转绘迁 v2：给 `o_segment` 补 `sourceRange`/`clipPath`、给 `o_shot` 补 `sourceRange`
+  // （转绘"按片段切原片作参考视频"与"每镜核对源片区间"要的列；镜级画面描述刻意不加，见文件头）。
+  redrawV2,
 ];
 
 /**

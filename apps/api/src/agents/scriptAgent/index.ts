@@ -1,6 +1,7 @@
 import { Socket } from "socket.io";
 import { tool, jsonSchema } from "ai";
 import { z } from "zod";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import useTools from "@/agents/scriptAgent/tools";
@@ -79,7 +80,7 @@ export async function runDecisionAI(ctx: AgentContext) {
     `章节数量：${novelData.length}章`,
   ].join("\n");
 
-  const { fullStream } = await u.Ai.Text("scriptAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
+  const { fullStream } = await u.Ai.Text("scriptAgent:decisionAgent", currentAiBillingContext(), ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
     messages: [
       { role: "system", content: prompt },
       { role: "assistant", content: projectInfo + "\n" + mem },
@@ -130,7 +131,7 @@ function createSubAgent(parentCtx: AgentContext) {
     parentCtx.msg.complete();
     const subMsg = resTool.newMessage("assistant", name);
 
-    const { fullStream } = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
+    const { fullStream } = await u.Ai.Text(key, currentAiBillingContext(), parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
       system,
       messages: messages ?? [{ role: "user", content: prompt }],
       abortSignal,

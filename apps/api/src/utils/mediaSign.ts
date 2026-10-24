@@ -58,6 +58,7 @@ import path from "node:path";
 import isPathInside from "is-path-inside";
 import type { NextFunction, Request, Response } from "express";
 import { config } from "@/config";
+import type { MediaRoot } from "@/storage/types";
 
 /** 默认 TTL：24h。**必须大于静态资源的 `max-age`**（见文件头"过期语义与缓存语义的共存"）。 */
 export const MEDIA_TTL_SEC = 24 * 3600;
@@ -82,19 +83,19 @@ export function mediaSignKey(): Buffer {
   return crypto.createHmac("sha256", DOMAIN).update(String(config.jwtSecret)).digest();
 }
 
-/** sig = base64url(HMAC-SHA256(mediaKey, `${DOMAIN}${relPath}|${exp}`)) 截断到 43 字符（=258 bit）。 */
-export function signMediaSig(relPath: string, exp: string): string {
+/** sig = base64url(HMAC-SHA256(mediaKey, `${DOMAIN}${root}/${relPath}|${exp}`)) 截断到 43 字符。 */
+export function signMediaSig(relPath: string, exp: string, root: MediaRoot = "oss"): string {
   return crypto
     .createHmac("sha256", mediaSignKey())
-    .update(`${DOMAIN}${normalizeMediaRelPath(relPath)}|${exp}`)
+    .update(`${DOMAIN}${root}/${normalizeMediaRelPath(relPath)}|${exp}`)
     .digest("base64url")
     .slice(0, 43);
 }
 
 /** 生成 `"exp=<ms>&sig=<base64url>"`（**不带** `?`，调用方决定是 `?` 还是 `&`）。 */
-export function signMediaQuery(relPath: string, ttlSec: number = MEDIA_TTL_SEC): string {
+export function signMediaQuery(relPath: string, ttlSec: number = MEDIA_TTL_SEC, root: MediaRoot = "oss"): string {
   const exp = String(Date.now() + ttlSec * 1000);
-  return `exp=${exp}&sig=${signMediaSig(relPath, exp)}`;
+  return `exp=${exp}&sig=${signMediaSig(relPath, exp, root)}`;
 }
 
 /**
@@ -117,12 +118,13 @@ export function verifyMediaSig(
   exp: string | undefined,
   sig: string | undefined,
   now: number = Date.now(),
+  root: MediaRoot = "oss",
 ): boolean {
   if (!exp || !sig) return false;
   if (!/^\d{1,15}$/.test(exp)) return false; // 只接受纯数字毫秒；15 位上限挡住 NaN/Infinity/科学计数法
   if (Number(exp) < now) return false;
   try {
-    const want = Buffer.from(signMediaSig(relPath, exp), "utf8");
+    const want = Buffer.from(signMediaSig(relPath, exp, root), "utf8");
     const got = Buffer.from(sig, "utf8");
     // ⚠ 比 `Buffer` 的**字节长度**，与 `timingSafeEqual` 的判据一致。
     //   写成 `sig.length`（UTF-16 码元）就是上面说的那个 500。
@@ -230,6 +232,7 @@ export function mediaAuthGuard(req: Request, res: Response, next: NextFunction):
   const exp = kept ? kept.exp : String(req.query.exp ?? "");
   const sig = kept ? kept.sig : String(req.query.sig ?? "");
   const rel = normalizeMediaRelPath(req.path);
-  if (verifyMediaSig(rel, exp, sig)) return next();
+  const root: MediaRoot = /(?:^|\/)assets$/.test(req.baseUrl) ? "assets" : "oss";
+  if (verifyMediaSig(rel, exp, sig, Date.now(), root)) return next();
   res.status(403).send({ code: 403, data: null, message: "媒体链接无效或已过期" });
 }

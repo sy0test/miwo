@@ -90,7 +90,10 @@ function groupA() {
     return out;
   };
   const strip = (s) => s.split("\n").map((l) => l.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, "").replace(/^\s*\/\*.*$/, "")).join("\n");
-  const enqueueRoutes = walk(routesRoot).filter((p) => fs.readFileSync(p, "utf8").includes("enqueueJob("));
+  const enqueueRoutes = walk(routesRoot).filter((p) => {
+    const src = fs.readFileSync(p, "utf8");
+    return src.includes("enqueueJob(") || src.includes("enqueueJobInTransaction(");
+  });
   const bad = enqueueRoutes.filter((p) => {
     const s = strip(fs.readFileSync(p, "utf8"));
     return s.includes("pLimit(") || s.includes("Promise.all(tasks)");

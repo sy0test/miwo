@@ -1,6 +1,7 @@
 import express from "express";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { tool, jsonSchema } from "ai";
@@ -54,7 +55,7 @@ export default router.post(
           modeData = JSON.parse(mode);
         } catch (e) {}
       }
-      const reqFn = await u.Ai.Video(`${id}:${modelName}`).run({
+      const reqFn = await u.Ai.Video(`${id}:${modelName}`, currentAiBillingContext()).run({
         duration: selectedModel.durationResolutionMap[0].duration[0],
         resolution: selectedModel.durationResolutionMap[0].resolution[0],
         aspectRatio: "16:9",

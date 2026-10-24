@@ -7,6 +7,7 @@
  *  - 不再从 process.cwd() 推断数据根（替掉 getPath.ts:11 的行为）
  */
 import path from "node:path";
+import { parseS3StorageConfig, type S3StorageConfig } from "@/storage/config";
 
 export type MiwoEnv = "dev" | "prod";
 
@@ -40,6 +41,7 @@ export interface MiwoConfig {
   dataDir: string;
   mediaDir: string;
   storageDriver: "local" | "s3";
+  s3Storage?: S3StorageConfig;
   publicBaseUrl: string;
   trustProxy: number;
   jwtSecret: string;
@@ -123,12 +125,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   if (storageDriver !== "local" && storageDriver !== "s3") {
     throw new ConfigError(`MIWO_STORAGE_DRIVER 只能是 local 或 s3，实际 "${storageDriver}"`);
   }
-  if (storageDriver === "s3") {
-    // Phase 2 才实现；在此之前"接受 s3 但按 local 跑"是**静默的错误**（部署者以为已切对象存储）。
-    // 这里故意让它 fail-fast —— `createStorage()` 里有同一条守卫（双保险：配置层 + 装配层）。
-    throw new ConfigError("MIWO_STORAGE_DRIVER=s3 尚未实现（Phase 2 落地 S3Storage），Phase 1 请用 local");
-  }
-
   const trustProxyRaw = optional(env, "MIWO_TRUST_PROXY");
   const trustProxy = trustProxyRaw === undefined ? (rawEnv === "prod" ? 1 : 0) : Number(trustProxyRaw);
   if (!Number.isInteger(trustProxy) || trustProxy < 0) throw new ConfigError(`MIWO_TRUST_PROXY 必须是非负整数，实际 "${trustProxyRaw}"`);
@@ -136,6 +132,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   // ⚠ 与 M1 同口径：用 optional()（把 undefined 与纯空白统一视为"未设置"），
   //    不用 `env.MIWO_MEDIA_DIR ? ...` —— 后者会把 "   " 当成有效值，resolve 成 cwd 本身。
   const mediaDirRaw = optional(env, "MIWO_MEDIA_DIR");
+  const mediaDir = mediaDirRaw ? path.resolve(mediaDirRaw) : path.join(dataDir, "oss");
+  const s3Storage = storageDriver === "s3" ? parseS3StorageConfig(env, path.join(mediaDir, ".s3-cache")) : undefined;
 
   const dbDriver = optional(env, "MIWO_DB_DRIVER") ?? "sqlite";
   let db: MiwoConfig["db"];
@@ -168,7 +166,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   //   · `utils/oss.ts:82` 的 `process.env.ossURL`（空 = 不覆盖前缀）；
   //   · `utils/ffmpeg.ts:15/16/19` 的 `FFMPEG_PATH || "ffmpeg"` / `FFPROBE_PATH || "ffprobe"` /
   //     `Number(FFMPEG_TIMEOUT || 10*60*1000)`；
-  //   · `routes/redraw/analyzeSource.ts:33` 的字面量（开发机绝对路径）；
+  //   · `routes/redraw/analyzeSource.ts:33` 的字面量（开发机绝对路径 → **本阶段改成空缺省**，
+  //     见下面 `redrawPrepScript` 的注释）；
   //   · `proxy.ts:98` 的 `TOONFLOW_PROXY`（**重命名**为 `MIWO_PROXY`，Phase 0 ledger 已裁定）。
   // ⚠ `toInt` 而不是 `Number(...)`：改动前的 `Number(FFMPEG_TIMEOUT || …)` 会把 "abc" 静默吃成 NaN
   //   ⇒ 超时变成"永不超时"。`toInt` 在非法值上 fail-fast（这正是 config.ts 存在的理由）。
@@ -176,7 +175,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   const ffmpegTimeoutMs = toInt(env, "MIWO_FFMPEG_TIMEOUT_MS", 10 * 60 * 1000, 1000);
   const ffmpegPath = optional(env, "MIWO_FFMPEG_PATH") ?? "ffmpeg";
   const ffprobePath = optional(env, "MIWO_FFPROBE_PATH") ?? "ffprobe";
-  const redrawPrepScript = optional(env, "MIWO_REDRAW_PREP") ?? "D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs";
+  /**
+   * 出海转绘的预处理脚本（外部依赖，见 `routes/redraw/analyzeSource.ts` 的注释）。
+   *
+   * ⚠ 缺省值**不再**写死成开发机的绝对路径（原来是 `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs`）：
+   * 那个路径只在本机成立，换机器/容器后 `existsSync` 为假，转绘「开始分析」直接 500 而没人知道为什么。
+   * 现在空缺省 = **未配置**，由 `app.ts` 的启动自检 + `analyzeSource` 的可操作报错一起兜住。
+   */
+  const redrawPrepScript = optional(env, "MIWO_REDRAW_PREP") ?? "";
   const proxyUrl = optional(env, "MIWO_PROXY") ?? "";
 
   return {
@@ -184,8 +190,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     port,
     host,
     dataDir,
-    mediaDir: mediaDirRaw ? path.resolve(mediaDirRaw) : path.join(dataDir, "oss"),
+    mediaDir,
     storageDriver,
+    s3Storage,
     publicBaseUrl,
     trustProxy,
     jwtSecret,

@@ -46,7 +46,11 @@ export default router.post(
       res.status(200).send(
         success({
           scriptId: r.scriptId,
+          // 解析出来的资产数（解析层不写 o_assets，所以与 writtenAssets 分开报）
           assets: r.assets,
+          writtenAssets: r.writtenAssets,
+          // v2：片段数（= 生成单位）；storyboards 只是兼容字段，v2 下 = 镜数
+          segments: r.segments,
           storyboards: r.storyboards,
           missingAssetNames: r.missingAssetNames,
           issues: r.issues,

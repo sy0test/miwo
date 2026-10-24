@@ -63,6 +63,15 @@ const router = createRouter({
           component: () => import("@/views/assets/index.vue"),
         },
         {
+          path: "/billing",
+          component: () => import("@/views/billing/index.vue"),
+        },
+        {
+          path: "/admin/users",
+          meta: { adminOnly: true },
+          component: () => import("@/views/admin/users/index.vue"),
+        },
+        {
           path: "/test",
           component: () => import("@/views/test/index.vue"),
         },
@@ -92,11 +101,19 @@ router.beforeEach(async (to, _from, next) => {
     return;
   }
   if (userStore().token) {
+    if (to.meta.adminOnly && userStore().role !== "admin") {
+      next("/workbench");
+      return;
+    }
     next();
     return;
   }
   const token = await refreshAccessToken();
   if (token) {
+    if (to.meta.adminOnly && userStore().role !== "admin") {
+      next("/workbench");
+      return;
+    }
     next();
     return;
   }

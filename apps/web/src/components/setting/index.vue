@@ -1,12 +1,10 @@
 <template>
   <t-dialog :header="$t('settings.title')" :footer="false" placement="center" width="1200px" v-model:visible="showSetting">
     <div class="settingPanel">
-      <t-menu class="settingMenu" v-model:value="activeMenu" :style="{ height: '70vh' }">
+      <t-menu class="settingMenu" v-model:value="activeMenu" :style="{ height: '70vh' }" @change="onMenuChange">
         <t-menu-item v-for="item in menuItems" :key="item.key" :value="item.key">
           <template #icon>
-            <t-badge :count="needUpdate && item.key === 'about' ? 1 : 0" dot>
-              <component :is="item.icon" class="icon" />
-            </t-badge>
+            <component :is="item.icon" class="icon" />
           </template>
           {{ $t(item.label) }}
         </t-menu-item>
@@ -22,7 +20,6 @@
           <agentConfog v-if="activeMenu === 'agentConfog'" />
           <promptManage v-if="activeMenu === 'promptManage'" />
           <otherConfig v-if="activeMenu === 'otherConfig'" />
-          <dbConfig v-if="activeMenu === 'dbConfig'" />
           <about v-if="activeMenu === 'about'" />
           <logoutConfig v-if="activeMenu === 'logoutConfig'" />
           <memoryConfig v-if="activeMenu === 'memoryConfig'" />
@@ -38,14 +35,23 @@
 
 <script setup lang="ts">
 import settingStore from "@/stores/setting";
-const { showSetting, activeMenu, needUpdate } = storeToRefs(settingStore());
+import userStore from "@/stores/user";
+import { getVisibleSettingsItems } from "./settingsMenu";
+const { showSetting, activeMenu } = storeToRefs(settingStore());
+const { role } = storeToRefs(userStore());
+const router = useRouter();
+function onMenuChange(value: string | number) {
+  if (value !== "billing") return;
+  showSetting.value = false;
+  activeMenu.value = "ui";
+  router.push("/billing");
+}
 
 import uiConfig from "./components/uiConfig.vue";
 import languageConfig from "./components/languageConfig.vue";
 import requestConfig from "./components/requestConfig.vue";
 import loginConfig from "./components/loginConfig.vue";
 import agentConfog from "./components/agentConfog.vue";
-import dbConfig from "./components/dbConfig.vue";
 import otherConfig from "./components/otherConfig.vue";
 import about from "./components/about.vue";
 import logoutConfig from "./components/logoutConfig.vue";
@@ -57,8 +63,9 @@ import devConfig from "./components/devConfig.vue";
 import promptManage from "./components/promptManage.vue";
 import modelMap from "./components/modelMap.vue";
 
-const menuItems = [
+const allMenuItems = [
   { key: "ui", label: "settings.menu.ui", icon: "i-theme" },
+  { key: "billing", label: "workbench.menu.billing", icon: "i-finance" },
   { key: "language", label: "settings.menu.language", icon: "i-translate" },
   { key: "vendorConfig", label: "settings.menu.vendorConfig", icon: "i-computer" },
   { key: "modelMap", label: "settings.menu.modelMap", icon: "i-computer" },
@@ -67,7 +74,6 @@ const menuItems = [
   { key: "skillManagement", label: "settings.menu.skillsSkillsManagement", icon: "i-ring" },
   { key: "memoryConfig", label: "settings.menu.memoryConfig", icon: "i-memory-card-one" },
   { key: "loginConfig", label: "settings.menu.loginConfig", icon: "i-lock" },
-  { key: "dbConfig", label: "settings.menu.dbConfig", icon: "i-data" },
   { key: "fileManagement", label: "settings.menu.fileManagement", icon: "i-hard-disk" },
   { key: "otherConfig", label: "settings.menu.otherConfig", icon: "i-application-menu" },
   { key: "requestConfig", label: "settings.menu.requestConfig", icon: "i-api" },
@@ -76,7 +82,8 @@ const menuItems = [
   { key: "logoutConfig", label: "settings.menu.logoutConfig", icon: "i-logout" },
 ];
 
-const currentMenuItem = computed(() => menuItems.find((item) => item.key === activeMenu.value));
+const menuItems = computed(() => getVisibleSettingsItems(role.value, allMenuItems));
+const currentMenuItem = computed(() => menuItems.value.find((item) => item.key === activeMenu.value));
 </script>
 
 <style lang="scss" scoped>

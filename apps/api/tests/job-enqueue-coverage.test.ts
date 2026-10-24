@@ -5,7 +5,7 @@
  * 而第 6 个入口 `batchGeneratePrompt` 写的是 `pLimit(...)` + `Promise.all(tasks)` ⇒ **不匹配那个正则**，
  * 于是"0 命中"却**漏掉了它**（review-C 实测：`prompt.batch` handler 注册了但无任何调用方 = 死代码）。
  * ⇒ 判据必须按**类型**而不是按"某种写法"来守：对每个类型断言
- *      ① 路由层存在一条 `enqueueJob({ type: "<type>" ... })`；
+ *      ① 路由层存在一条 `enqueueJobInTransaction({ type: "<type>" ... })`；
  *      ② 该路由**不再**做进程内 fire-and-forget（不含 `pLimit(` / `Promise.all(tasks)`）。
  *
  * ⚠ 这是一条**源码级**断言（不是行为断言）：新增第 7 个入口忘了入队时，它会红。
@@ -41,20 +41,26 @@ function stripComments(src: string): string {
 }
 
 describe("入队覆盖度（review-C F4 的机械守卫）", () => {
+  it("★ 每个计费入队路由都通过 submitBilledJob 原子提交", () => {
+    const enqueueRoutes = ROUTE_FILES.filter((f) => f.src.includes("enqueueJobInTransaction("));
+    const missing = enqueueRoutes.filter((f) => !f.src.includes("submitBilledJob(")).map((f) => rel(f.p));
+    expect(missing, "用户触发的生成路由必须将业务写入、队列和资金冻结放入同一事务").toEqual([]);
+  });
+
   it("★ 每个注册的业务类型都有一条路由级 enqueueJob 调用点", () => {
     const missing: string[] = [];
     for (const def of JOB_DEFINITIONS) {
       if (SELFTEST_EXEMPT.has(def.type)) continue; // 运维冒烟任务由 CLI 入队（Task 10），无用户入口
       const needle = new RegExp(`type:\\s*"${def.type.replace(".", "\\.")}"`);
-      const hit = ROUTE_FILES.some((f) => f.src.includes("enqueueJob(") && needle.test(f.src));
+      const hit = ROUTE_FILES.some((f) => f.src.includes("enqueueJobInTransaction(") && needle.test(f.src));
       if (!hit) missing.push(def.type);
     }
     expect(missing, `以下类型没有任何路由入队（handler 是死代码）—— 新增入口必须同批接入队`).toEqual([]);
   });
 
   it("★ 六个业务入队路由**不得**再有进程内 fire-and-forget（pLimit / Promise.all(tasks)）", () => {
-    // 哪些路由是"入队型"：只要文件里出现 enqueueJob( 就适用
-    const enqueueRoutes = ROUTE_FILES.filter((f) => f.src.includes("enqueueJob("));
+    // 哪些路由是"入队型"：只要文件里出现 enqueueJobInTransaction( 就适用
+    const enqueueRoutes = ROUTE_FILES.filter((f) => f.src.includes("enqueueJobInTransaction("));
     expect(enqueueRoutes.length, "入队路由数量异常（少于 6 说明有入口回退了）").toBeGreaterThanOrEqual(6);
     for (const f of enqueueRoutes) {
       // ⚠ 先剥注释：路由的**解释性注释**里会引用这些写法（"原来是 pLimit + Promise.all(tasks)"），
@@ -69,7 +75,7 @@ describe("入队覆盖度（review-C F4 的机械守卫）", () => {
     const enqueued = new Set<string>();
     for (const def of JOB_DEFINITIONS) {
       const needle = new RegExp(`type:\\s*"${def.type.replace(".", "\\.")}"`);
-      if (ROUTE_FILES.some((f) => f.src.includes("enqueueJob(") && needle.test(f.src))) enqueued.add(def.type);
+      if (ROUTE_FILES.some((f) => f.src.includes("enqueueJobInTransaction(") && needle.test(f.src))) enqueued.add(def.type);
     }
     const expected = JOB_DEFINITIONS.map((d) => d.type).filter((t) => !SELFTEST_EXEMPT.has(t)).sort();
     expect([...enqueued].sort()).toEqual(expected);

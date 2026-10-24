@@ -1,8 +1,13 @@
 import { generateText, streamText, wrapLanguageModel, stepCountIs, extractReasoningMiddleware } from "ai";
+import type { Knex } from "knex";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
+import { randomUUID } from "node:crypto";
+import { prepareProviderUsage, recordProviderUsage, type ProviderUsageInput } from "@/billing/usage";
+import { resolveTextPricingUnit, videoPricingUnit } from "@/billing/prices";
 import u from "@/utils";
 import { getVendorModule } from "@/vendors";
+import { currentAiBillingContext, trackAiBillingTask, type AiBillingContext } from "@/billing/context";
 
 type AiType =
   | "scriptAgent"
@@ -47,7 +52,7 @@ const AiTypeValues: AiType[] = [
   "redrawAgent",
   "redrawAgent:analysisAgent",
 ];
-async function resolveModelName(value: AiType | `${string}:${string}`): Promise<`${string}:${string}`> {
+export async function resolveModelName(value: AiType | `${string}:${string}`): Promise<`${string}:${string}`> {
   if (AiTypeValues.includes(value as AiType)) {
     const agentUseModeVal = await u.db("o_setting").where("key", "agentUseMode").first();
 
@@ -80,6 +85,10 @@ async function resolveModelName(value: AiType | `${string}:${string}`): Promise<
     return modelName as `${number}:${string}`;
   }
   return value as `${number}:${string}`;
+}
+
+export function resolveAiModelName(value: "universalAi"): Promise<`${string}:${string}`> {
+  return resolveModelName(value);
 }
 
 async function getModelConfig(value: AiType | `${string}:${string}`) {
@@ -126,25 +135,23 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   const modelList = await u.vendor.getModelList(id);
   const selectedModel = modelList.find((i: any) => i.modelName == name);
   if (!selectedModel) throw new Error(`未找到模型 ${name} id=${id}`);
-  // Phase 1c Task 8：适配器是**编译期内置**的模块（`src/vendors/index.ts` 的静态注册表），
-  // 不再"读 data/vendor/<id>.ts → sucrase 转译 → vm2 沙箱执行"。
-  // ⚠ 语义回归点：旧路径每次调用都重新执行一遍适配器代码，`vendor.inputValues` 是一份**新对象**；
-  //   内置化之后模块是**单例** —— 所以 `getVendorConfigFor`（两层浅拷贝）才是"被 DB 值覆盖过的
-  //   副本"，绝不能写 `Object.assign(mod.vendor.inputValues, …)`（那会把 A 用户的 key 留在模块上，
-  //   下一个用户/B 用户取到别人的凭据）。用例见 tests/vendors-registry.test.ts。
+  // Static adapter modules are singletons. Pass each call a copied config overlaid with DB values;
+  // never write credentials into the shared module object.
   const mod = getVendorModule(id);
   if (!mod) throw new Error(`供应商适配器不存在：${id}（内置适配器见 src/vendors/index.ts）`);
-  // `models` 是"模板 models + DB 手加 models"合并后的清单（旧路径也是在这里覆盖的）。
-  // 注：适配器的请求函数签名是 `fn(input, selectedModel)`，不接收 vendor 对象；
-  //     `vendor` 只在 `Ai.getModelInfo` 一类只读路径上被读，所以这里只取函数。
+  const storedInputs = typeof vendorConfigData.inputValues === "string"
+    ? JSON.parse(vendorConfigData.inputValues || "{}")
+    : vendorConfigData.inputValues;
+  const requestVendor = u.vendor.getVendorConfigFor(id, storedInputs);
+  if (!requestVendor) throw new Error(`供应商适配器配置不存在：${id}`);
   const fn = (mod as Record<string, any>)[fnName];
   if (!fn) throw new Error(`未找到供应商配置中的函数 ${fnName} id=${id}`);
   if (fnName == "textRequest")
     return (think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) => {
       const effectiveThink = think ?? !!selectedModel.think;
-      return fn(selectedModel, effectiveThink, thinkLevel);
+      return fn(selectedModel, effectiveThink, thinkLevel, requestVendor);
     };
-  else return <T>(input: T) => fn(input, selectedModel);
+  else return <T>(input: T) => fn(input, selectedModel, requestVendor);
 }
 
 async function withTaskRecord<T>(
@@ -182,19 +189,96 @@ async function urlToBase64(url: string, retries = 3, delay = 1000): Promise<stri
   }
   throw new Error("urlToBase64 failed");
 }
+function assertBillingContext(context: AiBillingContext): void {
+  const active = currentAiBillingContext();
+  if (context.userId !== active.userId || context.requestId !== active.requestId || context.jobId !== active.jobId) {
+    throw new Error("Explicit AI billing context does not match active context");
+  }
+}
+
+interface ProviderCall {
+  providerCallId: string;
+  at: Date;
+  agentKey?: string;
+}
+
+async function beginProviderCall(
+  context: AiBillingContext,
+  modelName: `${string}:${string}`,
+  callType: string,
+  usage: NonNullable<ProviderUsageInput["usage"]>,
+  agentKey?: string,
+  at = new Date(),
+): Promise<ProviderCall> {
+  const [vendorId, model] = modelName.split(/:(.+)/);
+  const call: ProviderCall = { providerCallId: randomUUID(), at, agentKey };
+  await prepareProviderUsage(u.db as unknown as Knex, context, {
+    vendorId, model, callType, providerCallId: call.providerCallId, at: call.at,
+    ...(agentKey !== undefined && { agentKey }),
+    usageStatus: "estimated", usage,
+  });
+  return call;
+}
+
+async function finishProviderCall(
+  context: AiBillingContext,
+  modelName: `${string}:${string}`,
+  callType: string,
+  call: ProviderCall,
+  usageStatus: ProviderUsageInput["usageStatus"],
+  usage?: ProviderUsageInput["usage"],
+): Promise<void> {
+  const [vendorId, model] = modelName.split(/:(.+)/);
+  await recordProviderUsage(u.db as unknown as Knex, context, {
+    vendorId, model, callType, providerCallId: call.providerCallId, at: call.at,
+    ...(call.agentKey !== undefined && { agentKey: call.agentKey }),
+    usageStatus, usage,
+  });
+}
+
+function tokenMeasure(usage: any): ProviderUsageInput["usage"] | undefined {
+  const inTokens = usage?.inputTokens ?? usage?.promptTokens;
+  const outTokens = usage?.outputTokens ?? usage?.completionTokens;
+  if (!Number.isSafeInteger(inTokens) || !Number.isSafeInteger(outTokens)) return undefined;
+  return { unit: "token", inTokens, outTokens };
+}
+
+export function estimateInputTokens(input: any): number {
+  const source = { system: input.system, messages: input.messages, prompt: input.prompt };
+  return Math.max(1, Math.ceil(JSON.stringify(source).length / 4));
+}
+
+export async function estimateTextInvocationTokens(input: any): Promise<number> {
+  const config = await getModelConfig("universalAi");
+  return estimateInputTokens(input) + (config?.maxOutputTokens ?? 4096);
+}
+
+function textUsageForMode(
+  unit: "token" | "call",
+  measured: ProviderUsageInput["usage"],
+  estimate: { unit: "token"; inTokens: number; outTokens: number },
+): NonNullable<ProviderUsageInput["usage"]> {
+  if (unit === "token") return measured?.unit === "token" ? measured : estimate;
+  const analytics = measured?.unit === "token" ? measured : estimate;
+  return { unit: "call", inTokens: analytics.inTokens, outTokens: analytics.outTokens };
+}
+
 class AiText {
   private AiType: AiType | `${string}:${string}`;
+  private context: AiBillingContext;
   private think?: boolean;
   private thinkLevel: 0 | 1 | 2 | 3;
-  constructor(AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) {
+  constructor(AiType: AiType | `${string}:${string}`, context: AiBillingContext, think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) {
+    assertBillingContext(context);
     this.AiType = AiType;
+    this.context = context;
     this.think = think;
     this.thinkLevel = thinkLevel;
   }
-  private async resolveModel(middleware?: any | any[]) {
+  private async resolveModel(middleware?: any | any[], modelName?: `${string}:${string}`) {
     const switchAiDevTool = await u.db("o_setting").where("key", "switchAiDevTool").first();
-    const modelName = await resolveModelName(this.AiType);
-    const sdkFn = await getVendorTemplateFn("textRequest", modelName);
+    const resolvedModelName = modelName ?? await resolveModelName(this.AiType);
+    const sdkFn = await getVendorTemplateFn("textRequest", resolvedModelName);
     const baseModel = await sdkFn(this.think, this.thinkLevel);
     const mws = [
       ...(switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : []),
@@ -203,26 +287,77 @@ class AiText {
     return mws.length > 0 ? wrapLanguageModel({ model: baseModel, middleware: mws.length === 1 ? mws[0] : mws }) : baseModel;
   }
   async invoke(input: Omit<Parameters<typeof generateText>[0], "model">) {
+    const modelName = await resolveModelName(this.AiType);
     const config = await getModelConfig(this.AiType);
-
-    return generateText({
-      ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
-      ...input,
-      model: await this.resolveModel(),
-      ...(config?.temperature && { temperature: config.temperature }),
-      ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
-    } as Parameters<typeof generateText>[0]);
+    const model = await this.resolveModel(undefined, modelName);
+    const tokenEstimate = {
+      unit: "token" as const,
+      inTokens: estimateInputTokens(input),
+      outTokens: config?.maxOutputTokens ?? 4096,
+    };
+    const [vendorId, modelId] = modelName.split(/:(.+)/);
+    const at = new Date();
+    const pricingUnit = await resolveTextPricingUnit(u.db as unknown as Knex, vendorId, modelId, at);
+    const estimate = pricingUnit === "call"
+      ? { unit: "call" as const, inTokens: tokenEstimate.inTokens, outTokens: tokenEstimate.outTokens }
+      : tokenEstimate;
+    const call = await beginProviderCall(this.context, modelName, "text", estimate,
+      AiTypeValues.includes(this.AiType as AiType) ? this.AiType : undefined, at);
+    let result: Awaited<ReturnType<typeof generateText>>;
+    try {
+      result = await generateText({
+        ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
+        ...input,
+        model,
+        ...(config?.temperature && { temperature: config.temperature }),
+        ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
+      } as Parameters<typeof generateText>[0]);
+    } catch (error) {
+      await finishProviderCall(this.context, modelName, "text", call, "uncertain", pricingUnit === "call" ? estimate : undefined).catch(() => undefined);
+      throw error;
+    }
+    const measured = tokenMeasure(await result.usage);
+    await finishProviderCall(this.context, modelName, "text", call, measured ? "success" : "estimated", textUsageForMode(pricingUnit, measured, tokenEstimate));
+    return result;
   }
   async stream(input: Omit<Parameters<typeof streamText>[0], "model">) {
+    const modelName = await resolveModelName(this.AiType);
     const config = await getModelConfig(this.AiType);
-
-    return streamText({
-      ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
-      ...input,
-      model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
-      ...(config?.temperature && { temperature: config.temperature }),
-      ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
-    } as Parameters<typeof streamText>[0]);
+    const model = await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" }), modelName);
+    const tokenEstimate = {
+      unit: "token" as const,
+      inTokens: estimateInputTokens(input),
+      outTokens: config?.maxOutputTokens ?? 4096,
+    };
+    const [vendorId, modelId] = modelName.split(/:(.+)/);
+    const at = new Date();
+    const pricingUnit = await resolveTextPricingUnit(u.db as unknown as Knex, vendorId, modelId, at);
+    const estimate = pricingUnit === "call"
+      ? { unit: "call" as const, inTokens: tokenEstimate.inTokens, outTokens: tokenEstimate.outTokens }
+      : tokenEstimate;
+    const call = await beginProviderCall(this.context, modelName, "text", estimate,
+      AiTypeValues.includes(this.AiType as AiType) ? this.AiType : undefined, at);
+    let result: Awaited<ReturnType<typeof streamText>>;
+    try {
+      result = streamText({
+        ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
+        ...input,
+        model,
+        ...(config?.temperature && { temperature: config.temperature }),
+        ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
+      } as Parameters<typeof streamText>[0]);
+    } catch (error) {
+      await finishProviderCall(this.context, modelName, "text", call, "uncertain", pricingUnit === "call" ? estimate : undefined).catch(() => undefined);
+      throw error;
+    }
+    const usageTask = Promise.resolve(result.usage).then(async (usage) => {
+      const measured = tokenMeasure(usage);
+      await finishProviderCall(this.context, modelName, "text", call, measured ? "success" : "estimated", textUsageForMode(pricingUnit, measured, tokenEstimate));
+    }, async () => {
+      await finishProviderCall(this.context, modelName, "text", call, "uncertain", pricingUnit === "call" ? estimate : undefined).catch(() => undefined);
+    }).catch((error) => console.error("Failed to record streamed AI usage", error));
+    trackAiBillingTask(this.context, usageTask);
+    return result;
   }
 }
 
@@ -253,16 +388,26 @@ interface TaskRecord {
 
 class AiImage {
   private key: `${string}:${string}`;
+  private context: AiBillingContext;
   private result: string = "";
-  constructor(key: `${string}:${string}`) {
+  constructor(key: `${string}:${string}`, context: AiBillingContext) {
+    assertBillingContext(context);
     this.key = key;
+    this.context = context;
   }
   async run(input: ImageConfig, taskRecord?: TaskRecord) {
     const modelName = await resolveModelName(this.key);
     const exec = async (mn: `${string}:${string}`) => {
       const fn = await getVendorTemplateFn("imageRequest", mn);
       await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
-      this.result = await fn(input);
+      const call = await beginProviderCall(this.context, mn, "image", { unit: "image", imageCount: 1 });
+      try {
+        this.result = await fn(input);
+      } catch (error) {
+        await finishProviderCall(this.context, mn, "image", call, "uncertain").catch(() => undefined);
+        throw error;
+      }
+      await finishProviderCall(this.context, mn, "image", call, "success", { unit: "image", imageCount: 1 });
       if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
       return this;
     };
@@ -299,9 +444,12 @@ interface VideoConfig {
 
 class AiVideo {
   private key: `${string}:${string}`;
+  private context: AiBillingContext;
   private result: string = "";
-  constructor(key: `${string}:${string}`) {
+  constructor(key: `${string}:${string}`, context: AiBillingContext) {
+    assertBillingContext(context);
     this.key = key;
+    this.context = context;
   }
   async run(input: VideoConfig, taskRecord?: TaskRecord) {
     const modelName = await resolveModelName(this.key);
@@ -309,8 +457,15 @@ class AiVideo {
       const exec = async (mn: `${string}:${string}`) => {
         const fn = await getVendorTemplateFn("videoRequest", mn);
         await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
-
-        this.result = await fn(input);
+        const usage = { unit: videoPricingUnit(input.resolution), videoSeconds: String(input.duration) };
+        const call = await beginProviderCall(this.context, mn, "video", usage);
+        try {
+          this.result = await fn(input);
+        } catch (error) {
+          await finishProviderCall(this.context, mn, "video", call, "uncertain").catch(() => undefined);
+          throw error;
+        }
+        await finishProviderCall(this.context, mn, "video", call, "estimated", usage);
 
         if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
       };
@@ -331,21 +486,29 @@ class AiVideo {
 }
 class AiAudio {
   private key: `${string}:${string}`;
+  private context: AiBillingContext;
   private result: string = "";
-  constructor(key: `${string}:${string}`) {
+  constructor(key: `${string}:${string}`, context: AiBillingContext) {
+    assertBillingContext(context);
     this.key = key;
+    this.context = context;
   }
   async run(input: VideoConfig, taskRecord?: TaskRecord) {
     const modelName = await resolveModelName(this.key);
     const exec = async (mn: `${string}:${string}`) => {
+      const fn = await getVendorTemplateFn("ttsRequest", mn);
+      await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
+      const call = await beginProviderCall(this.context, mn, "audio", { unit: "character", text: input.prompt });
       try {
-        const fn = await getVendorTemplateFn("ttsRequest", mn);
-        await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
         this.result = await fn(input);
+      } catch (error) {
+        await finishProviderCall(this.context, mn, "audio", call, "uncertain").catch(() => undefined);
+        throw error;
+      }
+      await finishProviderCall(this.context, mn, "audio", call, "estimated", { unit: "character", text: input.prompt });
 
-        if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
-        return this;
-      } catch (e) {}
+      if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      return this;
     };
     if (taskRecord) {
       return withTaskRecord(this.key, taskRecord.taskClass, taskRecord.describe, taskRecord.relatedObjects, taskRecord.projectId, exec);
@@ -359,8 +522,8 @@ class AiAudio {
 }
 
 export default {
-  Text: (AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) => new AiText(AiType, think, thinkLevel),
-  Image: (key: `${string}:${string}`) => new AiImage(key),
-  Video: (key: `${string}:${string}`) => new AiVideo(key),
-  Audio: (key: `${string}:${string}`) => new AiAudio(key),
+  Text: (AiType: AiType | `${string}:${string}`, context: AiBillingContext, think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) => new AiText(AiType, context, think, thinkLevel),
+  Image: (key: `${string}:${string}`, context: AiBillingContext) => new AiImage(key, context),
+  Video: (key: `${string}:${string}`, context: AiBillingContext) => new AiVideo(key, context),
+  Audio: (key: `${string}:${string}`, context: AiBillingContext) => new AiAudio(key, context),
 };

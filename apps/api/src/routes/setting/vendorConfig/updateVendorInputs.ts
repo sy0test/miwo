@@ -5,6 +5,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { requireAdmin } from "@/middleware/tenant";
 import { audit, AUDIT_ACTIONS, actorFromCtx } from "@/utils/audit";
+import { isSecretKey, SECRET_MASK } from "@/utils/secrets";
 
 // Phase 1c Task 8：删掉了 `import { transform } from "sucrase"` —— 本文件从没执行过提交的代码
 //   （它只是写 DB 一行 `inputValues`），但**沙箱入口就挂在这一族路由上**，Task 8/9 一并收口。
@@ -21,12 +22,20 @@ export default router.post(
   requireAdmin,
   async (req, res) => {
     const { id, inputValues } = req.body;
+    const current = await u.db("o_vendorConfig").where("id", id).first();
+    const existingValues = JSON.parse(current?.inputValues || "{}");
+    const updatedValues = { ...inputValues };
+    for (const [key, value] of Object.entries(updatedValues)) {
+      if (isSecretKey(key) && value === SECRET_MASK) {
+        updatedValues[key] = existingValues[key] ?? "";
+      }
+    }
 
     await u
       .db("o_vendorConfig")
       .where("id", id)
       .update({
-        inputValues: JSON.stringify(inputValues),
+        inputValues: JSON.stringify(updatedValues),
       });
     // 响应**不回显**任何输入值（改前回的是 `success("更新成功")` 这种固定文案；
     // 这条断言由 tests/vendor-secrets.test.ts 的"响应体不含 sk-"守住）。

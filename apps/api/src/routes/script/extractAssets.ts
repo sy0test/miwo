@@ -1,4 +1,5 @@
 import express from "express";
+import { currentAiBillingContext } from "@/billing/context";
 import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
@@ -54,6 +55,60 @@ function chunkArray(arr: number[], groupSize: number): number[][][] {
   return groupChunks;
 }
 
+/**
+ * 把 AI 工具返回的资产形状**收干净**再落库。
+ *
+ * ⚠ 为什么必须做（线上实测）：`tool({ inputSchema: jsonSchema(...) })` 的 schema 只是喂给模型的
+ *   **提示**，AI SDK 不会拿它做运行时校验。模型一旦漏掉 `scriptIds`（或给成字符串/数字），
+ *   `persistGroupResult` 里的 `for (const sid of asset.scriptIds)` 就直接抛
+ *   `asset.scriptIds is not iterable`，整批剧本被标成「资产提取失败」。
+ *   这里按"宽松收编"处理：缺省回填本批剧本 id（资产确实出现在这批剧本里），
+ *   字符串/数字统一成数字数组，非法 id 剔除，无名条目丢弃，非法 type 回退 scene。
+ */
+export function normalizeAssetItems(
+  raw: { newAssets?: unknown; existingAssetRefs?: unknown },
+  batchScriptIds: number[],
+): { newAssets: NewAsset[]; existingRefs: ExistingAssetRef[] } {
+  const fallback = batchScriptIds.filter((id) => Number.isSafeInteger(id) && id > 0);
+
+  const toItems = (value: unknown): any[] => {
+    if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object");
+    if (value && typeof value === "object") return [value];
+    return [];
+  };
+
+  const toScriptIds = (value: unknown): number[] => {
+    const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[,，\s]+/) : [value];
+    const ids = list
+      .map((item) => (typeof item === "number" ? item : Number(String(item ?? "").trim())))
+      .filter((id): id is number => Number.isSafeInteger(id) && id > 0);
+    const unique = [...new Set(ids)];
+    return unique.length ? unique : [...fallback];
+  };
+
+  const toName = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+  const newAssets: NewAsset[] = toItems(raw?.newAssets).flatMap((item) => {
+    const name = toName(item.name);
+    if (!name) return [];
+    const type = item.type === "role" || item.type === "tool" || item.type === "scene" ? item.type : "scene";
+    return [{
+      name,
+      desc: typeof item.desc === "string" ? item.desc : String(item.desc ?? ""),
+      type,
+      scriptIds: toScriptIds(item.scriptIds),
+    }];
+  });
+
+  const existingRefs: ExistingAssetRef[] = toItems(raw?.existingAssetRefs).flatMap((item) => {
+    const name = toName(item.name);
+    return name ? [{ name, scriptIds: toScriptIds(item.scriptIds) }] : [];
+  });
+
+  return { newAssets, existingRefs };
+}
+
+
 export default router.post(
   "/",
   validateFields({
@@ -83,7 +138,12 @@ export default router.post(
     /** 一组剧本提取完成后统一入库并建立关联 */
     async function persistGroupResult(result: GroupResult) {
       if (!result) return;
-      const { batchScriptIds, newAssets, existingRefs } = result;
+      const { batchScriptIds } = result;
+      // AI 输出不可信（见 normalizeAssetItems 的注释）：先收干净，再要求"至少有一条"
+      const { newAssets, existingRefs } = normalizeAssetItems(
+        { newAssets: result.newAssets, existingAssetRefs: result.existingRefs },
+        batchScriptIds,
+      );
       if (!newAssets.length && !existingRefs.length) return;
 
       // 查询已有资产
@@ -216,7 +276,7 @@ export default router.post(
             : "";
           // Phase 1d Task 9：厂商调用前过全局闸门（spec §9.3）。响应形态不变。
           const output = await withVendorSlot("vendor:text", apiHolderId(), () =>
-            u.Ai.Text("universalAi").invoke({
+            u.Ai.Text("universalAi", currentAiBillingContext()).invoke({
             messages: [
               {
                 role: "system",

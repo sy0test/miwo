@@ -138,6 +138,21 @@ describe("守卫：写路径", () => {
     expect((await knex("o_tasks").where("id", 30).first()).userId).toBe(7);
     await knex.destroy();
   });
+
+  it("nested trx creates a guarded savepoint that rolls back independently", async () => {
+    const knex = await fixture();
+    const { db } = withCtx(knex, userA);
+    await db.transaction(async (trx: any) => {
+      await trx("o_tasks").insert({ id: 31, projectId: 100, state: "outer-before" });
+      await expect(trx.transaction(async (savepoint: any) => {
+        await savepoint("o_tasks").insert({ id: 32, projectId: 100, state: "nested" });
+        throw new Error("rollback savepoint");
+      })).rejects.toThrow("rollback savepoint");
+      await trx("o_tasks").insert({ id: 33, projectId: 100, state: "outer-after" });
+    });
+    expect(await knex("o_tasks").whereIn("id", [31, 32, 33]).select("id")).toEqual([{ id: 31 }, { id: 33 }]);
+    await knex.destroy();
+  });
 });
 
 describe("守卫：fail-closed", () => {
@@ -262,11 +277,11 @@ describe("守卫：knex 结构契约（升级护栏）", () => {
     expect(() => parseTableSpec(1)).toThrow(PolicyNotFoundError);
   });
 
-  it("策略表只有 tenant/platform 两态（本阶段无 global 表，结论 2），且租户表 22 张", () => {
+  it("策略表只有 tenant/platform 两态（本阶段无 global 表，结论 2），且租户表 28 张", () => {
     const values = new Set(Object.values(TABLE_POLICIES));
     expect([...values].sort()).toEqual(["platform", "tenant"]); // 本阶段无 global（结论 2）
-    // ⚠【Phase 1c Task 1】20 → 22（`006_quota_grants` 的 `o_account` / `o_modelGrant`）
-    expect(TENANT_TABLES.length).toBe(22);
+    // 22 existing + 3 billing + 2 durable admission + user-group membership
+    expect(TENANT_TABLES.length).toBe(28);
   });
 });
 

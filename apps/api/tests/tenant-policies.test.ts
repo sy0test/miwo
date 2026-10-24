@@ -78,25 +78,24 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     const created = parsed.deployedTables;
     const declared = Object.keys(TABLE_POLICIES).filter((t) => !INFRA_TABLES.has(t)).sort();
     expect(declared).toEqual(created); // 双向相等：少一张 / 多一张都红
-    // ⚠ 阶段口径：1a 的 27 张 + Task 1 的 7 张（005 的 6 张 + 006 的 2 张 − 1 张是 o_user 重建）= 33
-    //   + Phase 1d Task 1 的 2 张 **platform** 表（`o_job` / `o_gate`，迁移 007/008）= **35**。
-    //   租户表仍是 22 张（下面的用例钉住它）—— 队列表是跨租户的 platform 基础设施。
-    expect(created).toHaveLength(35);
+    // 35 张既有表 + 4 张账务表 + 2 张准入表 + 5 张授权分组表 = 46 张。
+    expect(created).toHaveLength(46);
     // ⚠ 退役表口径 = "被 dropTableIfExists 删过 **且从没被创建过**"（005/006 的 down 也删自建表，
     //   把那些算成"退役"会让这条断言永久对不上 —— 解析器里有详细说明）
     expect(parsed.retiredTables).toEqual(["o_skillAttribution", "o_skillList"]);
   });
 
-  it("22 张租户表（Phase 1a Ruling 32 的 20 张 + Phase 1c Task 1 的 o_account/o_modelGrant）", () => {
+  it("28 张租户表（含账务表、准入表与用户组成员关系）", () => {
     expect(TENANT_TABLES.slice().sort()).toEqual(
       [
         "memories", "o_account", "o_agentWorkData", "o_assets", "o_assets2Storyboard", "o_assetsRole2Audio",
         "o_event", "o_eventChapter", "o_image", "o_imageFlow", "o_modelGrant", "o_novel", "o_project",
         "o_script", "o_scriptAssets", "o_segment", "o_shot", "o_shotAssets", "o_storyboard", "o_tasks",
-        "o_video", "o_videoTrack",
+        "o_video", "o_videoTrack", "o_usage", "o_ledger", "o_order", "o_dailyQuotaAdmission", "o_usageAdmission",
+        "o_userGroupMembership",
       ].sort(),
     );
-    expect(TENANT_TABLES).toHaveLength(22);
+    expect(TENANT_TABLES).toHaveLength(28);
     expect(USER_COLUMN).toBe("userId");
   });
 
@@ -105,8 +104,8 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     const backfill = [...BACKFILL_TARGET_TABLES].sort();
     const exempt = [...BACKFILL_EXEMPT_TABLES].sort();
     const selfCheck = [...SELF_CHECK_TABLES].sort();
-    // 豁免集非空（本任务新增了两张"迁移后新建的租户空表"）
-    expect(exempt).toEqual(["o_account", "o_modelGrant"]);
+    // 新增租户表均为迁移后创建的空表，不进入历史归属回填。
+    expect(exempt).toEqual(["o_account", "o_dailyQuotaAdmission", "o_ledger", "o_modelGrant", "o_order", "o_usage", "o_usageAdmission", "o_userGroupMembership"]);
     // ① 并集恰好覆盖全部租户表（"多一张租户表但没归类"必红）
     expect([...new Set(["o_project", ...backfill, ...exempt])].sort()).toEqual(tenant);
     // ② 自检表 == TENANT − EXEMPT（豁免表没有历史行，不进自检）
@@ -123,13 +122,13 @@ describe("策略表（spec §6.2 / 附录 A）", () => {
     expect(policyOf("knex_migrations_lock")).toBe("platform");
   });
 
-  it("平台表集合与附录 A 一致（Task 1 新增 4 张账号族表；Phase 1d Task 1 再 +2 张队列表）", () => {
+  it("平台表集合与附录 A 一致（账号族表、Phase 1d 队列表及 Phase 2 定价表）", () => {
     const platform = Object.entries(TABLE_POLICIES).filter(([, p]) => p === "platform").map(([t]) => t).sort();
     expect(platform).toEqual(
       [
         "knex_migrations", "knex_migrations_lock", "o_agentDeploy", "o_artStyle", "o_auditLog", "o_gate",
-        "o_invite", "o_job", "o_loginAttempt", "o_modelPrompt", "o_prompt", "o_setting", "o_user",
-        "o_userSetting", "o_vendorConfig",
+        "o_invite", "o_job", "o_loginAttempt", "o_modelPrompt", "o_price", "o_prompt", "o_setting", "o_user",
+        "o_userSetting", "o_vendorConfig", "o_modelGroup", "o_modelGroupItem", "o_userGroup", "o_userGroupModelGroup",
       ].sort(),
     );
     // ⚠ 登录发生在建租户 ctx 之前 ⇒ 账号族的承载表**必须**是 platform（无 ctx 可读）
