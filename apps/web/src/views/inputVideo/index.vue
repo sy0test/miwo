@@ -48,41 +48,43 @@
                 {{ $t("workbench.inputVideo.episode", { n: item.sortIndex }) }}
               </t-tag>
             </div>
-            <div class="status f ac">
-              <!-- extractState：0 正在提取 / 1 成功 / 2 等待提取 / 3 待对账 / -1 失败（3 是转绘新增档） -->
-              <t-loading v-if="item.extractState === 0" size="small" :text="$t('workbench.inputVideo.analyzing')" />
-              <t-tooltip
-                v-else-if="item.extractState === -1"
-                theme="light"
-                placement="top-left"
-                :overlay-style="{ maxWidth: '460px' }">
-                <t-tag theme="danger" size="small">{{ $t("workbench.inputVideo.failed") }}</t-tag>
+            <div class="status f ac" style="gap: 8px">
+              <t-loading v-if="item.extractState === 0" size="small" />
+              <t-tooltip v-if="viewOf(item).theme === 'danger'" theme="light" placement="top-left" :overlay-style="{ maxWidth: '460px' }">
+                <t-tag theme="danger" size="small">{{ viewOf(item).label }}</t-tag>
                 <template #content>
-                  <div class="errBox">{{ item.errorReason }}</div>
+                  <div class="errBox">{{ item.errorReason || "未知原因" }}</div>
                 </template>
               </t-tooltip>
-              <!-- 3 = 解析完了，但资产还没跟用户认账、转绘分镜表也还没出。放在 analyzed 之前 —— 它会赢过那个分支。 -->
-              <t-tag v-else-if="item.extractState === 3" theme="warning" variant="light">
-                {{ $t("workbench.inputVideo.pendingReconcile") }}
-              </t-tag>
-              <t-tag v-else-if="item.analyzed" theme="success" variant="light">
-                {{ $t("workbench.inputVideo.analyzed", { count: item.storyboards }) }}
-              </t-tag>
-              <t-tag v-else theme="default" variant="light">{{ $t("workbench.inputVideo.waitAnalyze") }}</t-tag>
+              <t-tag v-else :theme="viewOf(item).theme" size="small" variant="light">{{ viewOf(item).label }}</t-tag>
+              <t-progress
+                v-if="item.extractState === 0 && item.progress != null"
+                :percentage="Number(item.progress) || 0"
+                size="small"
+                style="width: 72px" />
             </div>
             <div class="cardFoot fc">
               <t-button
-                v-if="item.analyzed"
-                theme="default"
-                variant="outline"
+                v-if="primaryOf(item)"
+                :theme="primaryOf(item)!.theme"
+                :variant="primaryOf(item)!.key === 'produce' ? 'base' : 'base'"
                 block
-                :disabled="item.extractState === 0"
-                @click="startAnalyze(item, true)">
-                {{ $t("workbench.inputVideo.reAnalyze") }}
+                :disabled="primaryOf(item)!.disabled || busyId === item.id"
+                :loading="busyId === item.id"
+                @click="onPrimary(item)">
+                {{ primaryOf(item)!.label }}
               </t-button>
-              <t-button v-else theme="primary" block :disabled="item.extractState === 0" @click="startAnalyze(item, false)">
-                {{ $t("workbench.inputVideo.startAnalyze") }}
-              </t-button>
+              <div v-if="secondaryOf(item).length" class="secondaryActions f ac">
+                <t-button
+                  v-for="a in secondaryOf(item)"
+                  :key="a.key"
+                  size="small"
+                  variant="text"
+                  :disabled="busyId === item.id"
+                  @click="onSecondary(item, a)">
+                  {{ a.label }}
+                </t-button>
+              </div>
             </div>
           </t-card>
         </div>
@@ -98,8 +100,10 @@
 <script setup lang="ts">
 import axios from "@/utils/axios";
 import projectStore from "@/stores/project";
+import { primaryActionFor, secondaryActionsFor, statusViewFor } from "@/views/redraw/logic";
 
 const { project } = storeToRefs(projectStore());
+const router = useRouter();
 
 interface SourceItem {
   id: number;
@@ -109,7 +113,12 @@ interface SourceItem {
   coverPath: string | null;
   coverUrl: string | null;
   videoUrl: string | null;
-  extractState: number | null; // -1 失败 0 正在提取 1 成功 2 等待提取 3 待对账
+  extractState: number | null; // -1 失败 0 正在提取 1 成功 2 等待提取（转绘不再写 3）
+  redrawState?: number | null; // 0 未开始 / 1 待认账 / 2 资产已确认 / 3 转绘待确认 / 4 可生成 / -1 失败
+  stage?: string | null; // 预处理阶段：cut / transcribe / analyze
+  progress?: number | null; // 0~100
+  clipsReady?: boolean;
+  segmentCap?: number;
   errorReason: string | null;
   createTime: number | null;
   storyboards: number;
@@ -243,6 +252,90 @@ async function doAnalyze(item: SourceItem, replace: boolean) {
   }
 }
 
+// ---- 转绘状态机：卡片按钮由 redrawState 决定 ----
+const busyId = ref<number | null>(null);
+
+function epOf(item: SourceItem) {
+  const inferred = item.redrawState == null ? (item.analyzed || (item.storyboards ?? 0) > 0 ? 1 : 0) : item.redrawState;
+  return {
+    extractState: Number(item.extractState ?? 0),
+    redrawState: Number(inferred ?? 0),
+    stage: item.stage ?? null,
+    progress: item.progress ?? null,
+    segmentCount: Number(item.storyboards ?? 0),
+    assetTotal: 0,
+    assetsConfirmed: 0,
+    clipsReady: Boolean(item.clipsReady),
+    segmentCap: Number(item.segmentCap ?? 15),
+    capConfirmed: true,
+  };
+}
+function viewOf(item: SourceItem) {
+  return statusViewFor(epOf(item));
+}
+function primaryOf(item: SourceItem) {
+  return primaryActionFor(epOf(item), { busy: busyId.value === item.id });
+}
+function secondaryOf(item: SourceItem) {
+  return secondaryActionsFor(epOf(item));
+}
+
+function goRoute(route: string, item: SourceItem) {
+  if (route === "session") router.push("/redraw/session/" + item.id);
+  else if (route === "review") router.push("/redraw/review/" + item.id);
+  else router.push(route);
+}
+
+async function onPrimary(item: SourceItem) {
+  const a = primaryOf(item);
+  if (!a || a.disabled) return;
+  if (a.route) return goRoute(a.route, item);
+  if (a.action === "analyze") {
+    const replace = Number(epOf(item).redrawState) > 0 || item.analyzed;
+    return startAnalyze(item, replace);
+  }
+  if (a.action === "generateStoryboard") return generateForItem(item);
+}
+
+async function onSecondary(item: SourceItem, a: { key: string; action?: string }) {
+  if (a.key === "reanalyze") return startAnalyze(item, true);
+  if (a.key === "cut") return cutClips(item);
+}
+
+async function cutClips(item: SourceItem) {
+  busyId.value = item.id;
+  try {
+    const res: any = await axios.post("/redraw/cutSource", {
+      projectId: Number(project.value!.id),
+      scriptId: item.id,
+      onlyMissing: true,
+      cleanStale: true,
+    });
+    const d = res?.data ?? res;
+    const cut = Number(d?.cut ?? 0);
+    const skipped = Number(d?.skipped ?? 0);
+    window.$message.success("切原片完成：新切 " + cut + " 段 / 跳过 " + skipped + " 段");
+    await fetchList();
+  } catch (e: any) {
+    window.$message.error(errText(e));
+  } finally {
+    busyId.value = null;
+  }
+}
+
+async function generateForItem(item: SourceItem) {
+  busyId.value = item.id;
+  try {
+    await axios.post("/redraw/generateStoryboard", { projectId: Number(project.value!.id), scriptId: item.id });
+    window.$message.success("转绘分镜已开始生成");
+    router.push("/redraw/review/" + item.id);
+  } catch (e: any) {
+    window.$message.error(errText(e));
+  } finally {
+    busyId.value = null;
+  }
+}
+
 // ---- 轮询：只要还有卡在「正在提取」，就每 3 秒拉一次列表 ----
 const analyzingCount = computed(() => sources.value.filter((s) => s.extractState === 0).length);
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -319,7 +412,11 @@ watch(
   .contentArea {
     .sourceList {
       gap: 20px;
-      .sourceCard {
+      .secondaryActions {
+    justify-content: center;
+    gap: 4px;
+  }
+  .sourceCard {
         width: 400px;
         .card {
           display: flex;
