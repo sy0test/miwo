@@ -172,8 +172,20 @@ describe("路径解析", () => {
     expect(fs.existsSync(found)).toBe(true);
   });
 
-  it("resolvePython：显式值优先；缺省按平台给 python/python3", () => {
+  it("resolvePython：显式值优先；有仓库 venv 用它；都没有才按平台给 python/python3", () => {
     expect(resolvePython("/opt/venv/bin/python")).toBe("/opt/venv/bin/python");
-    expect(resolvePython()).toBe(process.platform === "win32" ? "python" : "python3");
+    const venvPython = path.resolve(
+      __dirname,
+      "..",
+      "asr",
+      ".venv",
+      process.platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python"),
+    );
+    if (fs.existsSync(venvPython)) {
+      // 本地开发机按 requirements 建过 venv ⇒ 必须优先用它（否则手工 pnpm dev 会落到系统 Python）
+      expect(resolvePython()).toBe(venvPython);
+    } else {
+      expect(resolvePython()).toBe(process.platform === "win32" ? "python" : "python3");
+    }
   });
 });
