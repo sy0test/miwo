@@ -66,8 +66,16 @@ def load_model(args):
 
 
 def detect_language(model, wav_path):
-    """返回 (language, probability)。不同 faster-whisper 版本返回元组长度不同，按位置取前两项。"""
-    result = model.detect_language(wav_path)
+    """返回 (language, probability)。不同 faster-whisper 版本返回元组长度不同，按位置取前两项。
+
+    ⚠ WhisperModel.detect_language 的入参是**解码后的 np.ndarray**，不是文件路径；
+    直接传路径在 1.1.1 上会抛 "'str' object has no attribute 'dtype'"（被上层吞掉后
+    退化成 transcribe 自动检测，行为虽然还能跑，但日志会一直报警且语种判定不受控）。
+    """
+    from faster_whisper.audio import decode_audio
+
+    audio = decode_audio(wav_path, sampling_rate=16000)
+    result = model.detect_language(audio)
     if isinstance(result, tuple):
         language = result[0]
         prob = result[1] if len(result) > 1 else None

@@ -2,5 +2,10 @@
 # 安装：python -m venv .venv && .venv/bin/pip install -r apps/api/asr/requirements.txt
 # ⚠ 模型文件不进 git：用 apps/api/scripts/fetch-asr-model.cjs 下载到 MIWO_ASR_MODEL_DIR。
 faster-whisper==1.1.1
-# 1.1.1 依赖：ctranslate2 / huggingface-hub / tokenizers / onnxruntime 由 pip 解析
-# CPU 推理（int8）不需要 CUDA 版 ctranslate2。
+
+# ---- 兼容性钉子（2026-10-24 本地实测）：不钉这三条，新装环境上 transcribe.py 直接 ImportError / TypeError ----
+# 1) huggingface-hub>=2 不再依赖 requests，而 faster-whisper 1.1.1 的 utils 里 import requests → 必须<2
+huggingface-hub<2
+requests>=2.31
+# 2) PyAV 19 移除了 metadata_errors 参数，faster-whisper 1.1.1 仍传它 → 钉 13.1.0
+av==13.1.0
