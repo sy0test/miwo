@@ -474,7 +474,7 @@ export default async function startServe(randomPort: Boolean = false) {
         // 启动时看起来一切正常，点「开始分析」才在转写阶段失败（本机实测踩过）。
         const asr = checkAsrRuntime();
         if (asr.okay) {
-          console.log(`[redraw] ASR 可用: ${asr.python}（模型 ${config.asr.model} / ${config.asr.compute}）`);
+          console.log(`[redraw] ASR 可用: ${asr.python}（模型 ${config.asr.model} @ ${asr.modelDir} / ${config.asr.compute}）`);
         } else {
           console.warn(
             `[redraw] ⚠ ASR 不可用：python=${asr.python}；${asr.message}\n` +

@@ -56,5 +56,7 @@ version.txt
 # 转绘本地 ASR：模型文件与 venv 不进 git（用 scripts/fetch-asr-model.cjs 下载）
 asr/models/
 asr/.venv/
+# dev 默认模型目录（config.asr.modelDir = <MIWO_DATA_DIR>/asr-models）；模型不进 git
+data/asr-models/
 __pycache__/
 *.pyc

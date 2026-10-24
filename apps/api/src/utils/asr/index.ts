@@ -123,10 +123,30 @@ export function checkAsrRuntime(timeoutMs = 8000): {
   okay: boolean;
   python: string;
   script: string;
+  modelDir: string;
   message: string;
 } {
   const python = resolvePython();
   const script = resolveAsrScript();
+  const modelDir = path.join(config.asr.modelDir, config.asr.model);
+  // 模型必须已经落在本地目录里：离线模式下 faster-whisper 不会回退去网上下载，
+  // 缺模型时的真实报错是难读的 LocalEntryNotFoundError，这里提前说清楚。
+  const hasModel =
+    fs.existsSync(path.join(modelDir, "model.bin")) || fs.existsSync(path.join(modelDir, "model.safetensors"));
+  if (!hasModel) {
+    return {
+      okay: false,
+      python,
+      script,
+      modelDir,
+      message:
+        "ASR 模型缺失：" +
+        modelDir +
+        "（运行 node scripts/fetch-asr-model.cjs --model " +
+        config.asr.model +
+        " 下载，或把已下载的模型目录拷到这里）",
+    };
+  }
   try {
     const r = spawnSync(python, ["-c", "import faster_whisper"], {
       encoding: "utf8",
@@ -134,7 +154,7 @@ export function checkAsrRuntime(timeoutMs = 8000): {
       windowsHide: true,
       env: { ...process.env, PYTHONIOENCODING: "utf-8" },
     });
-    if (r.error) return { okay: false, python, script, message: r.error.message };
+    if (r.error) return { okay: false, python, script, modelDir, message: r.error.message };
     if (r.status !== 0) {
       const detail = String(r.stderr || r.stdout || "")
         .trim()
@@ -142,11 +162,11 @@ export function checkAsrRuntime(timeoutMs = 8000): {
         .filter((l) => l.trim())
         .slice(-3)
         .join(" | ");
-      return { okay: false, python, script, message: detail || ("退出码 " + String(r.status)) };
+      return { okay: false, python, script, modelDir, message: detail || ("退出码 " + String(r.status)) };
     }
-    return { okay: true, python, script, message: "" };
+    return { okay: true, python, script, modelDir, message: "" };
   } catch (e: any) {
-    return { okay: false, python, script, message: e?.message ?? String(e) };
+    return { okay: false, python, script, modelDir, message: e?.message ?? String(e) };
   }
 }
 
@@ -163,8 +183,16 @@ export const defaultAsrRunner: AsrRunner = (inv) =>
     try {
       child = spawn(inv.python, args, {
         windowsHide: true,
-        // PYTHONIOENCODING 避免 Windows 控制台默认 GBK 把中文 stderr 编坏；HF 离线由镜像保证
-        env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+        // PYTHONIOENCODING 避免 Windows 控制台默认 GBK 把中文 stderr 编坏。
+        // HF_HUB_OFFLINE 默认开：模型由 fetch-asr-model.cjs / 镜像固化在本地目录，
+        // 运行时**不应该**再访问 HuggingFace（国内网络会 10060 超时，表现为"转写失败"）。
+        // 想临时联网下载可显式设 HF_HUB_OFFLINE=0。
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: "utf-8",
+          HF_HUB_OFFLINE: process.env.HF_HUB_OFFLINE ?? "1",
+          HF_HUB_DISABLE_TELEMETRY: "1",
+        },
       });
     } catch (e: any) {
       resolve({ code: null, stdout, stderr, error: e instanceof Error ? e : new Error(String(e)) });
