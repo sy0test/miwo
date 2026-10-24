@@ -27,7 +27,9 @@ type AiType =
   | "productionAgent:storyboardPanelAgent"
   | "productionAgent:storyboardTableAgent"
   | "redrawAgent"
-  | "redrawAgent:analysisAgent";
+  | "redrawAgent:analysisAgent"
+  | "redrawAgent:reconcileAgent"
+  | "redrawAgent:storyboardAgent";
 
 type FnName = "textRequest" | "imageRequest" | "videoRequest" | "ttsRequest";
 
@@ -51,6 +53,8 @@ const AiTypeValues: AiType[] = [
   "universalAi",
   "redrawAgent",
   "redrawAgent:analysisAgent",
+  "redrawAgent:reconcileAgent",
+  "redrawAgent:storyboardAgent",
 ];
 export async function resolveModelName(value: AiType | `${string}:${string}`): Promise<`${string}:${string}`> {
   if (AiTypeValues.includes(value as AiType)) {

@@ -191,7 +191,7 @@ describe("009_billing migration", () => {
       expect(await db("o_account").where({ userId: missing.id }).first()).toMatchObject({ balanceMicro: 0, frozenMicro: 0, version: 0 });
       expect(await db("o_account").where({ userId: existing.id }).first()).toMatchObject({ balanceMicro: 987654, frozenMicro: 1234, version: 9, updatedAt: 456 });
       expect(accountBootstrap.name).toBe("013_account_bootstrap");
-      expect(MIGRATIONS[MIGRATIONS.length - 1]?.name).toBe("015_redraw_v2");
+      expect(MIGRATIONS[MIGRATIONS.length - 1]?.name).toBe("016_redraw_pipeline");
     } finally {
       await db.destroy();
     }
@@ -216,4 +216,3 @@ describe("009_billing migration", () => {
     }
   });
 });
-

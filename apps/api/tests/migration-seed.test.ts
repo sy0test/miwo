@@ -5,7 +5,7 @@
  *   1. `seed/*.ndjson` 每行都是**完整** JSON（截断会当场炸）且非空；
  *   2. 仓库里的种子文件**不含凭据痕迹**（Step 2 的"导出物不泄漏凭证"落到回归网里）；
  *   3. `o_prompt` 的 4 条都在，且 `videoPromptGeneration.data` 有量级护栏（防被截断成 2000）；
- *   4. `o_agentDeploy` 19 行且关键 key 齐全（`resolveModelName` 需要行存在）；
+ *   4. `o_agentDeploy` 21 行（19 条种子 + 016 补的 2 条转绘部署行，R1-G3）且关键 key 齐全；
  *   5. `o_setting` 只有平台键、**绝无 `tokenKey`**（Phase 1c 才把它彻底移出 DB）；
  *   6. `o_vendorConfig` 恰好 8 个空模板行（enable=0 / inputValues={} / models=[]）；
  *   7. **只插不改**：手工改过的行重跑 `up` 不被覆盖；第二次 `up` 插入 0 行；
@@ -149,11 +149,12 @@ describe("002_platform_seed", () => {
     await db.destroy();
   });
 
-  it("o_agentDeploy 19 行，且基行/子键/转绘行的 key 都在", async () => {
+  it("o_agentDeploy 21 行（19 种子 + 016 的 2 条转绘部署行），关键 key 都在", async () => {
     const db = await migratedDb();
     const keys = (await db("o_agentDeploy").pluck("key")).sort();
-    expect(keys.length).toBe(19);
-    for (const k of ["scriptAgent", "productionAgent", "universalAi", "ttsDubbing", "redrawAgent", "redrawAgent:analysisAgent", "productionAgent:storyboardTableAgent"]) {
+    // 19 = 002 种子的 19 条；+2 = 016_redraw_pipeline 补的 reconcileAgent / storyboardAgent（R1-G3）
+    expect(keys.length).toBe(21);
+    for (const k of ["scriptAgent", "productionAgent", "universalAi", "ttsDubbing", "redrawAgent", "redrawAgent:analysisAgent", "productionAgent:storyboardTableAgent", "redrawAgent:reconcileAgent", "redrawAgent:storyboardAgent"]) {
       expect(keys).toContain(k);
     }
     await db.destroy();
@@ -224,7 +225,8 @@ describe("002_platform_seed", () => {
     expect(after).toEqual(before);
     // 而且第一次迁移本身就"插满了"（不是 0 行 -> 0 行的假幂等）
     expect(before[0]).toBe(4);
-    expect(before[1]).toBe(19);
+    // o_agentDeploy：19 条 002 种子 + 2 条 016 部署行
+    expect(before[1]).toBe(21);
     // ⚠【Phase 1c Task 1】`o_setting` 的 4 是**002 的种子行数**；`005_accounts` 另补 2 个平台开关 ⇒ 6
     expect(before[2]).toBe(6);
     expect(before[3]).toBe(8);
@@ -268,6 +270,8 @@ describe("002_platform_seed", () => {
     expect((await db("o_vendorConfig").where("id", "miwo").first()).enable).toBe(1);
     // 而没动过的种子行照旧被删干净：down 仍然是"可回滚"的，不是"什么都不删"
     expect(await db("o_prompt").where("type", "eventExtraction").first()).toBeUndefined();
+    // ⚠ seed ndjson 已在 M2 补齐那两条（新库由 002 直接种下，老库由 016 insert-if-absent 补），
+    //   所以 002 的 down 会把它们一并删掉 —— 这里回到"整表为空"。
     expect(await db("o_agentDeploy").first()).toBeUndefined();
     expect(await db("o_setting").where("key", "modelDtype").first()).toBeUndefined();
     await db.destroy();

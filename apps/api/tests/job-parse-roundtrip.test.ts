@@ -54,6 +54,9 @@ const RAW: Record<string, unknown> = {
   "image.storyboard.batch": { projectId: 1, scriptId: 2, storyboardIds: [21, 22], compulsory: false },
   "image.productionAssets.batch": { projectId: 1, scriptId: 2, assetIds: [31] },
   "prompt.batch": { projectId: 1, model: "miwo:m", mode: "text", trackData: [{ trackId: 41, info: [{ id: 42, sources: "storyboard" }] }] },
+  // 转绘 M1/M3：只存引用 id（解析/模型调用的参数都在 handler 里从库/文件取）
+  "redraw.prepare": { projectId: 1, scriptId: 2, replace: true, lang: "zh" },
+  "redraw.storyboard": { projectId: 1, scriptId: 2 },
   "selftest.sleep": { ms: 10, tag: "roundtrip" },
 };
 

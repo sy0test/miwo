@@ -27,6 +27,11 @@ apps/api/data/*.log
 # Frontend build output is generated from source in the Docker build stage.
 apps/web/dist
 
+# 转绘本地 ASR：模型（~1.5G）与 venv 只在构建阶段下载/创建，绝不进 context
+apps/api/asr/models
+apps/api/asr/.venv
+apps/api/asr/__pycache__
+
 # Keep these last so later rules cannot re-include credentials in the build context.
 **/.env
 **/.env.*

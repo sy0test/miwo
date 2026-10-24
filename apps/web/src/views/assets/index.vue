@@ -1,5 +1,6 @@
 <template>
   <div class="assets">
+    <PendingAssetsPanel />
     <div class="data">
       <t-tabs v-model="assetOptions" @change="selectAssetOptions">
         <t-tab-panel v-for="(item, index) in themeData" :key="index" :value="item.value">
@@ -440,6 +441,7 @@ import { useFileDialog } from "@vueuse/core";
 import axios from "@/utils/axios";
 import type { TabValue, TableProps } from "tdesign-vue-next";
 import addAssets from "./components/addAssets.vue";
+import PendingAssetsPanel from "./components/PendingAssetsPanel.vue";
 import addAudioAssets from "./components/addAudioAssets.vue";
 import generateImage from "./components/generateImage.vue";
 import projectStore from "@/stores/project";

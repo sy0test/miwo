@@ -4,7 +4,9 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const API_SRC = path.resolve(__dirname, "..", "src");
-const EXPECTED_AI_CALLS = 30;
+// 30 → 32：M2 的 agents/redrawAgent/index.ts + M3 的 jobs/handlers/redrawStoryboard.ts 各一处 u.Ai.Text。
+// 新增任何 u.Ai 调用点都必须带 currentAiBillingContext() 并同步这个数（机械守卫）。
+const EXPECTED_AI_CALLS = 32;
 
 type AiCallsite = {
   file: string;

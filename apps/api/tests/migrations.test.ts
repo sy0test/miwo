@@ -71,7 +71,7 @@ describe("迁移机制（spec §5.2）", () => {
     //    ⚠ **不要**在 `makeMigrationSource` 里偷偷 `sort()` 来"修"这条：那会掩盖数组写错，
     //      且让 `--status` 的输出顺序与真实执行顺序脱钩（本门禁要的恰恰是"数组本身有序"）。
     expect(NAMES).toEqual([...NAMES].sort());
-    expect(NAMES[NAMES.length - 1]).toBe("015_redraw_v2");
+    expect(NAMES[NAMES.length - 1]).toBe("016_redraw_pipeline");
     const files = fs
       .readdirSync(MIGRATIONS_DIR)
       .filter((f) => /^\d{3}_.+\.ts$/.test(f))
@@ -182,4 +182,3 @@ describe("迁移机制（spec §5.2）", () => {
     180_000,
   );
 });
-

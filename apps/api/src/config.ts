@@ -34,6 +34,29 @@ export interface MiwoDbConfigMysql {
   poolMax: number;
 }
 
+/**
+ * 转绘预处理里的**本地 ASR**（M1 原生化：faster-whisper）。见 spec §5.3 / §5.5。
+ *
+ * `原外部预处理脚本变量`（外部 redraw-prep.cjs）**已删除**：预处理改由 `redraw/pent/prep.ts` 在进程内编排，
+ * 切点用原生 ffmpeg、转写用本地 faster-whisper，不再依赖 hypit 仓库与 WhisperX 服务。
+ */
+export interface MiwoAsrConfig {
+  /** local = 本地 faster-whisper；relay = 中继 ASR（暂未启用，留档）；off = 关闭（转写阶段必然失败） */
+  driver: "local" | "relay" | "off";
+  /** 模型档位：small / medium / large-v3（缺省 medium int8，见 spec §15 的拍板） */
+  model: string;
+  /** 模型目录（`scripts/fetch-asr-model.cjs` 的下载目标）；缺省 `<dataDir>/asr-models` */
+  modelDir: string;
+  /** faster-whisper 的 compute_type（CPU 缺省 int8） */
+  compute: string;
+  /** python 解释器（venv）；空 = 平台约定（win: python / 其它: python3） */
+  pythonPath: string;
+  /** transcribe.py 绝对路径；空 = 按 dev/打包两种布局自动找 */
+  scriptPath: string;
+  /** 单集转写超时（毫秒），缺省 20 分钟 */
+  timeoutMs: number;
+}
+
 export interface MiwoConfig {
   env: MiwoEnv;
   port: number;
@@ -52,8 +75,13 @@ export interface MiwoConfig {
   ossUrl: string;
   /** 外部二进制与超时（原 `FFMPEG_PATH` / `FFPROBE_PATH` / `FFMPEG_TIMEOUT`，Phase 1c Task 10 收口）。 */
   ffmpeg: { path: string; probePath: string; timeoutMs: number };
-  /** 出海转绘的预处理脚本（原 `REDRAW_PREP`）；空串表示不启用。 */
-  redrawPrepScript: string;
+  /** 出海转绘的本地 ASR（M1 原生化；原 `原外部预处理脚本变量` 已删除）。 */
+  asr: MiwoAsrConfig;
+  /**
+   * 拼贴图标签用的字体（drawtext 的 fontfile）。缺省 = 部署镜像里的 DejaVuSans（G10：只画数字/时间码，
+   * **不需要 CJK 字体**，所以不往仓库里塞字体二进制）。文件不存在时拼贴图只是没有编号，不失败。
+   */
+  gridFont: string;
   /** 出网代理（原 `TOONFLOW_PROXY`，Phase 1c Task 10 **重命名**为 `MIWO_PROXY`）；空 = 直连/读标准代理变量。 */
   proxyUrl: string;
   /**
@@ -64,7 +92,8 @@ export interface MiwoConfig {
    *   （`utils/db.ts` 的 `dbReady` → `connect()`）据此连库并跑迁移。
    *   在此之前它只是配置层的一个形状，没有任何"选分支"的消费者。
    *   ⚠ 本 Task **不新增**任何 `MIWO_*` 变量（裁定 5）：这里只补注释。
-   * ⚠ Phase 1c / Task 10 追加 `ossUrl` / `ffmpeg` / `redrawPrepScript` / `proxyUrl` 四个字段：
+   * ⚠ Phase 1c / Task 10 追加 `ossUrl` / `ffmpeg` / `proxyUrl` 三个字段（`redrawPrepScript` 已于转绘
+ *    M1 删除，改成 `asr`）：
    *   它们把此前**散落在消费点**的 6 个 `process.env` 读取收进唯一入口，
    *   由 `node tools/check-config-single-source.cjs`（`pnpm run verify:config`）机械守住
    *   （`apps/api/src/**` 里不许再绕过 config.ts 直读 env；四个标准代理变量是唯一豁免）。
@@ -166,8 +195,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   //   · `utils/oss.ts:82` 的 `process.env.ossURL`（空 = 不覆盖前缀）；
   //   · `utils/ffmpeg.ts:15/16/19` 的 `FFMPEG_PATH || "ffmpeg"` / `FFPROBE_PATH || "ffprobe"` /
   //     `Number(FFMPEG_TIMEOUT || 10*60*1000)`；
-  //   · `routes/redraw/analyzeSource.ts:33` 的字面量（开发机绝对路径 → **本阶段改成空缺省**，
-  //     见下面 `redrawPrepScript` 的注释）；
   //   · `proxy.ts:98` 的 `TOONFLOW_PROXY`（**重命名**为 `MIWO_PROXY`，Phase 0 ledger 已裁定）。
   // ⚠ `toInt` 而不是 `Number(...)`：改动前的 `Number(FFMPEG_TIMEOUT || …)` 会把 "abc" 静默吃成 NaN
   //   ⇒ 超时变成"永不超时"。`toInt` 在非法值上 fail-fast（这正是 config.ts 存在的理由）。
@@ -176,14 +203,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
   const ffmpegPath = optional(env, "MIWO_FFMPEG_PATH") ?? "ffmpeg";
   const ffprobePath = optional(env, "MIWO_FFPROBE_PATH") ?? "ffprobe";
   /**
-   * 出海转绘的预处理脚本（外部依赖，见 `routes/redraw/analyzeSource.ts` 的注释）。
+   * 转绘预处理的本地 ASR（M1）。**(`原外部预处理脚本变量` 与外部脚本已删除)**：
+   * 解析前的前置步骤（拼贴图 / 切点 / 转写）现在全在进程内完成（`redraw/prep/prep.ts`）。
    *
-   * ⚠ 缺省值**不再**写死成开发机的绝对路径（原来是 `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs`）：
-   * 那个路径只在本机成立，换机器/容器后 `existsSync` 为假，转绘「开始分析」直接 500 而没人知道为什么。
-   * 现在空缺省 = **未配置**，由 `app.ts` 的启动自检 + `analyzeSource` 的可操作报错一起兜住。
+   * driver 是**显式三态**而不是布尔：off 让"这台机器没装 Python 依赖"变成一个可声明的状态
+   * （部署机没装时启动日志会说清楚，而不是等用户点「开始分析」才 500）。
    */
-  const redrawPrepScript = optional(env, "MIWO_REDRAW_PREP") ?? "";
+  const asrDriver = optional(env, "MIWO_ASR_DRIVER") ?? "local";
+  if (asrDriver !== "local" && asrDriver !== "relay" && asrDriver !== "off") {
+    throw new ConfigError(`MIWO_ASR_DRIVER 只能是 local / relay / off，实际 "${asrDriver}"`);
+  }
+  const asrModelDirRaw = optional(env, "MIWO_ASR_MODEL_DIR");
+  const asr = {
+    driver: asrDriver,
+    model: optional(env, "MIWO_ASR_MODEL") ?? "medium",
+    modelDir: asrModelDirRaw ? path.resolve(asrModelDirRaw) : path.join(dataDir, "asr-models"),
+    compute: optional(env, "MIWO_ASR_COMPUTE") ?? "int8",
+    pythonPath: optional(env, "MIWO_ASR_PYTHON") ?? "",
+    scriptPath: optional(env, "MIWO_ASR_SCRIPT") ?? "",
+    timeoutMs: toInt(env, "MIWO_ASR_TIMEOUT_MS", 20 * 60 * 1000, 1000),
+  } satisfies MiwoAsrConfig;
   const proxyUrl = optional(env, "MIWO_PROXY") ?? "";
+  // G10：拼贴图标签只用 ASCII（编号/秒数），DejaVu 就够；可用 MIWO_GRID_FONT 指向别的字体
+  const gridFont = optional(env, "MIWO_GRID_FONT") ?? "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
   return {
     env: rawEnv,
@@ -198,8 +240,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MiwoConfig {
     jwtSecret,
     ossUrl,
     ffmpeg: { path: ffmpegPath, probePath: ffprobePath, timeoutMs: ffmpegTimeoutMs },
-    redrawPrepScript,
+    asr,
     proxyUrl,
+    gridFont,
     db,
   };
 }

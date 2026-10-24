@@ -11,12 +11,9 @@
  *      还原 ⇒ 绿。⚠ 这里**不真改仓库文件**（用例必须可重入、并发安全）：改为在临时目录里铺一份
  *      最小 `src/` 树 + 用 `--root` 让门禁扫那里。见下面 `runGate` 的说明。
  *
- * ⚠ **`redrawPrepScript` 是一次有意的行为变更（2026-10-21）**：
- *   改动前 `analyzeSource.ts:33` 的缺省值是 `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs`
- *   （开发机绝对路径）。那个缺省只在本机成立，换机器/容器后 `existsSync` 为假 ⇒ 转绘「开始分析」
- *   直接 500，且没有任何提示说明是"没配脚本"。现在缺省改为**空串（= 未配置）**，
- *   由 `app.ts` 启动自检 + `analyzeSource` 的可操作报错兜住。
- *   本机需要跑转绘时在 `apps/api/.env` 里显式设 `MIWO_REDRAW_PREP`。
+ * ⚠ **`redrawPrepScript`（MIWO_REDRAW_PREP）已于转绘 M1 删除**：预处理改成进程内编排 +
+ *   本地 faster-whisper，配置项换成 `asr.*`（`MIWO_ASR_DRIVER` / `MODEL` / `MODEL_DIR` /
+ *   `COMPUTE` / `PYTHON` / `SCRIPT` / `TIMEOUT_MS`）。本文件后半段断言这些新字段的缺省值与校验。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -39,24 +36,20 @@ const base = {
 } as NodeJS.ProcessEnv;
 
 /**
- * `redrawPrepScript` 的缺省值现在是**空串（= 未配置）**。
- *
- * 原来这里钉的是 `D:/sy_workspace/tools/redraw-prep/redraw-prep.cjs` —— 那是**开发机绝对路径**，
- * 换个机器/容器后 `existsSync` 为假，转绘「开始分析」直接 500 且没人知道原因。
- * 现在「未配置」是一等状态：启动自检打 warn，路由返回可操作报错。
+ * ASR 的缺省值（M1）。模型档位 = medium int8 是 spec §15 的拍板；
+ * `modelDir` 跟随数据根（容器里就是 `${MIWO_DATA_DIR}/asr-models`，模型由镜像预置）。
  */
-const REDRAW_PREP_DEFAULT = "";
+const ASR_DEFAULTS = { driver: "local", model: "medium", compute: "int8", pythonPath: "", scriptPath: "", timeoutMs: 20 * 60 * 1000 };
 
 describe("cfgs 1-3. 新字段的缺省值 / 校验 / 覆盖", () => {
-  it("★ 缺省值：ossUrl=''、ffmpeg={ffmpeg,ffprobe,600000}、redrawPrepScript=**空串（未配置）**、proxyUrl=''", () => {
+  it("★ 缺省值：ossUrl=''、ffmpeg={ffmpeg,ffprobe,600000}、asr={local,medium,int8,20min}、proxyUrl=''", () => {
     const c = loadConfig({ ...base });
     expect(c.ossUrl, "缺省必须是空串（= 不覆盖前缀；改动前 `process.env.ossURL && !== ''` 也是这个语义）").toBe("");
     expect(c.ffmpeg.path, "缺省 ffmpeg（= 改动前 `FFMPEG_PATH || 'ffmpeg'`）").toBe("ffmpeg");
     expect(c.ffmpeg.probePath, "缺省 ffprobe").toBe("ffprobe");
     expect(c.ffmpeg.timeoutMs, "缺省 600000 = 10 分钟（= 改动前 `10 * 60 * 1000`）").toBe(600000);
-    expect(c.redrawPrepScript, "★ 缺省必须是空串：不允许再写死开发机绝对路径（换机器即 500）").toBe(
-      REDRAW_PREP_DEFAULT,
-    );
+    expect(c.asr).toMatchObject(ASR_DEFAULTS);
+    expect(c.asr.modelDir.replace(/\\/g, "/")).toBe("D:/tmp/miwo-data/asr-models");
     expect(c.proxyUrl, "缺省空串（= 不显式指定代理）").toBe("");
   });
 
@@ -75,20 +68,38 @@ describe("cfgs 1-3. 新字段的缺省值 / 校验 / 覆盖", () => {
       MIWO_FFMPEG_PATH: "/usr/bin/ffmpeg",
       MIWO_FFPROBE_PATH: "/usr/bin/ffprobe",
       MIWO_FFMPEG_TIMEOUT_MS: "5000",
-      MIWO_REDRAW_PREP: "/opt/redraw.cjs",
+      MIWO_ASR_DRIVER: "local",
+      MIWO_ASR_MODEL: "small",
+      MIWO_ASR_MODEL_DIR: "/opt/asr-models",
+      MIWO_ASR_COMPUTE: "float16",
+      MIWO_ASR_PYTHON: "/opt/venv/bin/python",
+      MIWO_ASR_SCRIPT: "/opt/asr/transcribe.py",
+      MIWO_ASR_TIMEOUT_MS: "60000",
       MIWO_PROXY: "http://127.0.0.1:7890",
       MIWO_OSS_URL: "https://cdn.example.com",
     });
     expect(c.ffmpeg).toEqual({ path: "/usr/bin/ffmpeg", probePath: "/usr/bin/ffprobe", timeoutMs: 5000 });
-    expect(c.redrawPrepScript).toBe("/opt/redraw.cjs");
+    expect(c.asr.driver).toBe("local");
+    expect(c.asr.model).toBe("small");
+    // path.resolve 在 Windows 上会把 /opt/... 解析到当前盘符，所以断言尾部而不是全等
+    expect(c.asr.modelDir.replace(/\\/g, "/").endsWith("/opt/asr-models")).toBe(true);
+    expect(c.asr.compute).toBe("float16");
+    expect(c.asr.pythonPath).toBe("/opt/venv/bin/python");
+    expect(c.asr.scriptPath).toBe("/opt/asr/transcribe.py");
+    expect(c.asr.timeoutMs).toBe(60000);
     expect(c.proxyUrl).toBe("http://127.0.0.1:7890");
     expect(c.ossUrl).toBe("https://cdn.example.com");
 
     // 空白 = 未设置（`optional()` 把 undefined 与纯空白统一处理）
-    const blank = loadConfig({ ...base, MIWO_FFMPEG_PATH: "   ", MIWO_REDRAW_PREP: "", MIWO_PROXY: "  " });
+    const blank = loadConfig({ ...base, MIWO_FFMPEG_PATH: "   ", MIWO_ASR_MODEL: "  ", MIWO_ASR_PYTHON: "", MIWO_PROXY: "  " });
     expect(blank.ffmpeg.path).toBe("ffmpeg");
-    expect(blank.redrawPrepScript, "空白按未设置处理 ⇒ 回到空缺省（不是回落到某个开发机路径）").toBe(REDRAW_PREP_DEFAULT);
+    expect(blank.asr.model, "空白按未设置处理 ⇒ 回到缺省 medium").toBe("medium");
+    expect(blank.asr.pythonPath).toBe("");
     expect(blank.proxyUrl).toBe("");
+
+    // 非法 driver 必须 fail-fast（不是"当 local 用"）：off 是一个**可声明的部署状态**，拼错不能静默生效
+    expect(() => loadConfig({ ...base, MIWO_ASR_DRIVER: "whisperx" })).toThrow(/MIWO_ASR_DRIVER/);
+    expect(() => loadConfig({ ...base, MIWO_ASR_TIMEOUT_MS: "0" })).toThrow(/MIWO_ASR_TIMEOUT_MS/);
   });
 
   it("★★ TOONFLOW_PROXY **不再被读取**（重命名后旧名必须彻底无效 —— 这就是'重命名真的做了'的判据）", () => {

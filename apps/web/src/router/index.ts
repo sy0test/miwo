@@ -47,6 +47,16 @@ const router = createRouter({
           component: () => import("@/views/inputVideo/index.vue"),
         },
         {
+          // 出海转绘 · 会话页（剧本 / 资产 / 时长三确认）
+          path: "/redraw/session/:scriptId",
+          component: () => import("@/views/redraw/session/index.vue"),
+        },
+        {
+          // 出海转绘 · 源片版 / 转绘版并排确认
+          path: "/redraw/review/:scriptId",
+          component: () => import("@/views/redraw/review/index.vue"),
+        },
+        {
           path: "/scriptAgent",
           component: () => import("@/views/scriptAgent/index.vue"),
         },
@@ -56,7 +66,7 @@ const router = createRouter({
         },
         {
           path: "/production",
-          component: () => import("@/views/production/index.vue"),
+          component: () => import("@/views/production/entry.vue"),
         },
         {
           path: "/assets",

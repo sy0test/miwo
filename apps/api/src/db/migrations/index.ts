@@ -28,6 +28,7 @@ import billingAdminUniques from "@/db/migrations/012_billing_admin_uniques";
 import accountBootstrap from "@/db/migrations/013_account_bootstrap";
 import accessGroups from "@/db/migrations/014_access_groups";
 import redrawV2 from "@/db/migrations/015_redraw_v2";
+import redrawPipeline from "@/db/migrations/016_redraw_pipeline";
 
 export interface Migration {
   /** 稳定且唯一的名字，会写进 `knex_migrations.name`；改名等于重跑 */
@@ -77,6 +78,8 @@ export const MIGRATIONS: Migration[] = [
   // 2026-10-21 转绘迁 v2：给 `o_segment` 补 `sourceRange`/`clipPath`、给 `o_shot` 补 `sourceRange`
   // （转绘"按片段切原片作参考视频"与"每镜核对源片区间"要的列；镜级画面描述刻意不加，见文件头）。
   redrawV2,
+  // 2026-10-24 转绘改造 M1/M2：`o_project.redrawMaxSegmentSec` + `o_script.redrawState`（不新增表）。
+  redrawPipeline,
 ];
 
 /**

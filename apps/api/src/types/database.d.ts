@@ -122,6 +122,8 @@ export interface o_project {
   'mode'?: string | null;
   'name'?: string | null;
   'projectType'?: string | null;
+  // 016_redraw_pipeline 手工补录：转绘项目「单段上限」（秒，4..30，缺省 15）
+  'redrawMaxSegmentSec'?: number | null;
   'targetCountry'?: string | null;
   'type'?: string | null;
   'userId'?: number | null;
@@ -145,6 +147,8 @@ export interface o_script {
   'id'?: number;
   'name'?: string | null;
   'projectId'?: number | null;
+  // 016_redraw_pipeline 手工补录：转绘专用状态机（见 src/redraw/state.ts 的 REDRAW_STATE）
+  'redrawState'?: number | null;
   'sortIndex'?: number | null;
   'sourceVideo'?: string | null;
 }

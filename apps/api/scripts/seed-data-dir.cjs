@@ -59,11 +59,24 @@ function planSeed({ src, out, min = DEFAULT_MIN }) {
     }
 
     const targetFiles = listFiles(to);
-    if (targetFiles !== null && targetFiles.length > 0) {
-      steps.push({ name, action: "skip", from, to, sourceCount: sourceFiles.length, targetCount: targetFiles.length });
-    } else {
-      steps.push({ name, action: "copy", from, to, sourceCount: sourceFiles.length, targetCount: targetFiles?.length ?? 0 });
-    }
+    const targetSet = new Set(targetFiles ?? []);
+    // 目标非空时**不再整目录跳过**：升级会新增技能/提示词，整目录 skip 会让新文件永远进不了运行时数据目录
+    // （典型症状：新技能随镜像发布了，但容器读的是旧的 MIWO_DATA_DIR/skills，功能静默失效）。
+    // 策略：只补目标里**不存在**的文件，已有文件一律不覆盖（用户/运行时可能改过）。
+    const missing = sourceFiles.filter((file) => !targetSet.has(file));
+    let action;
+    if (targetFiles === null || targetFiles.length === 0) action = "copy";
+    else if (missing.length === 0) action = "skip";
+    else action = "merge";
+    steps.push({
+      name,
+      action,
+      from,
+      to,
+      sourceCount: sourceFiles.length,
+      targetCount: targetFiles?.length ?? 0,
+      missing,
+    });
   }
 
   return { ok: problems.length === 0, steps, problems };
@@ -71,9 +84,19 @@ function planSeed({ src, out, min = DEFAULT_MIN }) {
 
 function applySeed(steps) {
   for (const step of steps) {
-    if (step.action !== "copy") continue;
-    fs.mkdirSync(path.dirname(step.to), { recursive: true });
-    fs.cpSync(step.from, step.to, { recursive: true, force: true });
+    if (step.action === "copy") {
+      fs.mkdirSync(path.dirname(step.to), { recursive: true });
+      fs.cpSync(step.from, step.to, { recursive: true, force: true });
+      continue;
+    }
+    if (step.action === "merge") {
+      for (const file of step.missing ?? []) {
+        const from = path.join(step.from, file);
+        const to = path.join(step.to, file);
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.copyFileSync(from, to);
+      }
+    }
   }
 }
 
@@ -132,6 +155,14 @@ function selfTest() {
     const second = planSeed({ src, out, min });
     check(second.ok && second.steps.every((step) => step.action === "skip"), "重复运行应全部 skip");
 
+    // 升级场景：源里新增技能文件 → 目标非空也必须补进去（不能整目录 skip）
+    write(src, "skills", "three.md");
+    const third = planSeed({ src, out, min });
+    check(third.steps.find((step) => step.name === "skills")?.action === "merge", "源新增文件时目标非空必须 merge");
+    applySeed(third.steps);
+    check(fs.existsSync(path.join(out, "skills", "three.md")), "merge 应补入新增文件");
+    check(fs.existsSync(path.join(out, "skills", "one.md")), "merge 不能删掉已有文件");
+
     fs.rmSync(path.join(out, "skills"), { recursive: true, force: true });
     fs.mkdirSync(path.join(out, "skills"), { recursive: true });
     const emptyTarget = planSeed({ src, out, min });
@@ -161,7 +192,7 @@ function selfTest() {
     process.exitCode = 1;
     return;
   }
-  console.log("seed-data-dir --self-test 通过（复制/幂等/空目标/缺源/空源/下限/路径重叠）");
+  console.log("seed-data-dir --self-test 通过（复制/幂等/增量合并/空目标/缺源/空源/下限/路径重叠）");
 }
 
 function main() {
@@ -193,7 +224,9 @@ function main() {
   }
 
   for (const step of result.steps) {
-    console.log(`  ${step.action === "copy" ? "COPY" : "skip"}  ${step.name}: 源 ${step.sourceCount} 个 → ${step.to}`);
+    const label = step.action === "copy" ? "COPY" : step.action === "merge" ? "MERGE" : "skip";
+    const extra = step.action === "merge" ? `（新增 ${step.missing.length} 个）` : "";
+    console.log(`  ${label}  ${step.name}: 源 ${step.sourceCount} 个 → ${step.to}${extra}`);
   }
   if (!result.ok) {
     console.error("seed-data-dir 失败：");

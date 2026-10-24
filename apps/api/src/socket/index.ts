@@ -1,6 +1,7 @@
 import { Server } from "socket.io";
 import productionAgent from "./routes/productionAgent";
 import scriptAgent from "./routes/scriptAgent";
+import redrawAgent from "./routes/redrawAgent/index";
 
 /**
  * 进度事件真正被订阅的命名空间（**唯一常量**，review-C F3）。
@@ -28,6 +29,8 @@ export default (io: Server) => {
   const routes: Record<string, (nsp: ReturnType<Server["of"]>) => void> = {
     productionAgent,
     scriptAgent,
+    // 转绘认账会话（M2-T7）：与两个既有 agent 并列，事件名自成一族（redraw:updated / redraw:step）
+    redrawAgent,
   };
 
   for (const [name, handler] of Object.entries(routes)) {
