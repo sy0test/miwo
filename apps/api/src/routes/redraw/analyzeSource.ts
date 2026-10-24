@@ -66,7 +66,7 @@ export default router.post(
         ];
         const active = await trx("o_job")
           .whereIn("dedupeActive", activeKeys)
-          .andWhereIn("state", ["queued", "running"])
+          .whereIn("state", ["queued", "running"]) // knex 没有 andWhereIn：连续 whereIn 就是 AND
           .first();
         if (active) return { jobId: String(active.id), created: false };
 

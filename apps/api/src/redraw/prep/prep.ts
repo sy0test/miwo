@@ -46,7 +46,7 @@ export type PrepDeps = {
   renderGrid(videoAbs: string, gridDir: string, o: GridOptions): Promise<string[]>;
   detectCuts(videoAbs: string): Promise<CutCandidate[]>;
   extractWav(videoAbs: string, wavAbs: string): Promise<void>;
-  transcribe(wavAbs: string, o: { language?: string }): Promise<AsrTranscript>;
+  transcribe(wavAbs: string, o: { language?: string; outPath?: string }): Promise<AsrTranscript>;
 };
 
 export type PrepStageName = "grid" | "cut" | "transcribe";
@@ -159,7 +159,16 @@ export function createDefaultPrepDeps(): PrepDeps {
     renderGrid: renderGridWithFfmpeg,
     detectCuts: (videoAbs) => detectCutCandidates(videoAbs),
     extractWav: extractWavWithFfmpeg,
-    transcribe: (wavAbs, o) => defaultTranscribe(wavAbs, { model: config.asr.model, compute: config.asr.compute, modelDir: config.asr.modelDir, language: o.language }),
+    transcribe: (wavAbs, o) =>
+      defaultTranscribe(wavAbs, {
+        model: config.asr.model,
+        compute: config.asr.compute,
+        modelDir: config.asr.modelDir,
+        language: o.language,
+        // 显式落在 prep 目录：系统临时目录在部分环境（Windows 策略 / 沙箱）拿不到写权限，
+        // 而且出问题时 transcript 原始产物就在本集目录里可查。
+        ...(o.outPath ? { outPath: o.outPath } : {}),
+      }),
   };
 }
 
@@ -349,7 +358,7 @@ export async function runPrep(
     try {
       await deps.extractWav(videoAbs, wavAbs);
       logTo(prepLogPath, "抽音轨完成：" + wavAbs);
-      transcript = await deps.transcribe(wavAbs, { language: opts.lang });
+      transcript = await deps.transcribe(wavAbs, { language: opts.lang, outPath: path.join(prepDir, "transcript.raw.json") });
     } catch (e: any) {
       logTo(prepLogPath, "转写失败：" + (e?.message ?? e));
       throw new Error("转写失败：" + (e?.message ?? e));
