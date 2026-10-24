@@ -52,6 +52,26 @@ describe("runtime asset seeder", () => {
     expect(second.stdout).toContain("skip  modelPrompt");
   });
 
+  it("merges newly added source files into a non-empty destination without overwriting existing ones", () => {
+    const root = makeTempDir();
+    const src = path.join(root, "source");
+    const out = path.join(root, "volume");
+    writeAsset(src, "skills", "old/skill.md", "old source");
+    writeAsset(src, "modelPrompt", "prompt.md");
+
+    const first = runSeeder(...minimalArgs(src, out));
+    expect(first.status, first.stderr).toBe(0);
+    // 模拟运行期用户改过的旧文件
+    fs.writeFileSync(path.join(out, "skills", "old", "skill.md"), "user edited", "utf8");
+
+    writeAsset(src, "skills", "new-skill/SKILL.md", "new source");
+    const second = runSeeder(...minimalArgs(src, out));
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain("MERGE  skills");
+    expect(fs.readFileSync(path.join(out, "skills", "new-skill", "SKILL.md"), "utf8")).toBe("new source");
+    expect(fs.readFileSync(path.join(out, "skills", "old", "skill.md"), "utf8")).toBe("user edited");
+  });
+
   it("copies into an existing but empty destination directory", () => {
     const root = makeTempDir();
     const src = path.join(root, "source");
