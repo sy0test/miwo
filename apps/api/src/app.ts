@@ -459,18 +459,17 @@ export default async function startServe(randomPort: Boolean = false) {
       process.once("SIGINT", stopRelay);
       console.log(`[服务启动成功]: http://localhost:${realPort}`);
       /**
-       * 转绘预处理自检。
+       * 转绘 ASR 自检（M1 原生化）。
        *
-       * 预处理脚本是转绘「开始分析」的**外部硬依赖**（切点检测 + 转写，见 `routes/redraw/analyzeSource.ts`）。
-       * 它以前有一个"开发机绝对路径"的缺省值 ⇒ 换机器后 `existsSync` 为假，用户点按钮只看到一个 500。
-       * 现在缺省是空（未配置），启动时就在这里明确说清楚，省掉一轮"为什么转绘按钮报错"的排查。
+       * 预处理不再 spawn 外部 redraw-prep.cjs（那个依赖 hypit + 本机 WhisperX，交付不可用）；
+       * 现在解析前的前置步骤都在进程内完成，转写这一步靠本地 faster-whisper（Python 子进程）。
+       * 这里只说清"这台机器准备成什么样"：driver=off 时点「开始分析」会在转写阶段失败，
+       * 与其让用户看到一个中途失败的任务，不如启动时就说。
        */
-      if (!config.redrawPrepScript) {
-        console.warn("[redraw] 未配置 MIWO_REDRAW_PREP：转绘「开始分析」会返回 500（预处理脚本是外部依赖）");
-      } else if (!fs.existsSync(config.redrawPrepScript)) {
-        console.warn(`[redraw] MIWO_REDRAW_PREP 指向的文件不存在：${config.redrawPrepScript}（转绘「开始分析」会 500）`);
+      if (config.asr.driver === "off") {
+        console.warn("[redraw] MIWO_ASR_DRIVER=off：转绘「开始分析」会在预处理·转写阶段失败（解析需要词级时间戳）");
       } else {
-        console.log(`[redraw] 预处理脚本: ${config.redrawPrepScript}`);
+        console.log(`[redraw] ASR 驱动: ${config.asr.driver}（模型 ${config.asr.model} / ${config.asr.compute}）`);
       }
       resolve(realPort);
     });

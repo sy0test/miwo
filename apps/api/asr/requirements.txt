@@ -1,0 +1,6 @@
+# 转绘本地 ASR（faster-whisper）依赖 —— 版本锁死，构建可复现（spec §5.3 / §5.5）。
+# 安装：python -m venv .venv && .venv/bin/pip install -r apps/api/asr/requirements.txt
+# ⚠ 模型文件不进 git：用 apps/api/scripts/fetch-asr-model.cjs 下载到 MIWO_ASR_MODEL_DIR。
+faster-whisper==1.1.1
+# 1.1.1 依赖：ctranslate2 / huggingface-hub / tokenizers / onnxruntime 由 pip 解析
+# CPU 推理（int8）不需要 CUDA 版 ctranslate2。

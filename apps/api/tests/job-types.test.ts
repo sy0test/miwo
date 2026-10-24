@@ -70,6 +70,9 @@ describe("任务类型契约（spec §9.2 / §9.3）", () => {
       "image.storyboard.batch",
       "image.productionAssets.batch",
       "prompt.batch",
+      // 2026-10-24 转绘 M1（见 tests/job-registry.test.ts 的同批更新）
+      "redraw.prepare",
+      "redraw.storyboard",
       "selftest.sleep",
     ].sort();
     expect([...JOB_DEFINITIONS].map((d) => d.type).sort()).toEqual(TYPES);

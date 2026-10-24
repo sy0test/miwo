@@ -20,6 +20,25 @@ const ROUTES_ROOT = path.join(API_ROOT, "src", "routes");
 /** handler 包住的类型允许"由另一个类型复用"（video.batchGenerate 与 video.generate 共用 runItems）。 */
 const SELFTEST_EXEMPT = new Set(["selftest.sleep"]);
 
+/**
+ * **非计费**任务白名单（R1-G2）：这些类型不会产生厂商费用，所以路由**不该**走 `submitBilledJob`
+ * （那个封装是"业务写入 + 入队 + 资金冻结同事务"；对不计费任务加冻结既没意义也容易挡住入口）。
+ * 判据没有放宽：白名单之外的类型仍然必须走 `submitBilledJob`，白名单内的类型仍必须
+ * 「路由文件里有 `enqueueJobInTransaction(` + 同名 type」。
+ *
+ * · `redraw.prepare`：预处理是纯本地 ffmpeg/whisper 零成本；解析那一步虽然调模型，
+ *   但计费发生在 handler 内部（`analyzeRedrawAssets` 走 Ai.Text 的正常计费链路），不在入队前预扣。
+ * · `redraw.storyboard`（M3）：同理，一次纯文本调用，由 handler 内部计费。
+ */
+const NON_BILLED_JOB_TYPES = new Set(["redraw.prepare", "redraw.storyboard"]);
+
+/** 该路由文件是否只入队非计费类型（同时出现计费类型就不豁免）。 */
+function isNonBilledEnqueueFile(src: string): boolean {
+  const billedType = JOB_DEFINITIONS.some((d) => !NON_BILLED_JOB_TYPES.has(d.type) && new RegExp(`type:\\s*"${d.type.replace(".", "\\.")}"`).test(src));
+  const nonBilled = [...NON_BILLED_JOB_TYPES].some((t) => new RegExp(`type:\\s*"${t.replace(".", "\\.")}"`).test(src));
+  return nonBilled && !billedType;
+}
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
@@ -41,17 +60,22 @@ function stripComments(src: string): string {
 }
 
 describe("入队覆盖度（review-C F4 的机械守卫）", () => {
-  it("★ 每个计费入队路由都通过 submitBilledJob 原子提交", () => {
+  it("★ 每个**计费**入队路由都通过 submitBilledJob 原子提交（非计费白名单除外，见 R1-G2）", () => {
     const enqueueRoutes = ROUTE_FILES.filter((f) => f.src.includes("enqueueJobInTransaction("));
-    const missing = enqueueRoutes.filter((f) => !f.src.includes("submitBilledJob(")).map((f) => rel(f.p));
-    expect(missing, "用户触发的生成路由必须将业务写入、队列和资金冻结放入同一事务").toEqual([]);
+    const missing = enqueueRoutes
+      .filter((f) => !f.src.includes("submitBilledJob("))
+      .filter((f) => !isNonBilledEnqueueFile(f.src))
+      .map((f) => rel(f.p));
+    expect(missing, "用户触发的生成路由必须将业务写入、队列和资金冻结放入同一事务（非计费任务已白名单登记）").toEqual([]);
   });
 
-  it("★ 每个注册的业务类型都有一条路由级 enqueueJob 调用点", () => {
+  it("★ 每个注册的业务类型都有一条路由级 enqueueJob 调用点（含非计费类型）", () => {
     const missing: string[] = [];
     for (const def of JOB_DEFINITIONS) {
       if (SELFTEST_EXEMPT.has(def.type)) continue; // 运维冒烟任务由 CLI 入队（Task 10），无用户入口
       const needle = new RegExp(`type:\\s*"${def.type.replace(".", "\\.")}"`);
+      // R1-G2：非计费类型同样走 enqueueJobInTransaction（"置 extractState=0 + 入队"同事务），
+      // 只是不要求 submitBilledJob。判据仍是"路由文件里有入队调用点 + 同名 type"。
       const hit = ROUTE_FILES.some((f) => f.src.includes("enqueueJobInTransaction(") && needle.test(f.src));
       if (!hit) missing.push(def.type);
     }

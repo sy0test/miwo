@@ -34,6 +34,24 @@ COPY apps/web/package.json apps/web/
 FROM base AS prod-deps
 RUN pnpm install --frozen-lockfile --prod
 
+# ---- ASR 运行期（转绘本地 faster-whisper）：Python venv + 模型 ----
+# ⚠ 单独一个 stage：Python/pip/模型只在 so 需要它们的层里，Node 构建层不受影响。
+# ⚠ 模型文件**不进 git**（spec §5.5）：这里构建期下载并用 HF tree API 的 lfs.oid（= sha256）校验。
+#   ASR_MODEL_REVISION 部署窗口**必须钉到具体 commit**；默认 main 只是让本地/CI 能构建通，
+#   按 main 构建出的镜像不可复现（模型仓会漂）。
+FROM base AS asr-deps
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY apps/api/asr/requirements.txt /tmp/asr-requirements.txt
+RUN python3 -m venv /opt/asr-venv \
+ && /opt/asr-venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/asr-venv/bin/pip install --no-cache-dir -r /tmp/asr-requirements.txt
+ARG ASR_MODEL=medium
+ARG ASR_MODEL_REVISION=main
+COPY apps/api/scripts/fetch-asr-model.cjs /tmp/fetch-asr-model.cjs
+RUN node /tmp/fetch-asr-model.cjs --model "${ASR_MODEL}" --revision "${ASR_MODEL_REVISION}" --out /opt/asr-models
+
 # ---- 构建：prebuild 生成 src/router.ts → esbuild 打包 ----
 FROM base AS build
 # SPA 是单文件内联打包（viteSingleFile + inlineDynamicImports + assetsInlineLimit=Infinity），
@@ -59,7 +77,7 @@ RUN pnpm --filter @miwo/api build
 # ---- 运行 ----
 FROM node:22.12-bookworm-slim AS runtime
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-dejavu-core python3 libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # pnpm 的 node_modules 里全是相对 symlink（指向 /app/node_modules/.pnpm/...），
@@ -77,6 +95,15 @@ COPY --from=build /app/apps/api/data/serve ./apps/api/data/serve
 #   `apps/api/src/vendors/*.ts`（esbuild 把它们打进 `data/serve/app.js`）⇒ 运行期不需要也不存在
 #   `data/vendor` 目录。那一行必须一起删：它会让 `docker build` 以 "COPY failed: no source files"
 #   失败（`tools/check-deploy-config.cjs` 现在也有断言守着"COPY 的源必须存在"）。
+# 转绘预处理（M1）：Python venv + 模型 + transcribe.py。运行时**不联网**、不装依赖。
+# 路径与 apps/api/src/utils/asr 的自动查找（打包布局 = data/serve → ../../asr）一致。
+COPY --from=asr-deps /opt/asr-venv ./apps/api/asr/.venv
+COPY --from=asr-deps /opt/asr-models ./apps/api/asr/models
+COPY --from=build /app/apps/api/asr/transcribe.py /app/apps/api/asr/requirements.txt ./apps/api/asr/
+# 转绘 ASR / 拼贴图字体的容器内缺省（deploy/.env 可覆盖）
+ENV MIWO_ASR_PYTHON=/app/apps/api/asr/.venv/bin/python \
+    MIWO_ASR_MODEL_DIR=/app/apps/api/asr/models \
+    MIWO_GRID_FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 COPY --from=build /app/apps/api/data/skills ./apps/api/data/skills
 COPY --from=build /app/apps/api/data/modelPrompt ./apps/api/data/modelPrompt
 COPY --from=build /app/apps/api/scripts/seed-data-dir.cjs ./apps/api/scripts/seed-data-dir.cjs

@@ -16,6 +16,8 @@ import { imageAssetsBatch } from "@/jobs/handlers/imageAssets";
 import { imageStoryboardBatch } from "@/jobs/handlers/imageStoryboard";
 import { imageProductionAssetsBatch } from "@/jobs/handlers/imageProductionAssets";
 import { promptBatch } from "@/jobs/handlers/promptBatch";
+import { redrawPrepare } from "@/jobs/handlers/redrawPrepare";
+import { redrawStoryboard } from "@/jobs/handlers/redrawStoryboard";
 
 export interface JobRegistry {
   /** 未知类型返回 null（见文件头；**不抛**）。 */
@@ -50,6 +52,10 @@ export const JOB_DEFINITIONS: AnyJobDefinition[] = [
   imageStoryboardBatch,
   imageProductionAssetsBatch,
   promptBatch,
+  // 2026-10-24 转绘 M1：预处理 + 解析任务化（不调厂商 = 不扣费；解析那一步在整个任务内部）
+  redrawPrepare,
+  // 2026-10-24 转绘 M3：转绘分镜层（一次文本调用；计费在 handler 内部）
+  redrawStoryboard,
   selftestSleep,
 ];
 

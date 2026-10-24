@@ -26,6 +26,9 @@ const EXPECTED = [
   "image.storyboard.batch",
   "image.productionAssets.batch",
   "prompt.batch",
+  // 2026-10-24 转绘 M1：预处理 + 解析（redraw.prepare）
+  "redraw.prepare",
+  "redraw.storyboard",
   "selftest.sleep",
 ].sort();
 
@@ -48,8 +51,9 @@ describe("任务类型注册表", () => {
       .readdirSync(dir)
       .filter((f) => f.endsWith(".ts"))
       .map((f) => f.replace(/\.ts$/, ""));
-    // 6 = selftest + videoGenerate + imageAssets + imageStoryboard + imageProductionAssets + promptBatch
-    expect(files.length).toBe(6);
+    // 8 = selftest + videoGenerate + imageAssets + imageStoryboard + imageProductionAssets + promptBatch
+    //     + redrawPrepare + redrawStoryboard
+    expect(files.length).toBe(8);
     const src = fs.readFileSync(path.resolve(__dirname, "..", "src", "jobs", "registry.ts"), "utf8");
     for (const f of files) expect(src).toContain(`handlers/${f}"`);
   });

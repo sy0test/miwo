@@ -3,7 +3,7 @@
  *
  * ── 为什么需要它（Phase 1c Task 10 的教训）──
  * `MiwoConfig` 是**结构化类型**，所以单测里手写的配置字面量必须逐字跟住接口。
- * Task 10 给接口加了 4 个字段（`ossUrl` / `ffmpeg` / `redrawPrepScript` / `proxyUrl`），
+ * Task 10 给接口加了 4 个字段（`ossUrl` / `ffmpeg` / `proxyUrl`，以及 M1 已删除的 `redrawPrepScript`），
  * 立刻有 4 个测试文件 `tsc --noEmit` 报 TS2739 —— 每个都得手工补一次。
  * 下一个加字段的人会再踩一遍。
  *
@@ -31,7 +31,7 @@ const MINIMAL_ENV = {
  */
 export function configDefaults(): Pick<
   MiwoConfig,
-  "env" | "storageDriver" | "publicBaseUrl" | "trustProxy" | "jwtSecret" | "ossUrl" | "ffmpeg" | "redrawPrepScript" | "proxyUrl"
+  "env" | "storageDriver" | "publicBaseUrl" | "trustProxy" | "jwtSecret" | "ossUrl" | "ffmpeg" | "asr" | "proxyUrl" | "gridFont"
 > {
   const c = loadConfig({ ...MINIMAL_ENV });
   return {
@@ -42,7 +42,8 @@ export function configDefaults(): Pick<
     jwtSecret: c.jwtSecret,
     ossUrl: c.ossUrl,
     ffmpeg: { ...c.ffmpeg },
-    redrawPrepScript: c.redrawPrepScript,
+    asr: { ...c.asr },
     proxyUrl: c.proxyUrl,
+    gridFont: c.gridFont,
   };
 }
