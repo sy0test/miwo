@@ -294,7 +294,11 @@ const isShowAddImage = computed(() => {
 
 /** 根据文件扩展名推断媒体类型 */
 function getFileTypeByExt(src: string | undefined): "image" | "video" | "audio" {
-  const ext = src?.split(".").pop()?.toLowerCase() ?? "";
+  // ⚠ 先剥掉 query/hash：素材 URL 是带签名的（`.mp4?exp=...&sig=...`），
+  // 直接 split(".").pop() 会得到 "mp4?exp=..."，判成 image —— 真机症状：
+  // 从「素材」里选原片视频，卡片显示「图片无法显示」。
+  const clean = (src ?? "").split(/[?#]/)[0];
+  const ext = clean.split(".").pop()?.toLowerCase() ?? "";
   if (["mp4", "webm", "mov", "avi", "mkv"].includes(ext)) return "video";
   if (["mp3", "wav", "ogg", "aac", "flac", "m4a"].includes(ext)) return "audio";
   return "image";
