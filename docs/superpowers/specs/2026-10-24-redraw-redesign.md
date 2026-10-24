@@ -97,7 +97,7 @@ o_project: redrawMaxSegmentSec  integer  default 15   // 4..30，解析前读取
 o_script:  redrawState          smallint default 0    // 见 §4.2
 ```
 
-回填：`UPDATE o_script SET redrawState=1 WHERE extractState=3`（旧的「待对账」）。
+回填：`redrawState=1 WHERE extractState=3`，同时把旧的 `extractState=3` 归一为 `1`（§4.2 只保留 0/1/2/-1；不归一的话输入页旧的 `statusView` 会显示错状态）。
 
 ### 4.2 状态机
 
@@ -111,6 +111,21 @@ o_script:  redrawState          smallint default 0    // 见 §4.2
 | -1 | 失败 | 任一环节失败（errorReason 同步写） |
 
 `extractState` 只保留 0 跑 / 1 成 / 2 等待 / -1 败（转绘不再写 3）。
+
+**允许的转移**（`state.ts` 的 `assertRedrawTransition`，与前端按钮一一对应）：
+
+| 从 → 到 | 触发 |
+|---|---|
+| 0 → 1 | 解析成功（含重试后） |
+| 1 → 2 | 资产确认 |
+| 2 → 3 | 生成转绘分镜 |
+| 3 → 4 | 确认覆盖 |
+| 2/3/4 → 1 | 重新分析（`replace`） |
+| 3/4 → 3 | 重跑转绘层 |
+| 4 → 2 | 回退到源片版 |
+| 任意 → -1 | 失败 |
+| -1 → 0 | 重试 |
+| x → x | 幂等（重复确认/重复写） |
 
 ### 4.3 工作区 key（`o_agentWorkData`，必须带 key 过滤）
 
@@ -180,7 +195,7 @@ o_script:  redrawState          smallint default 0    // 见 §4.2
 ### 5.4 拼贴图
 
 - 复用现有参数：1s/格、12 列、格宽 120px、每页最多 12 行；`ffmpeg tile` 渲染。
-- 字体：仓库内自带 CJK 字体（`apps/api/assets/fonts/`），替换现在写死的 Windows 路径。
+- 字体：**不把字体文件塞进仓库**。镜像里 `apt-get install fonts-dejavu-core`，预处理器用路径 `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`（可用 `MIWO_GRID_FONT` 覆盖）；拼贴图标签只有数字/时间码（ASCII），不需要 CJK 字形。
 - 产物与 MANIFEST 格式不变。
 
 ### 5.5 打包与配置
@@ -194,7 +209,9 @@ o_script:  redrawState          smallint default 0    // 见 §4.2
 
 ### 5.6 任务化
 
-新增 job kind `redraw.prepare`：worker 内执行「预处理 → 解析 → 落库」，路由只入队并置 `extractState=0`；失败或超时按 job 机制重试/失败；进程重启后可续跑（幂等键 = `projectId:scriptId:analysisVersion`）。
+新增 job kind `redraw.prepare`：worker 内执行「预处理 → **调用 `analyzeRedrawAssets` 解析** → 落库」，路由只在**同一事务**里置 `extractState=0` 并入队（`enqueueJobInTransaction`），不 fire-and-forget；失败/超时按 job 机制记 -1 并写原因；进程重启可续跑。
+
+幂等键（payload 无新列可存）：`redraw.prepare:{projectId}:{scriptId}:{replace ? 1 : 0}` —— 双击时同键活跃任务会被 `dedupeActive` 吞掉（返回已有 jobId），而「重新分析」用 `replace=1` 得到不同键，不会被吞。
 
 ---
 
@@ -290,7 +307,7 @@ o_script:  redrawState          smallint default 0    // 见 §4.2
 
 ### 8.3 解析与落库
 
-1. 解析表格 → 段/镜结构（复用 `parseStoryboardTable` 的容错）；
+1. 解析表格 → 段/镜结构：**必须复用 `apps/api/src/utils/shots/storyboardTable.ts` 的生产 v2 解析器**（`utils/redraw.ts` 那个同名函数要求「源片区间」列、会按 11-12 列错位）；再加一层 `ParsedStoryboard → RedrawSegment[]` 适配（补 `sourceRange` 与资产 ID 映射）；
 2. 覆盖前把当前源片分镜快照写入 `redrawSourceStoryboard`；
 3. 事务内：保留 `o_segment.clipPath`（按 `segmentIndex + sourceRange` 匹配）→ 删除自动段（`manual=0`）→ 重建 `o_segment`/`o_shot`/`o_shotAssets`；
 4. 写 `o_segment.videoDesc`（§9.2 形状）；
@@ -300,7 +317,7 @@ o_script:  redrawState          smallint default 0    // 见 §4.2
 
 - 转绘项目的 production 页新增「转绘确认」节点：左源片版（`redrawSourceStoryboard`）、右转绘版（当前 `o_segment`）、底部变更摘要。
 - 操作：确认覆盖（`redrawState=4`）/ 重跑转绘层 / 回退到源片版。
-- 确认覆盖后**自动切原片**（`cutSource`，按最终段集合）；段集合变化时清掉旧 clip 并重切。
+- 确认覆盖后**自动切原片**（`cutSource({ onlyMissing: true, cleanStale: true })`）；**clip 复用判据**：`clipPath` 存在且 ffprobe 时长与段时长差 ≤0.1s 才保留，否则视为缺失并重切（这样 T13 的继承与这里的重切是同一套判据，不会互相抵消）。
 - 生成前若发现某段缺 `clipPath`，界面提示「先切原片」，不静默降级为纯文生。
 
 ---
@@ -542,6 +559,7 @@ o_script:  redrawState          smallint default 0    // 见 §4.2
 |---|---|
 | `POST /redraw/getEpisodeState` | 一次拿齐：extractState、redrawState、阶段进度、段数、资产确认数、clip 状态 |
 | `POST /redraw/getScript` / `updateScript` | 会话页第①步（读/存剧本） |
+| `POST /redraw/createAsset` / `updateAsset` | 资产面板「新建 / 改名 / 改性别 / 改出图提示词」（出图复用现有资产生图路由） |
 | `POST /redraw/getAssetDrafts` | 草稿 + 项目已有资产 + 当前绑定 |
 | `POST /redraw/bindAssetDraft` | 草稿 → 已有资产 |
 | `POST /redraw/confirmAssets` | 批量确认并落库 |

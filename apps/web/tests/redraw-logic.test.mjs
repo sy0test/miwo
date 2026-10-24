@@ -18,6 +18,7 @@ const base = {
 test("stage text maps known stages and falls back to the raw value", () => {
   assert.equal(stageText("cut"), "预处理·切点");
   assert.equal(stageText("transcribe"), "预处理·转写");
+  assert.equal(stageText("analysis"), "解析中");
   assert.equal(stageText(null), "分析中");
   assert.equal(stageText("weird"), "weird");
 });
@@ -58,7 +59,9 @@ test("secondary actions only expose re-run/cut when meaningful", () => {
 test("step gating requires all assets confirmed and a confirmed segment cap", () => {
   assert.equal(stepAccessFor({ assetTotal: 3, assetsConfirmed: 2, capConfirmed: true }).step3, false);
   assert.equal(stepAccessFor({ assetTotal: 3, assetsConfirmed: 3, capConfirmed: false }).canGenerate, false);
-  assert.equal(stepAccessFor({ assetTotal: 0, assetsConfirmed: 0, capConfirmed: true }).step3, false);
+  // 零资产集（纯场景/无人物）不应卡死第③步
+  assert.equal(stepAccessFor({ assetTotal: 0, assetsConfirmed: 0, capConfirmed: true }).step3, true);
+  assert.equal(stepAccessFor({ assetTotal: 0, assetsConfirmed: 0, capConfirmed: false }).step3, true);
   const ok = stepAccessFor({ assetTotal: 3, assetsConfirmed: 3, capConfirmed: true });
   assert.equal(ok.canGenerate, true);
   assert.equal(ok.blockedReason, null);

@@ -29,11 +29,15 @@ import settingStore from "@/stores/setting";
 import { useChat } from "@/utils/useChat";
 
 const props = defineProps<{ projectId: number; scriptId: number }>();
+const emit = defineEmits<{
+  (e: "updated", payload: { scriptId?: number; kind?: string }): void;
+  (e: "step", payload: { scriptId?: number; step?: number }): void;
+}>();
 const setting = settingStore();
 const input = ref("");
 const listRef = ref<HTMLElement>();
 
-const { connected, messages, chat, connect } = useChat({
+const { connected, messages, chat, connect, disconnect, socket } = useChat({
   url: `${setting.baseUrl}/socket/redrawAgent`,
   auth: () => ({
     isolationKey: `${props.projectId}:redrawAgent:${props.scriptId}`,
@@ -45,9 +49,30 @@ const { connected, messages, chat, connect } = useChat({
   xmlTags: [],
 });
 
+const onUpdated = (payload: any) => emit("updated", payload ?? {});
+const onStep = (payload: any) => emit("step", payload ?? {});
+
 onMounted(() => connect());
+
+// 后端工具写库后会推 redraw:updated / redraw:step；主区据此刷新（spec §10.4 双向联动）
+watch(
+  socket,
+  (s) => {
+    if (!s) return;
+    s.on("redraw:updated", onUpdated);
+    s.on("redraw:step", onStep);
+  },
+  { immediate: true },
+);
+
 onUnmounted(() => {
-  // useChat 内部会在 manageLifecycle 为 false 时由调用方负责；这里不强行断开，避免切页闪断
+  const s = socket.value;
+  if (s) {
+    s.off("redraw:updated", onUpdated);
+    s.off("redraw:step", onStep);
+  }
+  // useChat 在 manageLifecycle=false 时由调用方负责断开，避免 SPA 内切页累积 socket
+  disconnect();
 });
 
 function textOf(m: any): string {

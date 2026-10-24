@@ -17,7 +17,7 @@
         <AssetStep v-else-if="step === 2" :drafts="store.drafts" :existing="store.existing" :bindings="store.bindings" :confirming="store.busy" @bind="onBind" @create="onCreate" @update="onUpdate" @confirm="onConfirmAssets" />
         <DurationStep v-else :segments="store.segments" :cap="store.segmentCap" :saving="store.busy" @confirm-cap="onConfirmCap" />
       </div>
-      <ChatPanel v-if="showChat" class="chat" :project-id="projectId" :script-id="scriptId" />
+      <ChatPanel v-if="showChat" class="chat" :project-id="projectId" :script-id="scriptId" @updated="onAgentUpdated" @step="onAgentStep" />
     </div>
     <div class="footer f ac jb">
       <div class="f ac" style="gap: 10px">
@@ -26,7 +26,7 @@
       </div>
       <div class="f ac" style="gap: 8px">
         <t-button v-if="step !== 3" theme="primary" :loading="store.busy" @click="next">{{ step === 1 ? "保存并继续" : "下一步" }}</t-button>
-        <t-button v-else theme="primary" :disabled="!store.stepAccess.canGenerate" :loading="store.busy" @click="generate">生成转绘分镜</t-button>
+        <t-button v-else theme="primary" :disabled="!canGenerateFinal" :loading="store.busy" @click="generate">生成转绘分镜</t-button>
       </div>
     </div>
   </div>
@@ -54,10 +54,13 @@ const showChat = ref(false);
 
 const title = computed(() => "转绘会话 · " + (store.scriptName || "第 " + scriptId.value + " 集"));
 const stageText = computed(() => (store.episode?.extractState === 0 ? stageTextOf(store.episode?.stage) : ""));
+const capOk = computed(() => (store.segments || []).every((s: any) => Number(s.duration ?? 0) <= Number(store.segmentCap || 15)));
+const canGenerateFinal = computed(() => store.stepAccess.canGenerate && capOk.value);
 const stepHint = computed(() => {
   if (step.value === 1) return "剧本可以不改，直接继续";
   if (step.value === 2) return store.stepAccess.step3 ? "资产已全部确认" : store.stepAccess.blockedReason ?? "";
-  return store.stepAccess.canGenerate ? "可以生成转绘分镜" : store.stepAccess.blockedReason ?? "";
+  if (!capOk.value) return "有段超过单段上限，请回解析层调整";
+  return canGenerateFinal.value ? "可以生成转绘分镜" : store.stepAccess.blockedReason ?? "";
 });
 
 onMounted(async () => {
@@ -101,6 +104,15 @@ async function next() {
   }
   if (step.value === 2) {
     await store.refresh();
+    // 走到第②步出口必须真正落库（redrawState=2），否则 M3 生成会被后端按状态拒
+    if (Number(store.episode?.redrawState ?? 0) < 2) {
+      try {
+        await store.confirmAssets();
+      } catch (e: any) {
+        window.$message.error(e?.message ?? "资产确认失败，请重试");
+        return;
+      }
+    }
     await store.loadAssets();
     if (!store.stepAccess.step3) {
       window.$message.warning(store.stepAccess.blockedReason ?? "请先确认全部资产");
@@ -153,6 +165,17 @@ function onConfirmCap(seconds: number) {
     },
     onClose: () => dialog.destroy(),
   });
+}
+
+function onAgentUpdated() {
+  // 对话里做了绑定/新建/确认/改剧本 → 主区立即刷新
+  store.refresh();
+  store.loadAssets();
+  store.loadScript();
+}
+function onAgentStep(payload: { step?: number }) {
+  const s = Number(payload?.step ?? 0);
+  if (s >= 1 && s <= 3 && s > step.value) step.value = s;
 }
 
 async function generate() {

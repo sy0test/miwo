@@ -3,7 +3,8 @@
     <div class="hint">
       解析出的角色 / 场景 / 道具。可以复用项目里已有的资产，也可以改名、改性别、改设定；确认后才会写进资产库。
     </div>
-    <div class="grid">
+    <div v-if="!drafts.length" class="emptyDrafts">这一集没有解析出需要确认的资产，可以点「全部确认」直接继续。</div>
+    <div class="grid" v-else>
       <t-card v-for="d in drafts" :key="d.name" class="assetCard" shadow>
         <div class="head f ac jb">
           <div class="left f ac">
@@ -35,7 +36,7 @@
             保存修改
           </t-button>
         </div>
-        <div class="bound" v-if="bindings[d.name]">已绑定资产 #{{ bindings[d.name] }}</div>
+        <div class="bound" v-if="d.assetId">已绑定资产 #{{ d.assetId }}</div>
       </t-card>
     </div>
     <div class="foot f ac jb">
@@ -68,7 +69,7 @@ function stateOf(d: any) {
   return "pending";
 }
 const doneCount = computed(() => (props.drafts || []).filter((d: any) => stateOf(d) === "done").length);
-const allDone = computed(() => props.drafts.length > 0 && doneCount.value === props.drafts.length);
+const allDone = computed(() => props.drafts.length === 0 || doneCount.value === props.drafts.length);
 
 function onPick(d: any, ev: Event) {
   const v = Number((ev.target as HTMLSelectElement).value);
@@ -86,6 +87,14 @@ function onPick(d: any, ev: Event) {
   .hint {
     font-size: 12px;
     color: var(--td-text-color-placeholder);
+  }
+  .emptyDrafts {
+    padding: 24px;
+    text-align: center;
+    color: var(--td-text-color-placeholder);
+    font-size: 13px;
+    border: 1px dashed var(--td-component-border);
+    border-radius: 8px;
   }
   .grid {
     display: grid;

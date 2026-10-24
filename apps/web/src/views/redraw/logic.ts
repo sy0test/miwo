@@ -34,6 +34,7 @@ const STAGE_TEXT: Record<string, string> = {
   cut: "预处理·切点",
   transcribe: "预处理·转写",
   analyze: "解析中",
+  analysis: "解析中",
   storyboard: "生成转绘分镜",
   cut_source: "切原片中",
 };
@@ -99,7 +100,8 @@ export function stepAccessFor(o: {
   assetsConfirmed: number;
   capConfirmed: boolean;
 }): { step2: boolean; step3: boolean; canGenerate: boolean; blockedReason: string | null } {
-  const allConfirmed = o.assetTotal > 0 && o.assetsConfirmed >= o.assetTotal;
+  // 零资产集（纯场景/无人物的集）没有可确认的资产：视为已确认，不能因此卡死第③步。
+  const allConfirmed = o.assetTotal === 0 ? true : o.assetsConfirmed >= o.assetTotal;
   const step2 = true; // 剧本可跳过
   const step3 = allConfirmed;
   const canGenerate = allConfirmed && o.capConfirmed;

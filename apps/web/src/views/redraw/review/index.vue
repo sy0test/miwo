@@ -12,8 +12,9 @@
     </div>
 
     <t-alert v-if="store.error" theme="error" :message="store.error" />
+    <t-alert v-if="failed" theme="error" message="转绘分镜生成失败：可以点「重跑转绘层」，或到任务中心看失败原因。" />
 
-    <div v-if="generating" class="waiting fc c">
+    <div v-if="extracting" class="waiting fc c">
       <t-loading size="large" />
       <div class="waitText">转绘分镜生成中…完成后会自动刷新</div>
     </div>
@@ -74,7 +75,8 @@ const store = useRedrawStore();
 const { project } = storeToRefs(projectStore());
 const scriptId = computed(() => Number(route.params.scriptId ?? 0));
 const loading = ref(false);
-const generating = computed(() => Number(store.episode?.redrawState ?? 0) < 3 && !store.storyboard.redraw.length);
+const extracting = computed(() => Number(store.episode?.extractState ?? 1) === 0);
+const failed = computed(() => Number(store.episode?.redrawState ?? 0) === -1);
 const title = computed(() => "转绘确认 · " + (store.scriptName || "第 " + scriptId.value + " 集"));
 const canConfirm = computed(() => Number(store.episode?.redrawState ?? 0) === 3 && store.storyboard.redraw.length > 0);
 
@@ -109,7 +111,7 @@ onMounted(async () => {
 let timer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   timer = setInterval(async () => {
-    if (generating.value || Number(store.episode?.extractState ?? 1) === 0) {
+    if (extracting.value || Number(store.episode?.redrawState ?? 0) === 3) {
       await store.refresh();
       if (Number(store.episode?.redrawState ?? 0) >= 3) {
         await store.loadStoryboard();

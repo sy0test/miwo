@@ -21,6 +21,70 @@
 - 每个任务一次提交（中文 commit message），完成后跑对应测试与 `pnpm --filter @miwo/api run typecheck`。
 - 前端文案简体中文；新增用户可见文案不得默认英文。
 
+## 实施修正 R1（2026-10-24 独立 review 后补充，**优先于下文任务步骤**）
+
+> reviewer 预审发现 5 类会直接让 CI/门禁变红、或让 M2 前端 404 的问题。每个任务完成前必须按本节补齐对应项。
+
+### G1 路由注册与数量断言（新增任何 `routes/redraw/*` 都要做）
+
+- 新增/改名路由后跑：`pnpm --filter @miwo/api exec node --import=tsx scripts/generate-router.ts`（predev/prebuild 也挂，但提交前要手动确认 `src/router.ts` 已更新）。
+- 同步 `apps/api/tests/router-generation.test.ts` 里硬编码的 mounts/routeFiles/hash 数字（当前基线 184；每加一条路由 +1，三处一起改）。
+
+### G2 job 注册与「非计费入队」豁免
+
+- 新 job type 必须：① `jobs/registry.ts` 登记；② `tests/job-registry.test.ts` 的 EXPECTED 集合 + handler 文件数；③ `tests/job-types.test.ts` 的第二份清单。
+- `tests/job-enqueue-coverage.test.ts` 要求「路由里出现 `enqueueJobInTransaction(` 就必须同时有 `submitBilledJob(`」。`redraw.prepare` / `redraw.storyboard` **不是计费任务**：在该测试里加显式白名单常量 `NON_BILLED_JOB_TYPES = ["redraw.prepare","redraw.storyboard"]`（带注释说明理由），白名单之外仍保持原断言。
+- 路由入队用 `enqueueJobInTransaction`：把「`extractState=0` + 入队」放同一事务，避免中途失败留下永久卡 0。
+
+### G3 部署行（`o_agentDeploy`）必须由迁移补齐
+
+- `seed/o_agentDeploy.ndjson` 只在 002 迁移时 insert-if-absent，**已迁移的库不会拿到新 key**。
+- 在 `016_redraw_pipeline` 里显式 insert-if-absent 两行：`redrawAgent:reconcileAgent`、`redrawAgent:storyboardAgent`（模型默认 `newapi:gpt-6.1-sol`）。
+- 同步 `seed/o_agentDeploy.ndjson`（新库）与 `tests/migration-seed.test.ts` 的行数断言（当前 19 → 21）。
+- `apps/api/src/utils/ai.ts`（**不是** `agents/ai.ts`）的 type/allowlist 两张清单都要加这两个 key。
+
+### G4 租户特例门禁
+
+- 新增 `src/**/*.ts` 后跑 `node tools/check-tenant-exceptions.cjs --record`；新增 `join`/`raw` 必须在 `tenant-exceptions.json` 补 `confirmed/note/phase1b` 证据（照已有条目格式写）。
+
+### G5 配置模板双向守卫
+
+- `tools/check-deploy-config.cjs` 断言 `.env.example` 的 `MIWO_*` 与 `config.ts` 读取双向一致。
+- 删除 `MIWO_REDRAW_PREP`、增加 `MIWO_ASR_*` 时，必须同步：`apps/api/.env.example`、`deploy/.env.example`、`apps/api/tests/config-single-source.test.ts`。
+
+### G6 路径修正（按实际仓库）
+
+| 计划原文 | 实际路径 |
+|---|---|
+| `apps/api/Dockerfile` | `deploy/Dockerfile` |
+| `agents/ai.ts` | `apps/api/src/utils/ai.ts` |
+| `tools/redraw-prep/...`（样本） | 仓库外 `D:\\sy_workspace\\tools\\redraw-prep\\...` | 
+
+### G7 `redraw.prepare` 的 handler 职责与幂等键
+
+- handler 顺序：`runPrep` → `analyzeRedrawAssets` → 写库/体检 → `extractState=1` + `redrawState=1`。**解析必须在 handler 内**，路由不再 fire-and-forget。
+- 幂等键：`redraw.prepare:{projectId}:{scriptId}:{replace ? 1 : 0}`（见 spec §5.6）。
+
+### G8 补齐前端依赖的 4 个接口（并入 Task 6 一起做）
+
+新增路由：`redraw/getScript`、`redraw/updateScript`、`redraw/createAsset`、`redraw/updateAsset`。
+- `updateScript` 写 `o_script.content`；返回 `{changed:boolean}`。
+- `createAsset` 写 `o_assets`（类型列 + 名称 + 说明 + 提示词），返回 `{id}`；出图复用现有资产出图路由，不新增。
+- `updateAsset` 只允许改本集刚建/已绑定的资产，禁止跨租户、禁止覆盖用户已有资产的 prompt（沿用「只补空」口径）。
+
+### G9 M3 解析器与 clip 判据
+
+- 解析器固定用 `apps/api/src/utils/shots/storyboardTable.ts`，并写 `ParsedStoryboard → RedrawSegment[]` 适配层（补 `sourceRange`、资产 ID 映射）。
+- 确认覆盖后调 `cutSource({ onlyMissing: true, cleanStale: true })`；**clip 复用判据** = 文件存在且 ffprobe 时长与段时长差 ≤0.1s，否则重切。T13 的继承逻辑与 T14 的重切必须用同一判据函数。
+
+### G10 字体（不塞仓库）
+
+- `deploy/Dockerfile` 运行层 `apt-get install -y fonts-dejavu-core`；预处理器字体默认 `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`，可用 `MIWO_GRID_FONT` 覆盖。拼贴图标签只含数字/时间码（ASCII），不需要 CJK 字体。
+
+### G11 每个任务的 DoD（缺一不可）
+
+1. 相关 vitest 全绿；2. `pnpm --filter @miwo/api run typecheck`；3. 新增路由 → G1；4. 新增 job → G2；5. 新增 src 文件 → G4；6. 改配置 → G5；7. 汇报里写「跑了哪些命令、结果如何」。
+
 ---
 
 ## File Structure（先锁定边界）

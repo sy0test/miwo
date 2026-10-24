@@ -24,6 +24,10 @@ services:
       # 构建上下文 = 仓库根（本文件在 deploy/ 下）；deploy/Dockerfile 里的 COPY 路径都相对仓库根。
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # 转绘本地 ASR：模型名与 HF revision。生产构建请把 revision 钉到具体 commit（不钉则按 main，不可复现）。
+        ASR_MODEL: ${ASR_MODEL:-medium}
+        ASR_MODEL_REVISION: ${ASR_MODEL_REVISION:-main}
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -62,6 +66,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        ASR_MODEL: ${ASR_MODEL:-medium}
+        ASR_MODEL_REVISION: ${ASR_MODEL_REVISION:-main}
     restart: unless-stopped
     env_file: [.env]
     environment:

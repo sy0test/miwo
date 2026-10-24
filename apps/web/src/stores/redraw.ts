@@ -174,8 +174,10 @@ export default defineStore("redraw", () => {
       capConfirmed.value = true;
       return { ok: true as const };
     } catch (e: any) {
-      const payload = e?.response?.data?.data ?? e?.response?.data;
-      const needRerun = Boolean(payload?.needRerun) || Number(e?.response?.status) === 409;
+      // axios 拦截器已把错误归一化成 { code, data, message }（见 utils/apiError.ts）
+      const payload = e?.data ?? e?.response?.data?.data ?? e?.response?.data;
+      const status = Number(e?.code ?? e?.response?.status ?? 0);
+      const needRerun = status === 409 || Boolean(payload?.needRerun);
       return { ok: false as const, needRerun };
     }
   }
