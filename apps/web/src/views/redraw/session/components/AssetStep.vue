@@ -20,11 +20,11 @@
         </div>
         <div class="field">
           <label>说明</label>
-          <textarea v-model="d.desc" class="area" rows="2" placeholder="角色/场景/道具的中文说明"></textarea>
+          <textarea v-model="d.desc" class="area" rows="3" placeholder="角色/场景/道具的中文说明"></textarea>
         </div>
         <div class="field">
           <label>出图提示词</label>
-          <textarea v-model="d.prompt" class="area" rows="2" placeholder="中文提示词，用于资产生图"></textarea>
+          <textarea v-model="d.prompt" class="area" rows="3" placeholder="中文提示词，用于资产生图"></textarea>
         </div>
         <div class="actions f ac">
           <select class="select" @change="onPick(d, $event)">
@@ -98,9 +98,10 @@ function onPick(d: any, ev: Event) {
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 12px;
-    max-height: 460px;
+    /* 固定每行 3 张：auto-fill 在宽屏会挤到 5 张，卡片里的说明/提示词读不了 */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    max-height: calc(100vh - 330px);
     overflow-y: auto;
   }
   .assetCard {

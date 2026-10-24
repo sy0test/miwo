@@ -11,6 +11,14 @@
       </div>
     </div>
 
+    <!-- 顶部常驻状态条：分镜板是后台任务，用户必须随时能看到"现在到哪一步/完成没" -->
+    <div class="statusBar f ac" :class="'s-' + sbStatus.theme">
+      <t-tag :theme="sbStatus.theme" variant="light">{{ sbStatus.label }}</t-tag>
+      <span class="statusDetail">{{ sbStatus.detail }}</span>
+      <t-progress v-if="jobRunning && jobPct != null" :percentage="jobPct" theme="line" style="width: 260px" />
+      <span v-if="jobRunning" class="statusHint">后台任务、无流式输出；完成后自动刷新</span>
+    </div>
+
     <t-alert v-if="store.error" theme="error" :message="store.error" />
     <t-alert v-if="failed" theme="error" message="转绘分镜生成失败：可以点「重跑转绘层」，或到任务中心看失败原因。" />
     <t-alert v-if="showConfirmHint" theme="info" :message="confirmHint" />
@@ -44,16 +52,26 @@
           <div v-if="!sourceRows.length" class="empty">源片版快照为空</div>
         </div>
         <div class="col">
-          <div class="colTitle">转绘版</div>
-          <div v-for="s in redrawRows" :key="'r' + s.index" class="segCard" :class="s.cls">
-            <div class="segHead f ac jb">
-              <span class="segNo">段 {{ s.index }}</span>
-              <span class="segDur">{{ s.duration }}s</span>
-            </div>
-            <div class="segRange">{{ s.sourceRange || "-" }}</div>
-            <div class="segDesc">{{ s.desc || "（无描述）" }}</div>
-          </div>
+          <div class="colTitle">转绘版（内容 = videoDesc）</div>
           <div v-if="!redrawRows.length" class="empty">还没有转绘版（生成完成后出现）</div>
+          <table v-else class="segTable">
+            <thead>
+              <tr>
+                <th style="width: 52px">段</th>
+                <th style="width: 64px">时长</th>
+                <th style="width: 150px">源片区间</th>
+                <th>转绘描述（videoDesc）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in redrawRows" :key="'r' + s.index" :class="s.cls">
+                <td class="c">{{ s.index }}</td>
+                <td class="c">{{ s.duration }}s</td>
+                <td class="range">{{ s.sourceRange || "-" }}</td>
+                <td class="desc">{{ s.desc || "（无描述）" }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </template>
@@ -99,6 +117,24 @@ const waitingText = computed(() => {
   return "转绘分镜生成中…完成后自动刷新";
 });
 const title = computed(() => "转绘确认 · " + (store.scriptName || "第 " + scriptId.value + " 集"));
+/** 顶部状态条：让用户随时知道分镜板生成到哪一步（后台任务，没有 streaming） */
+const sbStatus = computed<any>(() => {
+  const rd = Number(store.episode?.redrawState ?? 0);
+  if (jobRunning.value) {
+    return {
+      theme: "primary",
+      label: "生成中",
+      detail: jobText(store.episode) || "后台任务执行中",
+      ...(jobPct.value != null ? { detail: (jobText(store.episode) || "后台任务执行中") + " · " + jobPct.value + "%" } : {}),
+    };
+  }
+  if (rd === -1) return { theme: "danger", label: "生成失败", detail: "点「重跑转绘层」重试，或到任务中心看失败原因" };
+  if (rd === 3) return { theme: "success", label: "转绘分镜已生成", detail: (redrawRows.value.length || 0) + " 段 · 可并排确认" };
+  if (rd === 4) return { theme: "success", label: "已确认覆盖", detail: "可直接去工作台生成视频" };
+  if (rd === 2) return { theme: "warning", label: "转绘分镜未确认", detail: store.storyboard.redraw.length ? "当前显示的是上次生成版本（已回退）" : "尚未生成" };
+  if (rd === 1) return { theme: "warning", label: "资产未认账", detail: "先回会话页完成资产认账" };
+  return { theme: "default", label: "未开始", detail: "先完成源片解析与资产认账" };
+});
 const canConfirm = computed(() => Number(store.episode?.redrawState ?? 0) === 3 && store.storyboard.redraw.length > 0);
 /** 按钮为什么点不了 —— 必须写在界面上，而不是只灰着 */
 const confirmHint = computed(() => {
@@ -218,6 +254,19 @@ async function confirm() {
     font-size: 18px;
     margin: 0;
   }
+  .statusBar {
+    padding: 8px 12px;
+    border-radius: 8px;
+    gap: 10px;
+    background: var(--td-bg-color-container);
+    border: 1px solid var(--td-component-border);
+    .statusDetail { font-size: 13px; color: var(--td-text-color-secondary); }
+    .statusHint { font-size: 12px; color: var(--td-text-color-placeholder); margin-left: auto; }
+    &.s-primary { border-color: var(--td-brand-color); }
+    &.s-success { border-color: var(--td-success-color); }
+    &.s-warning { border-color: var(--td-warning-color); }
+    &.s-danger { border-color: var(--td-error-color); }
+  }
   .waiting {
     flex: 1;
     gap: 12px;
@@ -242,6 +291,32 @@ async function confirm() {
       padding: 12px;
     }
     .colTitle { font-weight: 600; margin-bottom: 8px; }
+  }
+  .segTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    th,
+    td {
+      border-bottom: 1px solid var(--td-component-border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--td-bg-color-container);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .c { text-align: center; white-space: nowrap; }
+    .range { color: var(--td-text-color-placeholder); white-space: pre-wrap; }
+    .desc { line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    tr.changed td {
+      background: var(--td-warning-color-light);
+    }
   }
   .segCard {
     border: 1px solid var(--td-component-border);
