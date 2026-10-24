@@ -15,7 +15,10 @@
 ```powershell
 cd D:\sy_workspace\code\miwo
 # 后端
-pnpm --filter @miwo/api exec vitest run
+# ⚠ 全量用例里有并发/超时敏感的用例：必须给独立数据目录 + 放宽单测超时，否则会误红
+#   （实测：默认 5s + 并行跑会在 job-gate/auth-service 上抖）
+$env:MIWO_DATA_DIR="D:\sy_workspace\.tmp-build\miwo-gate-data"
+pnpm --filter @miwo/api exec vitest run --testTimeout=30000
 pnpm --filter @miwo/api run typecheck
 node tools/check-config-single-source.cjs
 node tools/check-deploy-config.cjs
@@ -156,6 +159,8 @@ docker compose up -d --force-recreate api worker
 ## 7. 已知限制（本次不修）
 
 - 生成时**还没把原片 clip 作为参考视频**发出去（M4）；工作台提示词也还没引用原片。
+- **clip 复用判据未按 spec 实现**（只判路径存在、没按 ffprobe 时长差 ≤0.1s 重切；且 storyboardWrite 只按 segmentIndex 继承）。不阻断今晚 M3 主链路，但 **M4 开工前必须修**，否则原片参考可能拿错素材。
 - 30s 单段上限未验证，默认 15s。
 - ASR 首次真实转写只在部署机验证；本机无 Python 依赖。
+- seed-data-dir 现在只补「缺失文件」、不覆盖已有内容：以后**修改已发布的技能/提示词**不会自动下发，需要手工同步或改目录名。
 - 界面版权声明/ToonFlow LICENSE 按协议保留（用户知情并接受）。
