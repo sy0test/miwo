@@ -7,6 +7,7 @@ import { prepareProviderUsage, recordProviderUsage, type ProviderUsageInput } fr
 import { resolveTextPricingUnit, videoPricingUnit } from "@/billing/prices";
 import u from "@/utils";
 import { getVendorModule } from "@/vendors";
+import { runWithVendorInputs } from "@/vendors/runtime";
 import { currentAiBillingContext, trackAiBillingTask, type AiBillingContext } from "@/billing/context";
 
 type AiType =
@@ -150,12 +151,14 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   if (!requestVendor) throw new Error(`供应商适配器配置不存在：${id}`);
   const fn = (mod as Record<string, any>)[fnName];
   if (!fn) throw new Error(`未找到供应商配置中的函数 ${fnName} id=${id}`);
+  // 老适配器直接读模块级 vendor.inputValues（编译期默认值、apiKey 为空）；这里把
+  // DB 里的 inputValues 挂到 AsyncLocalStorage，vendorInputs(vendor) 才能读到真实凭据。
   if (fnName == "textRequest")
     return (think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) => {
       const effectiveThink = think ?? !!selectedModel.think;
-      return fn(selectedModel, effectiveThink, thinkLevel, requestVendor);
+      return runWithVendorInputs(requestVendor.inputValues, () => fn(selectedModel, effectiveThink, thinkLevel, requestVendor));
     };
-  else return <T>(input: T) => fn(input, selectedModel, requestVendor);
+  else return <T>(input: T) => runWithVendorInputs(requestVendor.inputValues, () => fn(input, selectedModel, requestVendor));
 }
 
 async function withTaskRecord<T>(

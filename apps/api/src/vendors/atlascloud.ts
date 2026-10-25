@@ -1,6 +1,6 @@
 // ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
 //   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
-import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios, vendorInputs } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板 - AtlasCloud MASS
  * @version 0.8
@@ -211,17 +211,17 @@ const vendor: VendorConfig = {
 // 辅助工具
 // ============================================================
 
-const getChatBaseUrl = () => vendor.inputValues.chatBaseUrl.replace(/\/+$/, "");
+const getChatBaseUrl = () => vendorInputs(vendor).chatBaseUrl.replace(/\/+$/, "");
 
-const getMediaBaseUrl = () => vendor.inputValues.mediaBaseUrl.replace(/\/+$/, "");
+const getMediaBaseUrl = () => vendorInputs(vendor).mediaBaseUrl.replace(/\/+$/, "");
 
 const joinUrl = (base: string, path: string) => `${base}${path.startsWith("/") ? "" : "/"}${path}`;
 
 const getHeaders = () => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少 API Key");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少 API Key");
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "")}`,
+    Authorization: `Bearer ${vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "")}`,
   };
 };
 
@@ -420,8 +420,8 @@ const buildAtlasVideoPayload = (config: VideoConfig, model: VideoModel) => {
 // ============================================================
 
 const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少 API Key");
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少 API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
   const effortMap: Record<number, string> = { 0: "minimal", 1: "low", 2: "medium", 3: "high" };
 
   return createOpenAICompatible({

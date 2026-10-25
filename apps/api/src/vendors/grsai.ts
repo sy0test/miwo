@@ -1,6 +1,6 @@
 // ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
 //   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
-import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios, vendorInputs } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板
  * @version 2.0
@@ -177,7 +177,7 @@ const vendor: VendorConfig = {
 // ============================================================
 
 const getHeaders = () => {
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
   return {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
@@ -189,17 +189,17 @@ const getHeaders = () => {
 // ============================================================
 
 const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
   return createGoogleGenerativeAI({
-    baseURL: `${vendor.inputValues.baseUrl}/v1beta`,
+    baseURL: `${vendorInputs(vendor).baseUrl}/v1beta`,
     apiKey,
   }).chat(model.modelName);
 };
 
 const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<string> => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const baseUrl = vendor.inputValues.baseUrl;
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const baseUrl = vendorInputs(vendor).baseUrl;
   const headers = getHeaders();
 
   // 构造请求参数
@@ -282,8 +282,8 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
 };
 
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const baseUrl = vendor.inputValues.baseUrl;
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const baseUrl = vendorInputs(vendor).baseUrl;
   const headers = getHeaders();
 
   // 构造请求参数

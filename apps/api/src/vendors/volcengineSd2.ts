@@ -1,6 +1,6 @@
 // ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
 //   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
-import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios, vendorInputs } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板 - 火山引擎(豆包)
  * @version 2.0
@@ -181,7 +181,7 @@ const vendor: VendorConfig = {
 };
 /** 签名密钥派生 */
 function deriveSigningKey(shortDate: string) {
-  const kDate = crypto.createHmac("sha256", vendor.inputValues.sk).update(shortDate).digest();
+  const kDate = crypto.createHmac("sha256", vendorInputs(vendor).sk).update(shortDate).digest();
   const kRegion = crypto.createHmac("sha256", kDate).update(REGION).digest();
   const kService = crypto.createHmac("sha256", kRegion).update(SERVICE).digest();
   return crypto.createHmac("sha256", kService).update("request").digest();
@@ -245,7 +245,7 @@ async function request(
   const signature = crypto.createHmac("sha256", signingKey).update(stringToSign).digest("hex");
 
   // 组装请求头
-  const authorization = `HMAC-SHA256 Credential=${vendor.inputValues.ak}/${credentialScope}, SignedHeaders=${SIGNED_HEADERS}, Signature=${signature}`;
+  const authorization = `HMAC-SHA256 Credential=${vendorInputs(vendor).ak}/${credentialScope}, SignedHeaders=${SIGNED_HEADERS}, Signature=${signature}`;
   const headers: Record<string, string> = {
     Host: HOST,
     "X-Content-Sha256": xContentSha256,
@@ -266,7 +266,7 @@ async function request(
 // ============================================================
 const TOS_SIGNING_ALGORITHM = "TOS4-HMAC-SHA256";
 function getTosRegion(): string {
-  const ep = (vendor.inputValues.tosEndpoint || "").trim();
+  const ep = (vendorInputs(vendor).tosEndpoint || "").trim();
   const match = ep.match(/tos-([^.]+)\.volces\.com/);
   return match ? match[1] : "cn-beijing";
 }
@@ -280,25 +280,25 @@ function tosDateFromTimestamp(ts: string): string {
   return ts.slice(0, 8);
 }
 function tosBucket(): string {
-  return (vendor.inputValues.tosBucket || "").trim();
+  return (vendorInputs(vendor).tosBucket || "").trim();
 }
 function tosEndpoint(): string {
-  return (vendor.inputValues.tosEndpoint || "").trim();
+  return (vendorInputs(vendor).tosEndpoint || "").trim();
 }
 function tosAk(): string {
-  logger(vendor.inputValues.ak);
+  logger(vendorInputs(vendor).ak);
 
-  return (vendor.inputValues.ak || "").trim();
+  return (vendorInputs(vendor).ak || "").trim();
 }
 function tosSk(): string {
-  logger(vendor.inputValues.sk);
-  return (vendor.inputValues.sk || "").trim();
+  logger(vendorInputs(vendor).sk);
+  return (vendorInputs(vendor).sk || "").trim();
 }
 function hasCompleteTosConfig(): boolean {
   return Boolean(tosEndpoint() && tosBucket() && tosAk() && tosSk());
 }
 function tosSecurityToken(): string {
-  return (vendor.inputValues.securityToken || vendor.inputValues.sessionToken || "").trim();
+  return (vendorInputs(vendor).securityToken || vendorInputs(vendor).sessionToken || "").trim();
 }
 function getStorageProvider(): "tos" | "oss" {
   if (hasCompleteTosConfig()) return "tos";
@@ -532,7 +532,7 @@ async function uploadAssets(source: string, type: "Image" | "Video" | "Audio"): 
     logger(`生成预签名URL: ${assetUrl}`);
 
     const res = await request("CreateAsset", {
-      GroupId: vendor.inputValues.groupId,
+      GroupId: vendorInputs(vendor).groupId,
       URL: assetUrl,
       Name: hash,
       AssetType: type,
@@ -589,14 +589,14 @@ async function uploadAssets(source: string, type: "Image" | "Video" | "Audio"): 
 // ============================================================
 
 const getHeaders = () => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "")}`,
+    Authorization: `Bearer ${vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "")}`,
   };
 };
 
-const getBaseUrl = () => vendor.inputValues.baseUrl.replace(/\/+$/, "");
+const getBaseUrl = () => vendorInputs(vendor).baseUrl.replace(/\/+$/, "");
 
 // ============================================================
 // 适配器函数

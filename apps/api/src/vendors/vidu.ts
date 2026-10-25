@@ -1,6 +1,6 @@
 // ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
 //   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
-import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios, vendorInputs } from "@/vendors/runtime";
 //如需遥测AI请使用在toonflow安装目录运行npx @ai-sdk/devtools （要求在其他设置中打开遥测功能，且toonflow有权限在安装目录创建.devtools文件夹）
 // ==================== 类型定义 ====================
 // 文本模型
@@ -188,8 +188,8 @@ interface ImageConfig {
   aspectRatio: `${number}:${number}`; // 长宽比
 }
 const imageRequest = async (imageConfig: ImageConfig, imageModel: ImageModel) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace("Token ", "");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace("Token ", "");
 
   const size = imageConfig.size === "1K" ? "2K" : imageConfig.size;
   const sizeMap: Record<string, Record<string, string>> = {
@@ -214,7 +214,7 @@ const imageRequest = async (imageConfig: ImageConfig, imageModel: ImageModel) =>
     ...(imageConfig.imageBase64 && { image: imageConfig.imageBase64 }),
   };
 
-  const createImageUrl = vendor.inputValues.baseUrl + "/reference2image";
+  const createImageUrl = vendorInputs(vendor).baseUrl + "/reference2image";
   const response = await fetch(createImageUrl, {
     method: "POST",
     headers: { Authorization: `Token ${apiKey}`, "Content-Type": "application/json" },
@@ -269,8 +269,8 @@ const buildModelMetadata = (modelName: string, videoConfig: VideoConfig) => {
 };
 // 检查生成物结果
 const checkTaskResult = async (taskId: string) => {
-  const queryUrl = vendor.inputValues.baseUrl + "/tasks/{id}/creations";
-  const apiKey = vendor.inputValues.apiKey;
+  const queryUrl = vendorInputs(vendor).baseUrl + "/tasks/{id}/creations";
+  const apiKey = vendorInputs(vendor).apiKey;
   const res = await pollTask(async () => {
     const queryResponse = await fetch(queryUrl.replace("{id}", taskId), {
       method: "GET",
@@ -301,8 +301,8 @@ const checkTaskResult = async (taskId: string) => {
 };
 
 const videoRequest = async (videoConfig: VideoConfig, videoModel: VideoModel) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace("Token ", "");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace("Token ", "");
 
   // 构建每个模型对应的附加参数
   const metadata = buildModelMetadata(videoModel.modelName, videoConfig);
@@ -317,7 +317,7 @@ const videoRequest = async (videoConfig: VideoConfig, videoModel: VideoModel) =>
     metadata: metadata,
   };
 
-  const requestUrl = vendor.inputValues.baseUrl + "/start-end2video";
+  const requestUrl = vendorInputs(vendor).baseUrl + "/start-end2video";
   const response = await fetch(requestUrl, {
     method: "POST",
     headers: { Authorization: `Token ${apiKey}`, "Content-Type": "application/json" },

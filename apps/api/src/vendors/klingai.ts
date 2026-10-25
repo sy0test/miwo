@@ -1,6 +1,6 @@
 // ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
 //   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
-import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios, vendorInputs } from "@/vendors/runtime";
 /**
  * Toonflow AI供应商模板 - 可灵AI
  * @version 2.0
@@ -315,11 +315,11 @@ const vendor: VendorConfig = {
 const generateAuthToken = (): string => {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
-    iss: vendor.inputValues.accessKey,
+    iss: vendorInputs(vendor).accessKey,
     exp: now + 1800,
     nbf: now - 5,
   };
-  return jsonwebtoken.sign(payload, vendor.inputValues.secretKey, {
+  return jsonwebtoken.sign(payload, vendorInputs(vendor).secretKey, {
     algorithm: "HS256",
     header: { alg: "HS256", typ: "JWT" },
   });
@@ -329,7 +329,7 @@ const generateAuthToken = (): string => {
  * 获取基础请求地址
  */
 const getBaseUrl = (): string => {
-  return vendor.inputValues.baseUrl || "https://api-beijing.klingai.com";
+  return vendorInputs(vendor).baseUrl || "https://api-beijing.klingai.com";
 };
 
 /**
@@ -431,8 +431,8 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
 };
 
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
-  if (!vendor.inputValues.accessKey) throw new Error("缺少Access Key");
-  if (!vendor.inputValues.secretKey) throw new Error("缺少Secret Key");
+  if (!vendorInputs(vendor).accessKey) throw new Error("缺少Access Key");
+  if (!vendorInputs(vendor).secretKey) throw new Error("缺少Secret Key");
 
   const baseUrl = getBaseUrl();
 

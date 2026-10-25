@@ -12,6 +12,8 @@
 - 资产页固定每行 3 张卡片；切原片改为**段级 sourceRange 优先**（修段内多镜时 9/11 段切不出来的问题）。
 - `getEpisodeState` 增加 `job` 字段（当前活跃转绘任务），前端用于显示生成进度。
 - 与上一版相比**没有**改流程步骤：仍是 生成转绘分镜 → 并排确认 → 工作台（「跳过两步」的方案已回退）。
+- 供应商适配器运行期修正：内置化后除 newapi 外的适配器一直读模块级空凭据（火山引擎「缺少API Key」），
+  现改为经 AsyncLocalStorage 注入 DB 里的 inputValues（新增回归用例 `tests/vendor-request-inputs.test.ts`）。
 
 ## 0. 本次改动包含什么
 

@@ -1,6 +1,6 @@
 // ⚠ 本文件由 `apps/api/scripts/vendor-to-module.cjs` 从 `apps/api/data/vendor/` 转换而来（Phase 1c Task 8）。
 //   沙箱执行通道已删除：适配器现在是**编译期内置**的普通 ES 模块，运行期不加载/不执行任何外部代码。
-import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios } from "@/vendors/runtime";
+import { createOpenAI, createDeepSeek, createZhipu, createQwen, createAnthropic, createOpenAICompatible, createXai, createMinimax, createGoogleGenerativeAI, zipImage, zipImageResolution, urlToBase64, mergeImages, pollTask, logger, jsonwebtoken, crypto, FormData, axios, vendorInputs } from "@/vendors/runtime";
 /**
  * Toonflow官方中转平台 供应商适配
  * @version 3.0
@@ -228,8 +228,8 @@ function extractFirstImageFromMd(content: string) {
 // ============================================================
 
 const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
   const lowerName = model.modelName.toLowerCase();
   if (lowerName.includes("deepseek")) {
     logger("使用deepseek");
@@ -254,18 +254,18 @@ const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3
     //   `DeepSeekProviderSettings` 的类型里（沙箱形态下 `createDeepSeek` 是 `declare const … : any`）。
     //   运行时照旧透传（实测不抛错）⇒ `as any` 保留行为。
     return createDeepSeek({
-      baseURL: vendor.inputValues.baseUrl,
+      baseURL: vendorInputs(vendor).baseUrl,
       apiKey,
       extraBody,
     } as any).chat(model.modelName);
   }
-  return createOpenAI({ baseURL: vendor.inputValues.baseUrl, apiKey }).chat(model.modelName);
+  return createOpenAI({ baseURL: vendorInputs(vendor).baseUrl, apiKey }).chat(model.modelName);
 };
 
 const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<string> => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  const baseUrl = vendor.inputValues.baseUrl;
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
+  const baseUrl = vendorInputs(vendor).baseUrl;
   const lowerName = model.modelName.toLowerCase();
   const imageBase64List = (config.referenceList ?? []).map((r) => r.base64).filter(Boolean);
 
@@ -421,9 +421,9 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
 };
 
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  const baseUrl = vendor.inputValues.baseUrl;
+  if (!vendorInputs(vendor).apiKey) throw new Error("缺少API Key");
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
+  const baseUrl = vendorInputs(vendor).baseUrl;
   const lowerName = model.modelName.toLowerCase();
 
   // 当前激活的单一 VideoMode（取第一个非数组模式，或数组模式）
@@ -686,8 +686,8 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
 };
 
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  const baseUrl = vendor.inputValues.baseUrl;
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
+  const baseUrl = vendorInputs(vendor).baseUrl;
   const res = await fetch(`${baseUrl}/vendor/vendorCheck`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -711,8 +711,8 @@ const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: s
 };
 
 const updateVendor = async (): Promise<string> => {
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  const baseUrl = vendor.inputValues.baseUrl;
+  const apiKey = vendorInputs(vendor).apiKey.replace(/^Bearer\s+/i, "");
+  const baseUrl = vendorInputs(vendor).baseUrl;
   const response = await fetch(`${baseUrl}/vendor/downloadVendor`, {
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
   });

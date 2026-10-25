@@ -30,3 +30,28 @@ export { default as FormData } from "form-data";
 export { default as axios } from "axios";
 // `fetch` 是 Node 全局，无需 import/export —— 保留这行注释是为了让"20 个名字"数得清：
 // 15（上面）+ 1（logger）+ 3（jsonwebtoken/crypto/FormData）+ 1（axios）= 20。
+
+// ---------------------------------------------------------------------------
+// 每请求的 vendor.inputValues 覆盖（Phase 1c Task 8 的语义回归修复）
+//
+// 适配器内置化后模块是单例：vendor.inputValues 是**编译期默认值**（apiKey 空）。
+// 运行时凭据在 DB 里，ai.ts 会拿一份 getVendorConfigFor() 的拷贝传进来；
+// 老适配器（除了 newapi）没有第三参、直接读模块单例 ⇒ 永远报“缺少API Key”。
+//
+// 这里用 AsyncLocalStorage 给每次模型调用挂一个“当前请求的 inputValues”，
+// 适配器把 vendor.inputValues.x 换成 vendorInputs(vendor).x 即可读到 DB 值，
+// 又不会把 A 用户的 key 写进全局单例。
+// ---------------------------------------------------------------------------
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const vendorInputsStore = new AsyncLocalStorage<Record<string, any>>();
+
+export function runWithVendorInputs<T>(inputs: Record<string, any> | null | undefined, fn: () => T): T {
+  return vendorInputsStore.run(inputs && typeof inputs === "object" ? inputs : {}, fn);
+}
+
+export function vendorInputs<T = Record<string, any>>(vendor?: { inputValues?: Record<string, any> | null }): T {
+  const base = (vendor?.inputValues && typeof vendor.inputValues === "object" ? vendor.inputValues : {}) as Record<string, any>;
+  const runtime = vendorInputsStore.getStore();
+  return (runtime ? { ...base, ...runtime } : base) as T;
+}
